@@ -107,14 +107,11 @@ curl -fsSL https://raw.githubusercontent.com/aether-lang-dev/aeb/v0.340/get.sh \
 ```
 
 That is enough for the bridges and the in-process tests. The contained
-child needs `std.guest`, new in ae 0.877.0 (`AE_CHILD_PIN`). 0.877.0 is
-tagged but has no release archives yet (its release workflow stopped on a
-Windows check), so for now `get.sh` builds it from the tag, which takes a
-few minutes:
+child needs `std.guest`, first published in ae 0.878.0 (`AE_CHILD_PIN`):
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/aether-lang-dev/aeb/v0.340/get.sh \
-  | AE_PIN=0.877.0 AEB_REF=v0.340 sh
+  | AE_PIN=0.878.0 AEB_REF=v0.340 sh
 ```
 
 The pins follow the rule used across the Aether family: a pin is the oldest
@@ -134,7 +131,7 @@ The containment rows build stunt from aether's source at
 `AETHER_SRC` to an aether checkout) to read its catalogue: release archives
 ship `contrib/host/stunt` without `stunt.c` and `stunt_main.c`. On Linux
 the in-process rows run under the release's `libaether_sandbox.so`; the
-child rows run where ae is 0.877.0 or later and the kernel has Landlock
+child rows run where ae is 0.878.0 or later and the kernel has Landlock
 (`GHL_REQUIRE_CHILD=1` makes a missing child mode a failure, as CI does).
 
 CI (`.github/workflows/ci.yml`): Linux with Ubuntu's liblua5.4-dev on

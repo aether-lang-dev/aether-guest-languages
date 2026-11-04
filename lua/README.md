@@ -11,7 +11,7 @@ same names, `lua.run`, `lua.run_sandboxed`, `lua.vm_new` and the rest.
 | What holds Lua's own `io`/`os` calls | `libaether_sandbox.so` in `LD_PRELOAD`, Linux only | Landlock and seccomp from the policy, plus the worker's own lockdown with no grants |
 | macOS, Windows | runs; nothing holds Lua's `io`/`os` calls | `guest.launch` refuses and starts nothing |
 | Host functions | `vm_register` callbacks, called directly | `guest.mount`; each call is a frame the host answers |
-| Needs | ae 0.875.0 | ae 0.877.0 (std.guest), Linux with Landlock |
+| Needs | ae 0.875.0 | ae 0.878.0 (std.guest), Linux with Landlock |
 
 ## Containment table
 

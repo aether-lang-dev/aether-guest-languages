@@ -11,7 +11,7 @@
 // functions do (a file it grants goes down as a descriptor); the shared map
 // is the host's own here, its input frozen as the runtime freezes it. Prints
 // stunt's line, or for a host-checked row (spin, silent, oversize) how the
-// guest ended, and exits 0 when it matched. Needs ae 0.877.0 or later.
+// guest ended, and exits 0 when it matched. Needs ae 0.878.0 or later.
 
 @source("host_support.c")
 
