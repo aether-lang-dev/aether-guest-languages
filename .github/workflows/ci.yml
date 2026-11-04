@@ -1,8 +1,8 @@
 name: CI
 
 # ae comes from aeb's get.sh at the versions ci/versions.env pins (binary
-# releases). The in-process jobs
-# run on AE_PIN; the contained-child job needs std.guest, so AE_CHILD_PIN.
+# releases). The in-process jobs run on AE_PIN; the contained-child job needs
+# std.guest, so AE_CHILD_PIN.
 
 on:
   push:
