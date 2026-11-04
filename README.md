@@ -56,15 +56,24 @@ tests/
 
 ## Using a language from this repository
 
-The repository is an Aether package. In your project's `aether.toml`:
+The repository is an Aether package. In your project:
+
+```sh
+ae add github.com/aether-lang-dev/aether-guest-languages
+```
+
+fetches the default branch and records it in `aether.toml` with the hash of
+the tree it installed (there are no tagged releases yet):
 
 ```toml
 [dependencies]
-"github.com/aether-lang-dev/aether-guest-languages" = "HEAD"
+"github.com/aether-lang-dev/aether-guest-languages" = "latest"
+
+[dependency-hashes]
+"github.com/aether-lang-dev/aether-guest-languages" = "sha256-..."
 ```
 
-or let `ae add github.com/aether-lang-dev/aether-guest-languages` write it
-(with the tree's hash). Then `import lua` resolves to `lua/module.ae`:
+Then `import lua` resolves to `lua/module.ae`:
 `ae build`, `ae run` and `ae lib-path` put the package on the module search
 path, and the bridge's C is compiled into your program from the `@source`
 line in `module.ae`, with nothing to build beforehand.
@@ -143,7 +152,7 @@ dependency:
 +import lua
 ```
 
-plus the `[dependencies]` entry above. What changes for the better: no
+plus the dependency (`ae add`, above). What changes for the better: no
 `make contrib MODULES=lua` / `make install-contrib` step and no Lua dev
 package at build time (a release install of ae could not link
 `contrib.host.lua` without them), and Lua 5.5 works (aether's copy refuses
