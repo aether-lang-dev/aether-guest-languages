@@ -8,7 +8,7 @@
 // contrib/host/ruby — every Lua C-API symbol resolved via dlsym at
 // first call. The bridge .a has NO unresolved Lua symbols at link
 // time, so end-user binaries have no DT_NEEDED liblua and are
-// ABI-portable across deploy-host Lua minor versions (5.3 / 5.4).
+// ABI-portable across deploy-host Lua minor versions (5.3, 5.4, 5.5).
 //
 // Lua's headers use a lot of macros that are just one-line wrappers
 // around real exported functions:
@@ -26,7 +26,7 @@
 //
 // Symbol versioning: liblua uses `lua_close@@LUA_5.4`-style
 // versioning. dlsym strips version tags and returns whatever match
-// it finds, so `dlsym(h, "lua_close")` works against 5.3 or 5.4
+// it finds, so `dlsym(h, "lua_close")` works against 5.3, 5.4 or 5.5
 // libluas indifferently.
 
 #include "aether_host_lua.h"
@@ -50,6 +50,7 @@
 #if AETHER_HAS_LUA
 #include "lua_abi.h"
 #include <dlfcn.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -59,9 +60,11 @@
 static void* liblua_handle = NULL;
 
 static struct {
-    // Lifecycle.
+    // Lifecycle. luaL_openlibs is a function up to 5.4; 5.5 made it a
+    // macro over luaL_openselectedlibs(L, ~0, 0) and exports only that.
     lua_State* (*luaL_newstate)(void);
     void       (*luaL_openlibs)(lua_State*);
+    void       (*luaL_openselectedlibs)(lua_State*, int load, int preload);
     void       (*lua_close)(lua_State*);
     // Code load + execute (the underlying fns the macros wrap).
     int        (*luaL_loadstring)(lua_State*, const char*);
@@ -115,7 +118,11 @@ static int resolve_lua_symbols(void* h) {
     } while (0)
 
     RESOLVE(luaL_newstate,     "luaL_newstate");
-    RESOLVE(luaL_openlibs,     "luaL_openlibs");
+    // 5.5 exports luaL_openselectedlibs and no luaL_openlibs; earlier
+    // versions the other way round. Which one is there says which Lua this
+    // is, and with it where the registry is (lh_registryindex).
+    *(void**)(&g_lua.luaL_openselectedlibs) = dlsym(h, "luaL_openselectedlibs");
+    if (!g_lua.luaL_openselectedlibs) RESOLVE(luaL_openlibs, "luaL_openlibs");
     RESOLVE(lua_close,         "lua_close");
     RESOLVE(luaL_loadstring,   "luaL_loadstring");
     RESOLVE(lua_pcallk,        "lua_pcallk");
@@ -214,6 +221,20 @@ static const char* lh_checkstring(lua_State* L, int arg) {
     return g_lua.luaL_checklstring(L, arg, NULL);
 }
 
+// luaL_openlibs(L): the function up to 5.4, luaL_openselectedlibs(L, ~0, 0)
+// (all of them, none preloaded) from 5.5.
+static void lh_openlibs(lua_State* L) {
+    if (g_lua.luaL_openselectedlibs) g_lua.luaL_openselectedlibs(L, ~0, 0);
+    else g_lua.luaL_openlibs(L);
+}
+
+// LUA_REGISTRYINDEX, which lua_upvalueindex(i) counts down from. It is
+// -LUAI_MAXSTACK - 1000: -1001000 for 5.3 and 5.4 (LUAI_MAXSTACK 1000000),
+// -(INT_MAX / 2 + 1000) from 5.5.
+static int lh_registryindex(void) {
+    return g_lua.luaL_openselectedlibs ? -(INT_MAX / 2 + 1000) : -1001000;
+}
+
 // lua_pushcfunction(L,f) → lua_pushcclosure(L,f,0).
 static void lh_pushcfunction(lua_State* L, lua_CFunction fn) {
     g_lua.lua_pushcclosure(L, fn, 0);
@@ -239,7 +260,7 @@ int lua_init(void) {
     if (load_liblua() != 0) return -1;
     L = g_lua.luaL_newstate();
     if (!L) return -1;
-    g_lua.luaL_openlibs(L);
+    lh_openlibs(L);
     return 0;
 }
 
@@ -358,7 +379,7 @@ int lua_run_sandboxed_with_map(void* perms, const char* code, uint64_t map_token
 #define AE_LUA_TERR    5
 #define AE_LUA_TOTHER  6
 
-/* Lua's own LUA_T* constants (stable across 5.3/5.4). */
+/* Lua's own LUA_T* constants (stable across 5.3, 5.4 and 5.5). */
 #define AE_LT_NIL      0
 #define AE_LT_BOOLEAN  1
 #define AE_LT_NUMBER   3
@@ -377,9 +398,8 @@ typedef int (*ae_lua_host_fn)(void* vm);
 static int ae_lua_trampoline(lua_State* state) {
     /* upvalueindex(1) == LUA_REGISTRYINDEX-… ; the portable spelling is
      * lua_upvalueindex(1), a macro = (LUA_REGISTRYINDEX - n). We compute it
-     * without the macro: LUA_REGISTRYINDEX is -1001000 on 5.3/5.4. */
-    const int LUA_REGISTRYINDEX_V = -1001000;
-    void* p = g_lua.lua_touserdata(state, LUA_REGISTRYINDEX_V - 1);
+     * without the macro, from the Lua that was loaded (lh_registryindex). */
+    void* p = g_lua.lua_touserdata(state, lh_registryindex() - 1);
     if (!p) return 0;
     ae_lua_host_fn fn = (ae_lua_host_fn)p;
     return fn((void*)state);
@@ -392,7 +412,7 @@ void* lua_vm_new(void) {
     if (load_liblua() != 0) return NULL;
     lua_State* vm = g_lua.luaL_newstate();
     if (!vm) return NULL;
-    g_lua.luaL_openlibs(vm);
+    lh_openlibs(vm);
     return (void*)vm;
 }
 

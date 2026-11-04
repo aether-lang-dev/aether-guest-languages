@@ -1,0 +1,149 @@
+// The bridge's two-way tier (#904) and table builder (#910), through
+// `import lua` as a program uses them. In aether these were C harnesses
+// (tests/integration/host_lua_bidirectional and host_lua_table_builder);
+// here the callbacks are Aether @c_callback functions, so module.ae's
+// externs and the @source build are covered too. Same assertions.
+//
+// Skips, as test_host_lua.ae does, when liblua cannot be loaded.
+
+import lua
+import std.spec
+import std.list
+
+// host.double(n): 2n, an int in and an int out.
+@c_callback
+host_double(vm: ptr) -> int {
+    lua.push_int(vm, lua.arg_int(vm, 1) * 2)
+    return 1
+}
+
+// host.ping(): { ok = "PONG" }.
+@c_callback
+host_ping(vm: ptr) -> int {
+    lua.push_tagged_table(vm, "ok", "PONG")
+    return 1
+}
+
+// host.echo(s): its string argument back, and the count of arguments.
+@c_callback
+host_echo(vm: ptr) -> int {
+    lua.push_str(vm, "${lua.arg_str(vm, 1)}/${lua.arg_count(vm)}")
+    return 1
+}
+
+// host.fail(): raises a Lua error from the host.
+@c_callback
+host_fail(vm: ptr) -> int {
+    return lua.raise_error(vm, "host says no")
+}
+
+// host.arr(): {"k1","k2","k3"}.
+@c_callback
+host_arr(vm: ptr) -> int {
+    lua.table_begin(vm, 3, 0)
+    lua.table_seti_str(vm, 1, "k1")
+    lua.table_seti_str(vm, 2, "k2")
+    lua.table_seti_str(vm, 3, "k3")
+    lua.table_finish(vm)
+    return 1
+}
+
+// host.map(): {field = "f1", count = 7}.
+@c_callback
+host_map(vm: ptr) -> int {
+    lua.table_begin(vm, 0, 2)
+    lua.table_set_str(vm, "field", "f1")
+    lua.table_set_int(vm, "count", 7)
+    lua.table_finish(vm)
+    return 1
+}
+
+// host.nested(): {{"a","b"},{"c"}}.
+@c_callback
+host_nested(vm: ptr) -> int {
+    lua.table_begin(vm, 2, 0)
+    lua.table_begin(vm, 2, 0)
+    lua.table_seti_str(vm, 1, "a")
+    lua.table_seti_str(vm, 2, "b")
+    lua.table_end_seti(vm, 1)
+    lua.table_begin(vm, 1, 0)
+    lua.table_seti_str(vm, 1, "c")
+    lua.table_end_seti(vm, 2)
+    lua.table_finish(vm)
+    return 1
+}
+
+main() {
+    fw = spec.init()
+
+    vm = lua.vm_new()
+    have_lua = 0
+    if vm != null { have_lua = 1 }
+    reason = "liblua not loadable (set AETHER_LUA_SONAME)"
+
+    if have_lua == 1 {
+        lua.vm_register(vm, "host.double", host_double)
+        lua.vm_register(vm, "host.ping", host_ping)
+        lua.vm_register(vm, "host.echo", host_echo)
+        lua.vm_register(vm, "host.fail", host_fail)
+        lua.vm_register(vm, "host.arr", host_arr)
+        lua.vm_register(vm, "host.map", host_map)
+        lua.vm_register(vm, "host.nested", host_nested)
+        lua.vm_set_global_int(vm, "BASE", 100)
+        keys = list.new()
+        list.add(keys, "k1")
+        list.add(keys, "k2")
+        lua.vm_set_global_strlist(vm, "KEYS", keys)
+        lua.vm_set_global_str(vm, "WHO", "aether")
+    }
+
+    spec.describe(fw, "lua vm (#904)") {
+        spec.it_when(have_lua, "a host callback's int result and injected globals", reason) callback {
+            rc = lua.vm_eval(vm, "local d = host.double(21)\nlocal p = host.ping()\nassert(p.ok == 'PONG')\nassert(#KEYS == 2 and KEYS[1] == 'k1')\nreturn d + BASE")
+            spec.assert_eq(rc, 0, "the script ran")
+            spec.assert_eq(lua.vm_result_type(vm), lua.LUA_TINT, "an int came back")
+            spec.assert_eq_long(lua.vm_result_int(vm), 142, "42 from the host plus BASE")
+            lua.vm_pop_result(vm)
+        }
+        spec.it_when(have_lua, "a typed string result", reason) callback {
+            spec.assert_eq(lua.vm_eval(vm, "return 'hello ' .. KEYS[2] .. ' from ' .. WHO"), 0, "the script ran")
+            spec.assert_eq(lua.vm_result_type(vm), lua.LUA_TSTR, "a string came back")
+            spec.assert_str_eq(lua.vm_result_str(vm), "hello k2 from aether", "its text")
+            lua.vm_pop_result(vm)
+        }
+        spec.it_when(have_lua, "a callback reads its string argument and the argument count", reason) callback {
+            spec.assert_eq(lua.vm_eval(vm, "return host.echo('x', 2, 3)"), 0, "the script ran")
+            spec.assert_str_eq(lua.vm_result_str(vm), "x/3", "the first argument and the count")
+            lua.vm_pop_result(vm)
+        }
+        spec.it_when(have_lua, "a callback's raise_error is a Lua error the script can catch", reason) callback {
+            spec.assert_eq(lua.vm_eval(vm, "local ok, e = pcall(host.fail)\nassert(not ok)\nreturn e"), 0, "pcall caught it")
+            spec.assert_str_eq(lua.vm_result_str(vm), "host says no", "the host's message")
+            lua.vm_pop_result(vm)
+            spec.assert_not_eq(lua.vm_eval(vm, "host.fail()"), 0, "uncaught, the eval fails")
+            spec.assert_eq(lua.vm_result_type(vm), lua.LUA_TSTR, "the error object is readable")
+            lua.vm_pop_result(vm)
+        }
+        spec.it_when(have_lua, "the instruction limit stops an endless loop", reason) callback {
+            lua.vm_set_instruction_limit(vm, 100000, 100)
+            spec.assert_not_eq(lua.vm_eval(vm, "while true do end return 1"), 0, "aborted, not hung")
+            lua.vm_pop_result(vm)
+            lua.vm_set_instruction_limit(vm, 0, 0)
+            spec.assert_eq(lua.vm_eval(vm, "return 1"), 0, "the VM still runs after the guard")
+            lua.vm_pop_result(vm)
+        }
+    }
+
+    spec.describe(fw, "lua table builder (#910)") {
+        spec.it_when(have_lua, "array, map and nested tables from callbacks", reason) callback {
+            rc = lua.vm_eval(vm, "local a = host.arr()\nassert(#a == 3 and a[1]=='k1' and a[3]=='k3', 'array')\nlocal m = host.map()\nassert(m.field=='f1' and m.count==7, 'map')\nlocal n = host.nested()\nassert(#n==2 and #n[1]==2 and n[1][2]=='b' and n[2][1]=='c', 'nested')\nreturn a[1] .. ',' .. m.field .. ',' .. n[1][1] .. n[2][1]")
+            spec.assert_eq(rc, 0, "every shape asserted Lua-side")
+            spec.assert_str_eq(lua.vm_result_str(vm), "k1,f1,ac", "and read back")
+            lua.vm_pop_result(vm)
+        }
+    }
+
+    _rc = spec.run_summary(fw)
+    if have_lua == 1 { lua.vm_free(vm) }
+    return _rc
+}
