@@ -1,0 +1,65 @@
+name: CI
+
+# ae comes from aeb's get.sh at the versions ci/versions.env pins (binary
+# release where there is one, else built from the tag). The in-process jobs
+# run on AE_PIN; the contained-child job needs std.guest, so AE_CHILD_PIN.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  linux:
+    name: Linux (in-process, Lua 5.4)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Lua
+        run: sudo apt-get update && sudo apt-get install -y liblua5.4-dev
+      - name: ae (AE_PIN)
+        run: |
+          . ci/versions.env
+          curl -fsSL "https://raw.githubusercontent.com/aether-lang-dev/aeb/$AEB_REF/get.sh" \
+            | AE_PIN="$AE_PIN" AEB_REF="$AEB_REF" sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - run: ae version
+      - name: Specs and containment rows
+        run: sh tests/run.sh
+
+  linux-child:
+    name: Linux (in-process and contained child, Lua 5.4)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Lua
+        run: sudo apt-get update && sudo apt-get install -y liblua5.4-dev
+      - name: ae (AE_CHILD_PIN)
+        run: |
+          . ci/versions.env
+          curl -fsSL "https://raw.githubusercontent.com/aether-lang-dev/aeb/$AEB_REF/get.sh" \
+            | AE_PIN="$AE_CHILD_PIN" AEB_REF="$AEB_REF" sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - run: ae version
+      - name: Specs and containment rows, the child required
+        run: GHL_REQUIRE_CHILD=1 sh tests/run.sh
+
+  macos:
+    name: macOS (in-process, Lua 5.5 and 5.4)
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Lua
+        run: brew install lua lua@5.4
+      - name: ae (AE_PIN)
+        run: |
+          . ci/versions.env
+          curl -fsSL "https://raw.githubusercontent.com/aether-lang-dev/aeb/$AEB_REF/get.sh" \
+            | AE_PIN="$AE_PIN" AEB_REF="$AEB_REF" sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - run: ae version
+      - name: Lua 5.5 (Homebrew's lua)
+        run: sh tests/run.sh
+      - name: Lua 5.4 (lua@5.4)
+        run: rm -rf build && LUA_VERSION=5.4 sh tests/run.sh

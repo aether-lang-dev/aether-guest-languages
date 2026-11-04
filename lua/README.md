@@ -1,66 +1,149 @@
-# contrib.host.lua: Embedded Lua
+# lua: embedded Lua
 
-`import contrib.host.lua` lets an Aether program embed Lua in-process:
-`lua.run_sandboxed(perms, "<source>")` evaluates Lua with
-permission-checked access controls.
+`import lua` lets an Aether program run Lua in its own process, or in a
+contained child. It is the bridge that was aether's `contrib.host.lua`,
+moved here ([PROVENANCE.md](PROVENANCE.md)): the same functions under the
+same names, `lua.run`, `lua.run_sandboxed`, `lua.vm_new` and the rest.
 
-## How it loads liblua
+| | In-process (`import lua`) | Contained child (`lua-worker`, `std.guest`) |
+|---|---|---|
+| Where Lua runs | in the Aether program | in a separate process, `lua/worker` |
+| What holds Lua's own `io`/`os` calls | `libaether_sandbox.so` in `LD_PRELOAD`, Linux only | Landlock and seccomp from the policy, plus the worker's own lockdown with no grants |
+| macOS, Windows | runs; nothing holds Lua's `io`/`os` calls | `guest.launch` refuses and starts nothing |
+| Host functions | `vm_register` callbacks, called directly | `guest.mount`; each call is a frame the host answers |
+| Needs | ae 0.875.0 | ae 0.877.0 (std.guest), Linux with Landlock |
 
-The bridge `dlopen`s liblua at the **deploy host's** runtime: there
-is no `-llua` on the link line. The produced binary works against
-whatever Lua minor version the deploy host has (5.3 or 5.4 supported).
+## Containment table
 
-Discovery order at first call to `lua.run` (strict two-step):
+What a Lua script gets when it tries each row of stunt's catalogue (aether
+`contrib/host/stunt`, at the ref in `../ci/versions.env`), done the Lua way
+([containment/checks.lua](containment/checks.lua)), under the policies of
+aether's `tests/integration/contrib_host_stunt` (`../tests/test_stunt_*.sh`).
+"Per policy" means granted where the policy grants it and refused where it
+does not, as stunt expects. Every cell is a test outcome
+(`../tests/run.sh`): checked on macOS arm64 (Lua 5.5.1 and 5.4.9) and on
+CachyOS x86_64, kernel 7.3 with Landlock (Lua 5.5.1 and 5.4.9), and in CI.
 
-1. `${AETHER_LUA_SONAME}` env var (orchestrator-supplied exact,
-   e.g. `liblua5.4.so.0`).
-2. `liblua.so` (unversioned symlink, when present).
+| Row | In-process, Linux (preload) | In-process, macOS | Contained child, Linux |
+|---|---|---|---|
+| `open-etc-passwd` (`io.open`) | refused | **not held**: reads it | refused |
+| `open-granted-file` (`io.open`) | per policy | **not held** | refused under every policy: the file comes through `read_file` |
+| `write-granted-file` (`io.open(.., "w")`) | per policy | **not held** | refused under every policy |
+| `getenv-home` (`os.getenv`) | per policy | **not held** | refused under every policy: the worker has no environment; `getenv` is a host function |
+| `exec-bin-sh` (`os.execute`) | **escapes**: `/bin/sh` runs with no exec grant | **not held** | per policy (seccomp) |
+| `dlopen-libm` (`package.loadlib`) | loads | loads | loads |
+| `dlopen-libc-by-name`, `dlopen-libc-by-path` | (child-only row) | (child-only row) | refused under every policy, `native=*` included |
+| `binding-read-etc-passwd`, `binding-read-granted-file`, `binding-getenv-home` (host functions) | per policy | per policy | per policy; a granted file goes down as a descriptor |
+| `callback-greet`, `callback-add` | work | work | work |
+| `callback-unregistered` | refused: a nil global, an error the script can catch | same | same |
+| `map-get`, `map-set` | work | work | work (the host's map) |
+| `map-overwrite-input` | refused (read back: still the host's value) | same | same |
+| `spin` (`while true do end`) | stopped by the instruction limit | same | cancelled at the deadline, from the worker's count hook |
+| `silent` (`debug.sethook()` then a loop) | (child-only row) | (child-only row) | killed: no answer to CANCEL within the grace period |
+| `oversize` (one 1 MiB `print`) | (child-only row) | (child-only row) | killed: the frame is refused |
+| `env-cached` | left out: Lua keeps no copy of the environment | | |
+| `connect-192.0.2.1`, `connect-ipv4-mapped` | left out: no sockets in Lua's standard library | | |
+| `fork` | left out: no fork in Lua's standard library | | |
+| `syscall-fn-openat`, `syscall-openat`, `syscall-socket` | left out: no `syscall()` in Lua's standard library | | |
+| `half-frame` | left out: a script cannot write part of a frame | | |
 
-If both fail, `lua.run*` returns -1 with a clear error naming the
-env var. **There is no hardcoded version fallback list**: the
-bridge stays distro-agnostic; the orchestrator owns the probe.
+What the table says:
 
-Lua doesn't have a standard sysconfig-style probe. The orchestrator
-can read `lua -e 'print(_VERSION)'` (gives `Lua 5.4`) and derive
-the soname (`liblua5.4.so.0` on Debian, `liblua-5.4.so` on Fedora).
+- **In-process is the easy default and is not containment on its own.**
+  On Linux the preload holds Lua's file and environment calls, but not
+  `os.execute` (or `io.popen`, which starts its shell the same way): glibc's
+  `system()` starts `/bin/sh` with `posix_spawn`, whose `clone` and `execve`
+  happen inside libc, where the preload's `fork` and `execve` wrappers never
+  see them. On macOS nothing holds them at all. The host functions
+  (`binding-*`), which check the grants themselves, hold everywhere.
+- **The contained child holds every row it runs**, on Linux, and is
+  stricter than the policy: the worker locks itself down with no grants
+  before the script starts, so a script reaches a granted file only through
+  the host (`read_file`, answered with a descriptor) and never gets a handle
+  on libc. Process start is the one row that follows the policy (seccomp
+  lets `execve` through only with an exec grant).
+- The tests hold these cells, including the gaps: an **escapes** or **not
+  held** row runs expecting the call to succeed, so the day the preload
+  holds `os.execute` that test fails and this table is brought up to date.
 
-## What `ae build` does for you automatically
-
-When your program has `import contrib.host.lua`, `ae build`:
-1. Links `libaether_host_lua.a` (the in-tree bridge) onto the
-   resulting binary automatically.
-2. Does NOT add any liblua link flags: the bridge dlopens liblua
-   at runtime.
-
-`ae build` errors with a clear actionable message if the bridge .a
-hasn't been built: build the image with
-`aether-build --with=lua --rebuild-image` (containerised) or
-`make contrib MODULES=lua && make install-contrib` (installed
-toolchain).
-
-## `aether.toml`: usually empty for lua
-
-```toml
-# nothing required for contrib.host.lua
-[[bin]]
-name = "myapp"
-path = "myapp.ae"
-```
-
-If the deploy host's Lua isn't discoverable via the default order,
-set `AETHER_LUA_SONAME` in the build environment:
-
-```sh
-AETHER_LUA_SONAME=liblua5.4.so.0 ae build myapp.ae
-```
-
-## Usage
+## Using it
 
 ```aether
-import contrib.host.lua
+import lua
 
 main() {
     lua.run("print('hello from lua')")
+}
+```
+
+The bridge's C (`aether_host_lua.c`) is compiled into the program that
+imports `lua` (`@source` in `module.ae`); there is no archive to build
+first and no `aether.toml` entry to add. liblua is not linked: the bridge
+`dlopen`s it at the first call, so a program built on one machine runs
+against whatever Lua 5.3, 5.4 or 5.5 the machine it runs on has.
+
+Where the bridge looks for liblua, in order:
+
+1. `${AETHER_LUA_SONAME}`: an exact soname or path (`liblua5.4.so.0` on
+   Debian and Ubuntu, `liblua.so.5.5` on Arch,
+   `/opt/homebrew/lib/liblua.dylib` on macOS);
+2. `liblua.so`, the unversioned name, where the system has one.
+
+There is no list of versions to try: the program that starts yours owns
+that choice. `../tests/lua_env.sh` is one way to make it.
+
+### Sandboxed, in-process
+
+```aether
+import lua
+import std.sandbox
+
+main() {
+    worker = sandbox.new("worker") { grant_env("HOME") }
+    lua.run_sandboxed(worker, "print(os.getenv('HOME'))")
+}
+```
+
+`run_sandboxed` pushes the grants as a level for the length of the call;
+std's own calls and any host function you give the VM are checked against
+them everywhere, and Lua's own `io`/`os` calls only when the program runs
+with `LD_PRELOAD=<ae's lib dir>/libaether_sandbox.so` (Linux). Read the
+table above before relying on it.
+
+### In a contained child
+
+`lua/worker/worker.ae` is a std.guest worker: build it once
+(`ae build lua/worker/worker.ae -o lua-worker`) and start it from a host
+with `guest.launch`. The worker takes the liblua soname as its one
+argument, since it is given no environment; it loads liblua before it
+locks itself down. In the script, `print` is `SAY`, and each function the
+host mounts is a Lua global of the same name whose call is a `CALL` the
+host answers (a granted file comes back as `{granted = true, text = ...}`).
+[containment/child_host.ae](containment/child_host.ae) is a complete host.
+
+```aether
+import std.guest
+import std.sandbox
+import std.list
+
+main() {
+    perms = sandbox.new("lua") {}
+    args = list.new()
+    list.add(args, "liblua5.4.so.0")
+    g, err = guest.launch(perms, "build/lua-worker", args, "lua", "")
+    if err != "" { println("not started: ${err}") return }   // macOS: refused
+    guest.mount(&g, "greet", 1, 1)
+    guest.start(&g, "print(greet('lua'))")
+    while true {
+        e = guest.next(&g)
+        if e.kind == "SAY" {
+            println(guest.printable(e.text))
+        } else if e.kind == "CALL" {
+            guest.answer(&g, guest.json_string("hello"))
+        } else {
+            break
+        }
+    }
 }
 ```
 
@@ -72,13 +155,13 @@ that uses Lua as a first-class, callback-driven extension surface (Redis-style
 callbacks the script can call, injects globals, and returns a **typed** result.
 That tier:
 
-```aether
-import contrib.host.lua
+```aether,fragment
+import lua
 
 // A host callback: reads typed args (1-based), pushes a typed result,
 // returns the number of values pushed (the Lua C-function rule). It must be
 // `@c_callback` so its symbol is addressable as a `ptr` value (see
-// docs/c-interop.md "Exporting an Aether Function as a C Callback").
+// aether's docs/c-interop.md "Exporting an Aether Function as a C Callback").
 @c_callback
 redis_call(vm: ptr) -> int {
     cmd = lua.arg_str(vm, 1)
@@ -96,7 +179,7 @@ main() {
 
     status = lua.vm_eval(vm, source)                    // 0 ok, -1 error
     t = lua.vm_result_type(vm)                          // LUA_TINT/TSTR/TERR/…
-    if t == LUA_TSTR { reply = lua.vm_result_str(vm) }
+    if t == LUA_TSTR { answer = lua.vm_result_str(vm) }
     else { if t == LUA_TINT { n = lua.vm_result_int(vm) } }
     lua.vm_pop_result(vm)
     lua.vm_free(vm)
@@ -140,7 +223,7 @@ it, and nesting is just another `table_begin` closed with `table_end_seti` /
 | `lua.table_end_setfield(vm, key)` | close the current child table into its parent at `[key]` |
 | `lua.table_finish(vm)` | finish the outermost table (it stays on the stack as the return) |
 
-```aether
+```aether,fragment
 // redis.call('KEYS', pattern) -> {"k1","k2","k3"}
 @c_callback
 redis_keys(vm: ptr) -> int {
@@ -174,69 +257,43 @@ map model: **host-callbacks-with-typed-marshalling**, in both directions.
 ## Implementation notes
 
 - All Lua C-API access goes through a `dlsym` function-pointer
-  table: see `aether_host_lua.c`. The bridge .a has NO unresolved
-  Lua symbols (`nm -u` confirms).
+  table: see `aether_host_lua.c`. The bridge has no unresolved Lua
+  symbols, and needs none of Lua's headers: the types it uses are in
+  `lua_abi.h`.
 - Lua's headers `#define` many macros that wrap real functions
   (e.g. `luaL_dostring(L,s)` = `luaL_loadstring(L,s) || lua_pcall(…)`,
   `lua_pop(L,n)` = `lua_settop(L, -(n)-1)`). The bridge re-implements
   these as inline static functions over the dlopen table, only the
   underlying real functions need dlsym entries.
 - Symbol versioning (`lua_close@@LUA_5.4`): dlsym strips version
-  tags, so `dlsym(h, "lua_close")` works against 5.3 or 5.4
+  tags, so `dlsym(h, "lua_close")` works against 5.3, 5.4 or 5.5
   indifferently.
+- Lua 5.5 exports `luaL_openselectedlibs` and no `luaL_openlibs`, and
+  moved `LUA_REGISTRYINDEX` (which a host callback's upvalue is read
+  relative to). Which open function the library exports tells the
+  bridge which of the two it has.
+- Known, kept from aether's copy: the instruction limit counts hook
+  calls, not instructions. `vm_set_instruction_limit(vm, budget, every)`
+  stops after `budget` calls of a hook that fires every `every`
+  instructions, so after about `budget * every` instructions.
+- `aether_map_put` returns nothing to Lua, so a script cannot see that a
+  write to a frozen input was refused (the containment table's
+  `map-overwrite-input` row reads the key back).
 
-## Testing
+## Tests
 
-The bidirectional API (#904) has a dedicated end-to-end test:
+- [`test_host_lua.ae`](test_host_lua.ae): the fire-and-forget surface,
+  through `import lua`: a script evaluates, the interpreter really runs
+  (state persists between runs), runtime and syntax errors are failures,
+  `init` is idempotent. Moved from aether unchanged but for the import.
+- [`test_host_lua_vm.ae`](test_host_lua_vm.ae): the two-way tier (#904)
+  and the table builder (#910), with `@c_callback` host functions:
+  aether's `host_lua_bidirectional` and `host_lua_table_builder` C
+  harnesses as an Aether spec.
+- `../tests/test_stunt_*.sh` and `../tests/test_catalogue.sh`: the
+  containment table above.
 
-- [`../../../tests/integration/host_lua_bidirectional/`](../../../tests/integration/host_lua_bidirectional/):
-  a C harness over the tier-2 surface: registers two host callbacks
-  (`host.double`, `host.ping`), injects an int global + a `KEYS` string-array,
-  runs a script that calls the callbacks and reads the globals, and asserts the
-  **typed** results (int `142`, string `hello k2`) plus that the
-  instruction-limit guard aborts an infinite loop. SKIPs when no matching
-  liblua headers + runtime soname are found.
-- [`../../../tests/integration/host_lua_table_builder/`](../../../tests/integration/host_lua_table_builder/):
-  the #910 table builder: callbacks returning a multi-element array
-  (`{"k1","k2","k3"}`), a string-keyed map (`{field=…, count=…}`), and a nested
-  array-of-arrays (`{{"a","b"},{"c"}}`), with a Lua script asserting each shape.
-  Same SKIP gate.
-
-The fire-and-forget surface is covered by two cross-cutting tests:
-
-- [`../../../tests/sandbox/test_shared_map_all.sh`](../../../tests/sandbox/test_shared_map_all.sh):
-  the cross-host shared-map round-trip. The Lua case seeds a shared
-  map with `name=Alice` / `age=30`, runs Lua under
-  `lua_run_sandboxed_with_map`, and asserts the script reads both keys
-  (and gets `nil` for an absent `secret`), writes back
-  `greeting=hello Alice`, and that a tamper attempt
-  (`aether_map_put('name', 'TAMPERED')`) is rejected once the input
-  token is revoked: `name` stays `Alice`. SKIPs when no liblua /
-  `lua5.x` dev package is detected.
-- [`../../../tests/scripts/contrib_build.sh`](../../../tests/scripts/contrib_build.sh):
-  the `make contrib` smoke test. Confirms the `host_lua` bridge
-  archive (`build/contrib/libaether_host_lua.a`) builds from
-  `aether_host_lua.c`. SKIPs the module when `pkg-config` finds no
-  `lua5.4` / `lua5.3` / `lua` dev kit (hard-fails only in explicit
-  `MODULES=lua` mode).
-
-## Testing: co-located embedding spec
-
-[`test_host_lua.ae`](test_host_lua.ae) sits next to this bridge and drives it
-through `import contrib.host.lua`: the path a real user takes, so it covers
-module.ae's declarations and the contrib-link plumbing as well as the C shim.
-
-It asserts that a script evaluates; that the interpreter **genuinely runs**
-(Lua computes a value and a second eval asserts on it Lua-side, so a
-bridge that loaded `liblua` but never evaluated would not pass); that runtime
-errors *and* syntax errors propagate as failures rather than being swallowed;
-and that `init` is idempotent while the VM is live.
-
-Run by `make contrib-host-check`'s `[3/3]` phase, which resolves this
-runtime's soname first. Without Lua installed the specs report **skipped**
-(#1610's `it_when`) rather than failing: an absent runtime is a provisioning
-gap, not a code defect.
-
-Assertions are on **return codes and Lua-side state, never on the bridge's
-stdout**: the embedded interpreter buffers its own output and it is not
-reliably flushed when an Aether program exits.
+Both specs skip when liblua cannot be loaded (on GitHub Actions a skip is a
+failure). They assert on return codes and Lua-side state, never on the
+interpreter's stdout, which is not reliably flushed when an Aether program
+exits. `../tests/run.sh` runs everything.
