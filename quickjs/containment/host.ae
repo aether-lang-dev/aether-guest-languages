@@ -1,0 +1,203 @@
+// The host the containment tests drive (tests/test_stunt_*.sh). Usage:
+//
+//   host inproc <policy> <check> <expectation>
+//
+// Runs one row of stunt's catalogue (aether contrib/host/stunt), written in
+// JavaScript (checks.js beside this, or $QUICKJS_CHECKS), in the QuickJS
+// bridge in this process, under the policy's grants, and prints stunt's line
+// for it:
+//
+//   <check>: <outcome> (<detail>) - expected <expectation>: PASS|FAIL
+//
+// exiting 0 when it matched. QuickJS has no I/O of its own (quickjs-libc is
+// not compiled in), so there is nothing for libaether_sandbox.so (LD_PRELOAD)
+// to hold from the interpreter itself, and the bridge gives a script no
+// binding that reaches the system. What a script reaches is the host
+// functions below, which check the grants themselves, as stunt's host does.
+//
+// Three entry points carry a row:
+//   - quickjs.run_sandboxed_with_map, the bridge's own sandboxed run, for
+//     the callback-unregistered and shared-map rows. The line comes back
+//     through the map, as an output the script writes.
+//   - an engine runtime (contrib.quickjs) with host functions registered,
+//     inside sandbox.enforce, for the rows that call them (binding-*,
+//     callback-greet, callback-add).
+//   - quickjs.run_sandboxed for spin, which only the bridge's time limit
+//     (5 s per run) can end.
+//
+// <policy> is "-" for no grants, or kind=pattern,... with kinds fs_read,
+// fs_write, exec, env, tcp (host:port), native, fork. "<outer>|<inner>"
+// runs the check inside sandbox.enforce(<outer>), so the bridge's level
+// nests in the block's. The policy grammar is in policy/module.ae; the
+// contained child's host is child_host.ae.
+
+@source("host_support.c")
+
+import quickjs
+import contrib.quickjs as engine
+import policy
+import std.sandbox
+import std.os
+import std.fs
+import std.list
+import std.string
+import std.time
+
+extern exit(code: int)
+extern aether_sandbox_depth() -> int
+// 1 when every level in force grants it (runtime/aether_sandbox.h).
+extern aether_sandbox_check_slow(category: string, resource: string) -> int
+extern ghl_map_new() -> long
+extern ghl_map_put(key: string, value: string)
+extern ghl_map_get(key: string) -> string
+extern ghl_stdin_null()
+
+// ---- host functions the guest calls (an engine runtime) ---------------------
+//
+// A refusal or a failure is an Error thrown into the script, whose message is
+// what the script's check reads: "refused: ..." for the grants saying no.
+
+fn register(q: ptr) {
+    rf = engine.function(q, "read_file", 1, |q2: ptr, this_h: int, args: int| {
+        path = engine.arg_string(q2, args, 0)
+        if aether_sandbox_check_slow("fs_read", path) == 0 {
+            return engine.throw_error(q2, "Error", "refused: fs_read ${path}")
+        }
+        text, err = fs.read(path)
+        if err != "" { return engine.throw_error(q2, "Error", err) }
+        return engine.new_string(q2, text)
+    })
+    engine.set_global(q, "read_file", rf)
+    engine.release(q, rf)
+
+    ge = engine.function(q, "getenv", 1, |q2: ptr, this_h: int, args: int| {
+        name = engine.arg_string(q2, args, 0)
+        if aether_sandbox_check_slow("env", name) == 0 {
+            return engine.throw_error(q2, "Error", "refused: env ${name}")
+        }
+        v = os.getenv(name)
+        if v == "" { return engine.throw_error(q2, "Error", "${name} is unset") }
+        return engine.new_string(q2, v)
+    })
+    engine.set_global(q, "getenv", ge)
+    engine.release(q, ge)
+
+    gr = engine.function(q, "greet", 1, |q2: ptr, this_h: int, args: int| {
+        return engine.new_string(q2, "hello, ${engine.arg_string(q2, args, 0)}")
+    })
+    engine.set_global(q, "greet", gr)
+    engine.release(q, gr)
+
+    ad = engine.function(q, "add", 2, |q2: ptr, this_h: int, args: int| {
+        return engine.new_int(q2, engine.arg_int(q2, args, 0) + engine.arg_int(q2, args, 1))
+    })
+    engine.set_global(q, "add", ad)
+    engine.release(q, ad)
+}
+
+// ---- the rows ---------------------------------------------------------------
+
+// Which entry point carries a row.
+fn uses_engine(check: string) -> int {
+    if string.starts_with(check, "binding-") == 1 { return 1 }
+    if check == "callback-greet" || check == "callback-add" { return 1 }
+    return 0
+}
+
+fn run_engine(g: sandbox.Grants, check: string, expect: string, source: string) -> string {
+    q = engine.runtime(65536, 0)
+    if q == null {
+        println("host: cannot make a QuickJS runtime")
+        exit(1)
+    }
+    engine.set_time_limit(q, 5000)
+    register(q)
+    box = list.new()
+    sandbox.enforce(g) callback {
+        v, e = engine.eval(q, "${source}\ncheck_line(\"${check}\", \"${expect}\")", "checks.js")
+        if e != "" {
+            list.add(box, "${check}: the script failed (${e}) - expected ${expect}: FAIL")
+        } else {
+            list.add(box, engine.to_string(q, v))
+            engine.release(q, v)
+        }
+    }
+    out, _e = list.get_string(box, 0)
+    engine.dispose(q)
+    return out
+}
+
+fn run_bridge(g: sandbox.Grants, check: string, expect: string, source: string) -> string {
+    token = ghl_map_new()
+    ghl_map_put("input", "stunt-in")
+    rc = quickjs.run_sandboxed_with_map(g, "${source}\naether_map_put(\"line\", check_line(\"${check}\", \"${expect}\"));", token)
+    line = ghl_map_get("line")
+    if rc != 0 || line == "" {
+        return "${check}: the script failed (run_sandboxed_with_map returned ${rc}) - expected ${expect}: FAIL"
+    }
+    return line
+}
+
+// spin: a loop only the bridge's time limit can end (5 s per run, set in
+// the bridge). It must end with an error, and not at once.
+fn run_spin(g: sandbox.Grants) -> string {
+    t0 = time.now_ms()
+    rc = quickjs.run_sandboxed(g, "var n = 0; for (;;) { n++; }")
+    ms = time.now_ms() - t0
+    if rc != 0 && ms >= 4000 && ms < 30000 {
+        return "spin: stopped at the time limit (rc ${rc} after ${ms} ms) - host-checked: PASS"
+    }
+    return "spin: rc ${rc} after ${ms} ms - host-checked: FAIL"
+}
+
+fn run_row(g: sandbox.Grants, check: string, expect: string, source: string) -> string {
+    if check == "spin" { return run_spin(g) }
+    if uses_engine(check) == 1 { return run_engine(g, check, expect, source) }
+    return run_bridge(g, check, expect, source)
+}
+
+fn finish(line: string, before: int, check: string) {
+    after = aether_sandbox_depth()
+    if after != before {
+        println("host: ${check}: the bridge left ${after - before} level(s) in force")
+        exit(1)
+    }
+    println(line)
+    exit(policy.verdict(line))
+}
+
+fn run_inproc(spec: string, check: string, expect: string) {
+    source = "${policy.facts()}${policy.checks_source()}"
+    bar = string.index_of(spec, "|")
+    if bar < 0 {
+        before = aether_sandbox_depth()
+        finish(run_row(policy.grants(spec), check, expect, source), before, check)
+        return
+    }
+    outer = policy.grants(string.substring(spec, 0, bar))
+    inner = policy.grants(string.substring(spec, bar + 1, string.length(spec)))
+    sandbox.enforce(outer) callback {
+        if aether_sandbox_depth() != 1 {
+            println("host: the enforce block is not one level deep")
+            exit(1)
+        }
+        before = aether_sandbox_depth()
+        finish(run_row(inner, check, expect, source), before, check)
+    }
+}
+
+
+main() {
+    if os.args_count() != 5 {
+        println("usage: host inproc <policy> <check> <expectation>")
+        exit(2)
+    }
+    mode = os.args_get(1)
+    if mode == "inproc" {
+        ghl_stdin_null()
+        run_inproc(os.args_get(2), os.args_get(3), os.args_get(4))
+    } else {
+        println("host: unknown mode ${mode}")
+        exit(2)
+    }
+}

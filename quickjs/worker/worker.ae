@@ -1,0 +1,115 @@
+// quickjs-worker: QuickJS in a contained child, the guest's side of std.guest.
+//
+// A host starts this with guest.launch (sandbox.spawn_socket: Landlock and
+// seccomp on Linux; refused on macOS and Windows, where nothing starts) and
+// sends it the functions it may call (MOUNT) and a JavaScript script
+// (SCRIPT). The worker runs the script in a QuickJS runtime (aether's
+// contrib.quickjs, compiled into this program) inside std.guest.child's
+// lockdown:
+//
+//   print(...), console.log(...)
+//                       SAY, the arguments String()'d and space-joined
+//   NAME(...)           for each mounted NAME: CALL NAME [args as JSON],
+//                       the host's answer decoded back (JSON.parse; a granted
+//                       file is {granted: true, text: ...}); a FAIL throws an
+//                       Error with the host's message; a CANCEL throws
+//                       "cancelled by host: ..."
+//   the end             DONE 0, or ERROR and the error's text
+//
+// QuickJS has no standard library on disk, no I/O of its own and (quickjs-libc
+// not being compiled in) no module loader, and the engine is part of this
+// program: there is nothing to load, so nothing is opened before the lockdown
+// and the worker takes no arguments.
+//
+// A CANCEL is looked for in every call's reply. There is no hook to look for
+// it from inside a loop: contrib.quickjs offers a time limit per entry but
+// no interrupt callback, so a script that loops without calling the host
+// never sees one, and the host kills it after its grace period. The
+// containment is the host's, not the worker's.
+//
+// Usage (by a host): quickjs-worker
+
+import contrib.quickjs as qjs
+import std.guest.child
+import std.string
+
+extern exit(code: int)
+
+// The arguments of a host function, space-joined, as print says them.
+fn say_args(q: ptr, args: int) -> string {
+    out = ""
+    n = qjs.arg_count(q, args)
+    i = 0
+    while i < n {
+        if i > 0 { out = "${out} " }
+        out = "${out}${qjs.arg_string(q, args, i)}"
+        i = i + 1
+    }
+    return out
+}
+
+// Mount one host function as a JavaScript global.
+fn mount(q: ptr, h: *child.Host, name: string) {
+    f = qjs.function(q, name, 0, |q2: ptr, this_h: int, args: int| {
+        r = child.call_host(h, name, qjs.to_json(q2, args))
+        if r.kind == "VALUE" {
+            pv, pe = qjs.parse_json(q2, r.text)
+            if pe != "" { return qjs.throw_error(q2, "Error", pe) }
+            return pv
+        }
+        if r.kind == "CANCEL" {
+            return qjs.throw_error(q2, "Error", "cancelled by host: ${r.text}")
+        }
+        return qjs.throw_error(q2, "Error", r.text)
+    })
+    qjs.set_global(q, name, f)
+    qjs.release(q, f)
+}
+
+fn mount_print(q: ptr, h: *child.Host) {
+    f = qjs.function(q, "print", 0, |q2: ptr, this_h: int, args: int| {
+        child.say(h, say_args(q2, args))
+        return 0
+    })
+    qjs.set_global(q, "print", f)
+    c = qjs.new_object(q)
+    _r = qjs.set(q, c, "log", f)
+    qjs.set_global(q, "console", c)
+    qjs.release(q, c)
+    qjs.release(q, f)
+}
+
+main() {
+    h, err = child.open("quickjs-worker")
+    if err != "" {
+        println(err)
+        exit(2)
+    }
+    if child.read_script(h) != "" { exit(1) }
+    // 64 MiB of heap, the default stack. No time limit: the host's deadline
+    // and grace period end a script.
+    q = qjs.runtime(65536, 0)
+    if q == null {
+        child.error(h, "quickjs-worker: cannot make a QuickJS runtime")
+        exit(1)
+    }
+    mount_print(q, h)
+    n = child.mount_count(h)
+    i = 0
+    while i < n {
+        name, _min, _max = child.mount_at(h, i)
+        mount(q, h, name)
+        i = i + 1
+    }
+    child.run(h) callback {
+        v, e = qjs.eval(q, h.source, "script.js")
+        if e != "" {
+            child.error(h, e)
+        } else {
+            qjs.release(q, v)
+            _n, je = qjs.run_jobs(q)
+            if je != "" { child.error(h, je) } else { child.done(h, 0) }
+        }
+    }
+    exit(0)
+}
