@@ -3,14 +3,16 @@
 # only AETHER_PERL_SONAME and then libperl.so (perl/README.md); this is the
 # orchestrator's probe it leaves to the caller.
 #
-# It asks a perl for its own library: Config's archlibexp and libperl,
-# "<archlibexp>/CORE/<libperl>" (libperl.so.5.40 under
-# /usr/lib/x86_64-linux-gnu/perl/5.40/CORE on Debian and Ubuntu, libperl.so
-# under /usr/lib/perl5/<ver>/core_perl/CORE on Arch, libperl.dylib under
-# /System/Library/Perl/<ver>/darwin-thread-multi-2level/CORE on macOS).
-# PERL names the interpreter to ask (default: perl on PATH; on macOS,
-# Homebrew's before /usr/bin/perl). A perl built without a shared libperl
-# (useshrplib off) has none to load: that is a failure here.
+# It asks a perl for its own library: Config's libperl (the file name) found
+# in the directories Config says it lives in: archlibexp/CORE first (macOS,
+# Arch, Homebrew, a perl built from source: libperl.dylib under
+# /System/Library/Perl/<ver>/darwin-thread-multi-2level/CORE, libperl.so under
+# /usr/lib/perl5/<ver>/core_perl/CORE), then libpth (Debian and Ubuntu keep
+# libperl.so.5.40 in /usr/lib/<triple>, from the libperl5.40 package, and only
+# libperl-dev adds the CORE directory). PERL names the interpreter to ask
+# (default: perl on PATH; on macOS, Homebrew's before /usr/bin/perl). A perl
+# built without a shared libperl (useshrplib off) has none to load: that is a
+# failure here.
 perl_interp() {
     pl="${PERL:-}"
     if [ -z "$pl" ] && [ "$(uname -s 2>/dev/null)" = Darwin ]; then
@@ -26,7 +28,7 @@ perl_interp() {
 perl_soname() {
     perl_interp || return 1
     [ -n "${AETHER_PERL_SONAME:-}" ] && return 0
-    so="$("$pl" -MConfig -e 'print "$Config{archlibexp}/CORE/$Config{libperl}"' 2>/dev/null)"
+    so="$("$pl" -MConfig -e 'for my $d ("$Config{archlibexp}/CORE", split(" ", $Config{libpth})) { my $f = "$d/$Config{libperl}"; if (-f $f) { print $f; last } }' 2>/dev/null)"
     [ -f "$so" ] || return 1
     export AETHER_PERL_SONAME="$so"
     return 0
