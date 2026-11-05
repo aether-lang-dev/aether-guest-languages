@@ -14,16 +14,15 @@ for you. Every way stays supported; they differ in how much they contain
 [perl/README.md](perl/README.md#four-ways-to-run-perl-from-aether),
 [ruby/README.md](ruby/README.md#four-ways-to-run-ruby-from-aether),
 [tinygo/README.md](tinygo/README.md#four-ways-to-run-go-from-aether),
-[go/README.md](go/README.md#four-ways-to-run-go-from-aether) and
-[java/README.md](java/README.md#four-ways-to-run-java-from-aether)
-each show all four, with examples; Go and Java as child processes are never in your process, so their
-first three ways are a child process with less and more around it; and a JVM does not start inside
-ways 2 to 4 on Linux today, which java/README.md explains):
-[factor/README.md](factor/README.md#four-ways-to-run-factor-from-aether)
-each show all four, with examples; Go as a child process is never in your process, so its
+[go/README.md](go/README.md#four-ways-to-run-go-from-aether),
+[java/README.md](java/README.md#four-ways-to-run-java-from-aether),
+[factor/README.md](factor/README.md#four-ways-to-run-factor-from-aether) and
 [racket/README.md](racket/README.md#four-ways-to-run-racket-from-aether)
-each show all four, with examples (Racket's fourth does not work, and its README says why); Go as a child process is never in your process, so its
-first three ways are a child process with less and more around it):
+each show all four, with examples. Go and Java as child processes are never
+in your process, so their first three ways are a child process with less and
+more around it. Three fourths do not work on Linux today, and each README
+says why: a JVM, Factor's VM and Racket's Chez Scheme all map executable
+memory, which the contained child's preload refuses):
 
 1. **Embed.** The interpreter is loaded into the Aether program and called
    directly (`import lua`, then `lua.run(...)`, the script often a heredoc,
@@ -77,9 +76,7 @@ the tests.
 ## Layout
 
 ```
-aether.toml            the package: exports every language directory (modules = "lua, python, duktape, js, tcl, perl, ruby, quickjs, tinygo, go, java")
-aether.toml            the package: exports every language directory (modules = "lua, python, duktape, js, tcl, perl, ruby, quickjs, tinygo, go, factor")
-aether.toml            the package: exports every language directory (modules = "lua, python, duktape, js, tcl, perl, ruby, quickjs, tinygo, go, racket, rhombus")
+aether.toml            the package: exports every language directory (modules = "lua, python, duktape, js, tcl, perl, ruby, quickjs, tinygo, go, java, factor, racket, rhombus")
 ci/versions.env        toolchain pins (AE_PIN, AE_CHILD_PIN, AE_SPAWN_PIN, AEB_REF, AETHER_STUNT_REF)
 lua/
   module.ae            import lua: the bridge's API
@@ -277,9 +274,8 @@ names the embed-api fork's libfactor (Factor's makefile calls the shared
 engine `libfactor.so`, or on Linux `libfactor.a`, an ELF shared object that
 `dlopen` takes by path) and `AETHER_FACTOR_IMAGE` the `factor.image`
 bootstrapped for it, which the VM needs to start; a distribution's Factor has
-no `factor_embed_eval` and is refused at load (factor/README.md).
-`tests/<lang>_env.sh` is one way to find each. No language's dev package is needed to build. QuickJS is
-(for example `/usr/lib/libruby.so.3.4.12`), and `AETHER_RACKET_SONAME`
+no `factor_embed_eval` and is refused at load (factor/README.md). Racket
+takes `AETHER_RACKET_SONAME`
 (`Racket.framework/Versions/9.3_CS/Racket` on macOS; on Linux a
 `libracketcs.so` you make from the distribution's `libracketcs.a`, which
 Racket CS does not ship as a shared library) with `AETHER_RACKET_BOOT_DIR`,
@@ -506,6 +502,8 @@ library makes its system calls without libc, so the preload holds only what
 it does through cgo, and aether's `sandbox.enforce` levels are per thread
 while Go has threads of its own; only the contained child's kernel layer
 holds a Go library (tinygo/README.md, "Four ways").
+
+The Go child-process bridge was copied from aether at `2609ec841`
 (go/PROVENANCE.md), and moves the same way:
 
 ```diff
@@ -539,6 +537,7 @@ the thing to know: a JVM does not start under `libaether_sandbox.so`, which
 refuses it executable memory, so on Linux neither `java.run_sandboxed` nor the
 contained child can run one today (java/README.md, "The wall that stops a
 JVM"). The agent and the bridge's other calls are unaffected.
+
 The Factor bridge was copied from aether at `2609ec841`
 (factor/PROVENANCE.md), and moves the same way, the import line and the
 dependency (it was never in `CONTRIB_HOST_LANGS`: it needed the fork, and
@@ -554,6 +553,7 @@ and place by hand; `run_sandboxed` and `run_sandboxed_with_map` now push the
 grants (aether's accepted `perms` and ignored them), after starting the VM, so
 under the preload they bind Factor's own libc calls; and there is a contained
 child (factor/README.md says why it cannot start yet).
+
 The Racket and Rhombus bridges were copied from aether at `origin/main` of
 2026-11-05 (racket/PROVENANCE.md), and move the same way, the import line and
 the dependency:
