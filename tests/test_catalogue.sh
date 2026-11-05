@@ -1,7 +1,7 @@
 #!/bin/sh
 # Every row of stunt's catalogue is accounted for by name: named in one of the
-# test_stunt_*.sh lists beside this, or left out in stunt_lib.sh's left_out.
-# A row stunt gains is a failure here until the language's lists and its
+# test_stunt_*.sh lists beside this, or left out in <lang>/containment/lang.sh.
+# A row stunt gains is a failure here until each language's lists and its
 # README table say what it does with it.
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 STUNT_TEST=catalogue

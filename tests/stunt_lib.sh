@@ -21,7 +21,14 @@
 #           started by std.guest's guest.launch (sandbox.spawn_socket:
 #           Landlock and seccomp, and the preload), Linux only.
 #
-# A row the language cannot express is LEFT OUT by name below, with why.
+# What differs between languages is in <lang>/containment/lang.sh: how to
+# find the runtime, where the checks and the worker are, and the rows that
+# differ from stunt's expectation, by name and with why: left out (the
+# language cannot express it), escapes or not held in-process, stricter in
+# the child.
+#
+# Every outcome is also appended to build/parity-<lang>.tsv, from which
+# tests/parity.sh renders and checks the README's "Stunt parity" table.
 #
 # Paths in a policy may use $WORK, the directory the checks run in, which
 # holds stunt-fixture.txt.
@@ -45,8 +52,8 @@ case "$(uname -s 2>/dev/null)" in
     *) PLAT=other ;;
 esac
 command -v ae > /dev/null 2>&1 || die "ae is not on PATH"
-. "$SCRIPT_DIR/lua_env.sh"
-lua_soname || skip_all "no Lua runtime found (set AETHER_LUA_SONAME)"
+. "$ROOT/$LANG_NAME/containment/lang.sh"
+lang_runtime || skip_all "$LANG_NO_RUNTIME"
 
 BUILD="$ROOT/build"
 mkdir -p "$BUILD"
@@ -105,7 +112,7 @@ build() {   # build <source .ae> <binary>
 }
 HOST="$BUILD/$LANG_NAME-host"
 build "$LANG_NAME/containment/host.ae" "$HOST"
-export LUA_CHECKS="$HOST_SRC/checks.lua"
+eval "export $LANG_CHECKS_ENV=\"\$HOST_SRC/\$LANG_CHECKS_FILE\""
 case "$PLAT" in
     macos) export GHL_LIBM=/usr/lib/libm.dylib GHL_LIBC_NAME=libSystem.B.dylib GHL_LIBC_PATH=/usr/lib/libSystem.B.dylib ;;
     freebsd) export GHL_LIBM=libm.so.5 GHL_LIBC_NAME=libc.so.7 ;;
@@ -147,7 +154,7 @@ else
     WORKER="$BUILD/$LANG_NAME-worker"
     build "$LANG_NAME/containment/child_host.ae" "$CHILD_HOST"
     build "$LANG_NAME/worker/worker.ae" "$WORKER"
-    export LUA_WORKER="$WORKER"
+    eval "export $LANG_WORKER_ENV=\"\$WORKER\""
     (cd "$WORK" && "$CHILD_HOST" - callback-greet succeed) > "$TMP/probe.txt" 2>&1
     if grep -q "callback-greet: succeeded" "$TMP/probe.txt"; then
         CHILD=1
@@ -166,59 +173,24 @@ fi
 
 # ---- what applies -----------------------------------------------------------
 
-# Rows Lua cannot express, by name. Each prints LEFT OUT and why.
-left_out() {
-    case "$1" in
-        env-cached) echo "Lua keeps no copy of the environment: os.getenv is libc's getenv (getenv-home)" ;;
-        connect-*) echo "Lua's standard library has no sockets" ;;
-        fork) echo "Lua's standard library has no fork" ;;
-        syscall-*) echo "Lua's standard library has no syscall()" ;;
-        half-frame) echo "a Lua script cannot write part of a frame: the worker frames what it says" ;;
-        *) return 1 ;;
-    esac
-}
-
-# The rows that go to libc from the language's own runtime: in-process,
-# only the preload holds them.
-libc_row() {
-    case "$1" in
-        open-*|write-*|getenv-home|exec-bin-sh|dlopen-*) return 0 ;;
-        *) return 1 ;;
-    esac
-}
-
-# Rows the preload is there to hold but does not, for this language and this
-# ae: run expecting `succeed`, so the day the preload holds them this goes red
-# and the table in <lang>/README.md is brought up to date. exec-bin-sh is held
-# from AE_SPAWN_PIN on (aether #3580).
-escapes_preload() {
-    case "$1" in
-        exec-bin-sh)
-            ver_ge "$ae_ver" "$AE_SPAWN_PIN" && return 1
-            echo "ae $ae_ver predates $AE_SPAWN_PIN: os.execute is system(), and glibc starts /bin/sh with posix_spawn, a clone and an execve inside libc that this preload's execve and fork do not see" ;;
-        *) return 1 ;;
-    esac
-}
-
-# Rows the contained child refuses where the policy would allow them: the
-# std.guest worker locks itself down with no grants and is given no
-# environment, so a granted file reaches the script only as a descriptor
-# (binding-read-granted-file), a variable only as a host function's answer
-# (binding-getenv-home), and libc never as a handle. Run expecting `refused`.
-child_stricter() {
-    case "$1" in
-        open-granted-file|write-granted-file) echo "the worker's own lockdown: a granted file comes as a descriptor, through read_file" ;;
-        getenv-home) echo "guest.launch gives the worker no environment: a variable comes through getenv" ;;
-        dlopen-libc-*) echo "the worker's own lockdown has no native grant: the preload refuses it a handle on libc whatever the policy" ;;
-        exec-bin-sh)
-            ver_ge "$ae_ver" "$AE_SPAWN_PIN" || return 1
-            echo "the worker's own lockdown has no exec or fork grant, and from ae $AE_SPAWN_PIN the preload holds system() to them" ;;
-        *) return 1 ;;
-    esac
-}
+# left_out, libc_row, escapes_preload and child_stricter are the language's
+# (lang.sh, sourced above).
 
 POLICY="-"
 policy() { POLICY="$1"; }
+
+# ---- what the README's Stunt parity table is made from ----------------------
+
+# One line per outcome: test, column, ae side of AE_SPAWN_PIN, row, kind.
+# The columns are the ways of lua/README.md's "Four ways": 2 the sandbox
+# block with no preload, 3 the same under LD_PRELOAD, 4 the contained child.
+PARITY="$BUILD/parity-$LANG_NAME.tsv"
+if ver_ge "$ae_ver" "$AE_SPAWN_PIN"; then SIDE=from; else SIDE=before; fi
+inproc_column() { if [ -n "$PRELOAD" ]; then echo 3; else echo 2; fi; }
+record() {   # record <mode> <check> <kind>
+    case "$1" in inproc) col="$(inproc_column)" ;; *) col=4 ;; esac
+    printf '%s\t%s\t%s\t%s\t%s\n' "${STUNT_TEST:-stunt}" "$col" "$SIDE" "$2" "$3" >> "$PARITY"
+}
 
 RAN=0
 NOT_HELD=0
@@ -242,6 +214,7 @@ run_one() {   # run_one <label> <mode> <expectation-to-run> <check>
         exit 1
     fi
     printf '  [%s] %-6s %s\n' "$1" "$2" "$(tail -1 "$out")"
+    record "$2" "$4" "$1"
     rm -f "$WORK/stunt-written.txt"
 }
 
@@ -253,6 +226,12 @@ stunt() {
     if why="$(left_out "$check")"; then
         printf '  [LEFT OUT] %s: %s\n' "$check" "$why"
         LEFT=$((LEFT + 1))
+        # Left out in every mode stunt runs it in that runs here.
+        case "$modes" in *in-process*) record inproc "$check" "LEFT OUT" ;; esac
+        case "$POLICY" in *"|"*) return ;; esac
+        if [ "$CHILD" = 1 ]; then
+            case "$modes" in *child*) record child "$check" "LEFT OUT" ;; esac
+        fi
         return
     fi
     case "$modes" in *in-process*) stunt_inproc "$check" "$expect" ;; esac
