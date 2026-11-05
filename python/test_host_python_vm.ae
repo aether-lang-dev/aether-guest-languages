@@ -1,0 +1,424 @@
+// The bridge's two-way tier (#904) and its shared-map context, through
+// `import python` as a program uses them. In aether these were C harnesses
+// (tests/integration/host_python_bidirectional and host_python_map_context);
+// here the callbacks are Aether @c_callback functions, so module.ae's
+// externs and the @source build are covered too. The same cases and the
+// same assertions; test_support.c holds what Aether cannot say directly
+// (maps by token, two threads, the resident size).
+//
+// Skips, as test_host_python.ae does, when libpython cannot be loaded.
+// Asserts on return codes and on state read back from Python, never on the
+// interpreter's stdout.
+
+@source("test_support.c")
+
+import python
+import std.spec
+import std.sandbox
+import std.bytes
+import std.list
+import std.string
+
+extern ghl_t_map_new() -> long
+extern ghl_t_map_put(token: long, key: string, value: string)
+extern ghl_t_map_get(token: long, key: string) -> string
+extern ghl_t_map_free(token: long)
+extern ghl_t_run_with_map_addr() -> long
+extern ghl_t_two_threads(add: ptr) -> int
+extern ghl_t_rss_kb() -> long
+extern ghl_t_isinf(d: float) -> int
+extern ghl_t_i64_max() -> long
+extern ghl_t_i64_min() -> long
+
+@c_callback
+cb_add(vm: ptr) -> int {
+    python.push_int(vm, python.arg_int(vm, 1) + python.arg_int(vm, 2))
+    return 1
+}
+
+@c_callback
+cb_sub(vm: ptr) -> int {
+    python.push_int(vm, python.arg_int(vm, 1) - python.arg_int(vm, 2))
+    return 1
+}
+
+@c_callback
+cb_echo_str(vm: ptr) -> int {
+    python.push_str(vm, python.arg_str(vm, 1))
+    return 1
+}
+
+@c_callback
+cb_echo_bool(vm: ptr) -> int {
+    python.push_bool(vm, python.arg_bool(vm, 1))
+    return 1
+}
+
+@c_callback
+cb_echo_nil(vm: ptr) -> int {
+    python.push_nil(vm)
+    return 1
+}
+
+@c_callback
+cb_echo_double(vm: ptr) -> int {
+    python.push_double(vm, python.arg_double(vm, 1) * 2.0)
+    return 1
+}
+
+@c_callback
+cb_echo_bytes(vm: ptr) -> int {
+    b = python.arg_bytes(vm, 1)
+    python.push_bytes(vm, b)
+    if b != null { bytes.free(b) }
+    return 1
+}
+
+// The tags of all its arguments, as "t1,t2,...".
+@c_callback
+cb_types(vm: ptr) -> int {
+    out = ""
+    n = python.arg_count(vm)
+    i = 1
+    while i <= n {
+        if i > 1 { out = "${out}," }
+        out = "${out}${python.arg_type(vm, i)}"
+        i = i + 1
+    }
+    python.push_str(vm, out)
+    return 1
+}
+
+// Pushes, then returns 0: the script gets None.
+@c_callback
+cb_push_then_zero(vm: ptr) -> int {
+    python.push_int(vm, 99)
+    return 0
+}
+
+// A push before a raise is dropped.
+@c_callback
+cb_raise_err(vm: ptr) -> int {
+    python.push_int(vm, 1)
+    return python.raise_error(vm, python.arg_str(vm, 1))
+}
+
+// A nested eval on the same VM, which calls another host function. The
+// argument is read after it: without the per-call state saved and restored
+// around the inner call, arg 1 would be the inner call's 2.
+@c_callback
+cb_nested_eval(vm: ptr) -> int {
+    long inner = -1000
+    if python.vm_eval(vm, "app.math.add(2, 4)") == 0 { inner = python.vm_result_int(vm) }
+    python.vm_pop_result(vm)
+    python.push_int(vm, python.arg_int(vm, 1) + inner)
+    return 1
+}
+
+// Runs `code` and holds its result for the reads that follow.
+fn ev(vm: ptr, code: string) -> int {
+    python.vm_pop_result(vm)
+    return python.vm_eval(vm, code)
+}
+
+fn churn(vm: ptr, rounds: int) {
+    i = 0
+    while i < rounds {
+        python.vm_set_global_str(vm, "LOOP_VAR", "a string long enough to show if each round keeps one")
+        python.vm_eval(vm, "host.echo_str(LOOP_VAR)")
+        _s = python.vm_result_str(vm)
+        python.vm_pop_result(vm)
+        python.vm_eval(vm, "host.echo_bytes(b'x\\x00y' * 8)")
+        b = python.vm_result_bytes(vm)
+        if b != null { bytes.free(b) }
+        python.vm_pop_result(vm)
+        python.vm_eval(vm, "tracked_obj")
+        python.vm_pop_result(vm)
+        i = i + 1
+    }
+}
+
+main() {
+    fw = spec.init()
+
+    have_python = 0
+    if python.init() == 0 { have_python = 1 }
+    reason = "libpython not loadable (set AETHER_PYTHON_SONAME)"
+
+    vm = null
+    if have_python == 1 {
+        vm = python.vm_new()
+        python.vm_register(vm, "host.echo_str", cb_echo_str)
+        python.vm_register(vm, "host.echo_bool", cb_echo_bool)
+        python.vm_register(vm, "host.echo_nil", cb_echo_nil)
+        python.vm_register(vm, "host.echo_double", cb_echo_double)
+        python.vm_register(vm, "host.echo_bytes", cb_echo_bytes)
+        python.vm_register(vm, "host.types", cb_types)
+        python.vm_register(vm, "host.push_then_zero", cb_push_then_zero)
+        python.vm_register(vm, "host.raise_err", cb_raise_err)
+        python.vm_register(vm, "host.nested_eval", cb_nested_eval)
+    }
+
+    spec.describe(fw, "python vm (#904)") {
+        spec.it_when(have_python, "dotted registration, globals, and state kept between evals", reason) callback {
+            spec.assert_eq(python.vm_register(vm, "app.math.add", cb_add), 0, "register dotted")
+            spec.assert_eq(python.vm_register(vm, "app.math.sub", cb_sub), 0, "register into an existing namespace")
+            spec.assert_not_eq(python.vm_register(vm, "bad..name", cb_add), 0, "an empty name part is refused")
+            spec.assert_not_eq(python.vm_register(vm, "trailing.", cb_add), 0, "an empty leaf is refused")
+            python.vm_set_global_str(vm, "GSTR", "héllo €")
+            python.vm_set_global_int(vm, "GINT", 100)
+            keys = list.new()
+            list.add(keys, "k1")
+            list.add(keys, "k 2")
+            python.vm_set_global_strlist(vm, "KEYS", keys)
+
+            spec.assert_eq(ev(vm, "x = app.math.add(2, 3)\nx += GINT"), 0, "statements run")
+            spec.assert_eq(python.vm_result_type(vm), python.PY_TNIL, "statements give None")
+            spec.assert_eq(ev(vm, "x + 5"), 0, "an expression after them")
+            spec.assert_eq(python.vm_result_type(vm), python.PY_TINT, "an int")
+            spec.assert_eq_long(python.vm_result_int(vm), 110, "x kept between evals")
+            ev(vm, "app.math.sub(9, 4) * 10 + app.math.add(1, 1)")
+            spec.assert_eq_long(python.vm_result_int(vm), 52, "both functions in app.math")
+            ev(vm, "host.echo_str(GSTR)")
+            spec.assert_eq(python.vm_result_type(vm), python.PY_TSTR, "a str")
+            spec.assert_str_eq(python.vm_result_str(vm), "héllo €", "non-ASCII, both ways")
+            ev(vm, "KEYS == ['k1', 'k 2']")
+            spec.assert_eq(python.vm_result_type(vm), python.PY_TBOOL, "a bool")
+            spec.assert_eq(python.vm_result_bool(vm), 1, "the strlist global")
+            python.vm_pop_result(vm)
+        }
+
+        spec.it_when(have_python, "each argument's tag and reading, as a callback sees it", reason) callback {
+            ev(vm, "host.types(None, True, 7, 2.5, 's', b'b', [1], {}, 2**64, object())")
+            spec.assert_str_eq(python.vm_result_str(vm), "0,1,2,8,3,7,4,4,6,6", "the tags")
+            ev(vm, "host.echo_double(3)")
+            spec.assert_eq(python.vm_result_type(vm), python.PY_TFLOAT, "a float back")
+            spec.assert_true(python.vm_result_double(vm) == 6.0, "an int argument reads as a double")
+            ev(vm, "app.math.add(2.9, -1.9)")
+            spec.assert_eq_long(python.vm_result_int(vm), 1, "a float argument reads as a truncated int")
+            ev(vm, "host.echo_bool(True) is True and host.echo_bool(1) is False")
+            spec.assert_eq(python.vm_result_bool(vm), 1, "arg_bool reads only a bool")
+            ev(vm, "host.echo_str(5)")
+            spec.assert_eq(python.vm_result_type(vm), python.PY_TSTR, "a str back")
+            spec.assert_str_eq(python.vm_result_str(vm), "", "arg_str does not convert an int")
+            ev(vm, "host.echo_str('\\udc80')")
+            spec.assert_eq(python.vm_result_type(vm), python.PY_TSTR, "an unencodable str argument: no error left set")
+            spec.assert_str_eq(python.vm_result_str(vm), "", "and it reads empty")
+            python.vm_pop_result(vm)
+        }
+
+        spec.it_when(have_python, "each pushed type, and the callback's return count", reason) callback {
+            ev(vm, "host.echo_bool(True)")
+            spec.assert_eq(python.vm_result_type(vm), python.PY_TBOOL, "a bool result")
+            spec.assert_eq(python.vm_result_bool(vm), 1, "True")
+            ev(vm, "host.echo_nil()")
+            spec.assert_eq(python.vm_result_type(vm), python.PY_TNIL, "a None result")
+            ev(vm, "host.echo_double(2.5)")
+            spec.assert_eq(python.vm_result_type(vm), python.PY_TFLOAT, "a float result")
+            spec.assert_true(python.vm_result_double(vm) == 5.0, "5.0")
+            ev(vm, "host.push_then_zero()")
+            spec.assert_eq(python.vm_result_type(vm), python.PY_TNIL, "returning 0 returns None, whatever was pushed")
+            python.vm_pop_result(vm)
+        }
+
+        spec.it_when(have_python, "results: numbers, sizes past 64 bits, tables, a lying __class__", reason) callback {
+            ev(vm, "5")
+            spec.assert_eq(python.vm_result_bool(vm), 0, "an int is not a bool")
+            spec.assert_str_eq(python.vm_result_str(vm), "", "nor a str")
+            ev(vm, "-7.9")
+            spec.assert_eq(python.vm_result_type(vm), python.PY_TFLOAT, "a float")
+            spec.assert_eq_long(python.vm_result_int(vm), -7, "reads as a truncated int")
+            ev(vm, "1e300")
+            spec.assert_eq_long(python.vm_result_int(vm), ghl_t_i64_max(), "a huge float saturates")
+            ev(vm, "2**64")
+            spec.assert_eq(python.vm_result_type(vm), python.PY_TOTHER, "2**64 is past 64 bits")
+            spec.assert_eq_long(python.vm_result_int(vm), 0, "reads 0, not a wrapped value")
+            spec.assert_true(python.vm_result_double(vm) == 18446744073709551616.0, "and its double")
+            ev(vm, "-2**63")
+            spec.assert_eq(python.vm_result_type(vm), python.PY_TINT, "-2**63 fits")
+            spec.assert_eq_long(python.vm_result_int(vm), ghl_t_i64_min(), "as INT64_MIN")
+            ev(vm, "10**400")
+            spec.assert_eq(python.vm_result_type(vm), python.PY_TOTHER, "10**400")
+            spec.assert_eq(ghl_t_isinf(python.vm_result_double(vm)), 1, "reads as inf")
+            ev(vm, "[1, 2, 3]")
+            spec.assert_eq(python.vm_result_type(vm), python.PY_TTABLE, "a list")
+            ev(vm, "{'k': 'v'}")
+            spec.assert_eq(python.vm_result_type(vm), python.PY_TTABLE, "a dict")
+            ev(vm, "object()")
+            spec.assert_eq(python.vm_result_type(vm), python.PY_TOTHER, "an object")
+            ev(vm, "class Liar:\n    __class__ = bytes\nliar = Liar()")
+            ev(vm, "isinstance(liar, bytes)")
+            spec.assert_eq(python.vm_result_bool(vm), 1, "the liar passes isinstance")
+            spec.assert_eq(ev(vm, "liar"), 0, "it evaluates")
+            spec.assert_eq(python.vm_result_type(vm), python.PY_TOTHER, "but its tag is its real type")
+            python.vm_pop_result(vm)
+        }
+
+        spec.it_when(have_python, "bytes: length-aware both ways, never a str", reason) callback {
+            ev(vm, "b'a\\x00b'")
+            spec.assert_eq(python.vm_result_type(vm), python.PY_TBYTES, "a bytes result")
+            b = python.vm_result_bytes(vm)
+            spec.assert_not_null(b, "read as a std.bytes handle")
+            spec.assert_eq(bytes.length(b), 3, "its embedded zero kept")
+            spec.assert_eq(bytes.get(b, 1), 0, "the zero")
+            spec.assert_eq(bytes.get(b, 2), 98, "and what follows it")
+            bytes.free(b)
+            ev(vm, "host.echo_bytes(b'x\\x00y\\x00')")
+            b2 = python.vm_result_bytes(vm)
+            spec.assert_eq(python.vm_result_type(vm), python.PY_TBYTES, "bytes through a callback")
+            spec.assert_eq(bytes.length(b2), 4, "all four")
+            spec.assert_eq(bytes.get(b2, 3), 0, "the trailing zero")
+            bytes.free(b2)
+            ev(vm, "host.echo_bytes(b'')")
+            b3 = python.vm_result_bytes(vm)
+            spec.assert_eq(python.vm_result_type(vm), python.PY_TBYTES, "empty bytes stay bytes")
+            spec.assert_eq(bytes.length(b3), 0, "of length 0")
+            bytes.free(b3)
+            ev(vm, "host.echo_bytes('text')")
+            spec.assert_eq(python.vm_result_type(vm), python.PY_TNIL, "a str is not bytes")
+            ev(vm, "'text'")
+            spec.assert_true(python.vm_result_bytes(vm) == null, "a str result does not read as bytes")
+            python.vm_pop_result(vm)
+        }
+
+        spec.it_when(have_python, "definitions persist; exceptions, then a clean eval", reason) callback {
+            spec.assert_eq(ev(vm, "def foo(n):\n    return n * 3\n"), 0, "def")
+            ev(vm, "foo(14)")
+            spec.assert_eq_long(python.vm_result_int(vm), 42, "foo(14)")
+            spec.assert_not_eq(ev(vm, "1 / 0"), 0, "an exception fails the eval")
+            spec.assert_eq(python.vm_result_type(vm), python.PY_TERR, "and is the result")
+            spec.assert_str_eq(python.vm_result_str(vm), "ZeroDivisionError: division by zero", "type and message")
+            spec.assert_eq(ev(vm, "100 + 200"), 0, "the next eval is clean")
+            spec.assert_eq_long(python.vm_result_int(vm), 300, "300")
+            spec.assert_not_eq(ev(vm, "def ("), 0, "a syntax error fails")
+            spec.assert_true(string.starts_with(python.vm_result_str(vm), "SyntaxError: ") == 1, "as a SyntaxError")
+            ev(vm, "counter = 0")
+            ev(vm, "counter += 1\nraise ValueError('x')")
+            ev(vm, "counter")
+            spec.assert_eq_long(python.vm_result_int(vm), 1, "a failing statement block ran once")
+            python.vm_pop_result(vm)
+        }
+
+        spec.it_when(have_python, "raise_error, caught and uncaught; a nested eval", reason) callback {
+            spec.assert_eq(ev(vm, "try:\n    host.raise_err('deliberate')\nexcept RuntimeError as e:\n    err_caught = str(e)\n"), 0, "a raise is catchable")
+            ev(vm, "err_caught")
+            spec.assert_str_eq(python.vm_result_str(vm), "deliberate", "the caught message")
+            spec.assert_not_eq(ev(vm, "host.raise_err('uncaught')"), 0, "uncaught, it fails the eval")
+            spec.assert_str_eq(python.vm_result_str(vm), "RuntimeError: uncaught", "as a RuntimeError")
+            spec.assert_eq(ev(vm, "host.nested_eval(40)"), 0, "a nested eval from inside a callback")
+            spec.assert_eq_long(python.vm_result_int(vm), 46, "both results come back")
+            python.vm_pop_result(vm)
+        }
+
+        spec.it_when(have_python, "two VMs, and a host function outliving its VM", reason) callback {
+            vm2 = python.vm_new()
+            python.vm_set_global_str(vm, "VM1_ONLY", "secret")
+            python.vm_eval(vm2, "'VM1_ONLY' in globals()")
+            spec.assert_eq(python.vm_result_type(vm2), python.PY_TBOOL, "a bool")
+            spec.assert_eq(python.vm_result_bool(vm2), 0, "a global in one VM is not in the other")
+            python.vm_pop_result(vm2)
+            vm3 = python.vm_new()
+            python.vm_register(vm3, "app.add", cb_add)
+            python.vm_eval(vm3, "import builtins\nbuiltins.aether_kept = app.add")
+            python.vm_pop_result(vm3)
+            python.vm_free(vm3)
+            spec.assert_not_eq(python.vm_eval(vm2, "aether_kept(1, 2)"), 0, "calling it after vm_free raises")
+            spec.assert_true(string.contains(python.vm_result_str(vm2), "after its vm was freed") == 1, "and says why")
+            python.vm_pop_result(vm2)
+            python.vm_eval(vm2, "del builtins.aether_kept")
+            python.vm_pop_result(vm2)
+            python.vm_free(vm2)
+        }
+
+        spec.it_when(have_python, "the instruction limit: caught, nested, per eval, disarmed", reason) callback {
+            spec.assert_str_eq(python.vm_set_instruction_limit(vm, 5000, 1), "", "limit set")
+            spec.assert_not_eq(ev(vm, "while True:\n    pass\n"), 0, "while True is stopped")
+            spec.assert_str_eq(python.vm_result_str(vm), "RuntimeError: instruction limit exceeded", "by the limit")
+            spec.assert_not_eq(ev(vm, "while True:\n    try:\n        while True:\n            pass\n    except BaseException:\n        pass\n"), 0, "catching the limit does not escape it")
+            spec.assert_not_eq(ev(vm, "while True:\n    host.nested_eval(1)\n"), 0, "a nested eval neither resets nor removes it")
+            spec.assert_true(string.contains(python.vm_result_str(vm), "instruction limit") == 1, "it is the limit that stops it")
+            round = 0
+            while round < 3 {
+                spec.assert_eq(ev(vm, "sum(i for i in range(200))"), 0, "each eval has its own budget")
+                spec.assert_eq_long(python.vm_result_int(vm), 19900, "and gets its answer")
+                round = round + 1
+            }
+            python.vm_set_instruction_limit(vm, 0, 1)
+            spec.assert_eq(ev(vm, "sum(i for i in range(20000))"), 0, "disarmed")
+            python.vm_pop_result(vm)
+        }
+
+        spec.it_when(have_python, "two threads, each on its own VM, at once", reason) callback {
+            spec.assert_eq(ghl_t_two_threads(cb_add), 0, "both threads saw all 300 answers")
+        }
+
+        spec.it_when(have_python, "flat refcounts, gc objects and memory over many rounds", reason) callback {
+            spec.assert_eq(ev(vm, "import sys, gc\nclass Tracked:\n    pass\ngc.collect()\ntracked_obj = Tracked()\ninit_ref = sys.getrefcount(tracked_obj)\ninit_objs = len(gc.get_objects())\n"), 0, "leak setup")
+            python.vm_pop_result(vm)
+            churn(vm, 2000)
+            a = ghl_t_rss_kb()
+            churn(vm, 10000)
+            b = ghl_t_rss_kb()
+            churn(vm, 10000)
+            c = ghl_t_rss_kb()
+            // One-sided on purpose: a leak makes the object count grow; 3.14's
+            // incremental GC may free older garbage during the loop.
+            ev(vm, "gc.collect()\nfinal_ref = sys.getrefcount(tracked_obj)\nfinal_objs = len(gc.get_objects())\n")
+            ev(vm, "final_ref == init_ref and final_objs - init_objs < 10")
+            spec.assert_eq(python.vm_result_bool(vm), 1, "refcount and gc objects flat")
+            python.vm_pop_result(vm)
+            g1 = b - a
+            g2 = c - b
+            g = g1
+            if g2 < g1 { g = g2 }
+            spec.assert_true(g < 256, "memory flat over 10000 rounds (${g1} kB, then ${g2} kB)")
+        }
+    }
+
+    spec.describe(fw, "python shared map") {
+        // host_python_map_context: a script that runs run_sandboxed_with_map
+        // again from inside one (through ctypes, at the bridge's own
+        // address) sees only the inner map there, the outer one after, and
+        // nothing once the outer run returns.
+        spec.it_when(have_python, "a nested run sees its own map, and the outer one is restored", reason) callback {
+            outer = ghl_t_map_new()
+            inner = ghl_t_map_new()
+            ghl_t_map_put(outer, "scope", "outer")
+            ghl_t_map_put(inner, "scope", "inner")
+            perms = sandbox.new("none") {}
+            code = "import ctypes\nnested = ctypes.PYFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_char_p, ctypes.c_uint64)(${ghl_t_run_with_map_addr()})\nassert aether_map_get('scope') == 'outer'\nrc = nested(None, b\"assert aether_map_get('scope') == 'inner'\\naether_map_put('inner_result', 'ok')\\n\", ${inner})\nassert rc == 0\nrestored = aether_map_get('scope')\naether_map_put('outer_result', 'missing' if restored is None else restored)\n"
+            spec.assert_eq(python.run_sandboxed_with_map(perms, code, outer), 0, "the outer run")
+            spec.assert_str_eq(ghl_t_map_get(inner, "inner_result"), "ok", "the inner run saw the inner map")
+            spec.assert_str_eq(ghl_t_map_get(outer, "outer_result"), "outer", "the outer map was restored after it")
+            spec.assert_eq(python.run("assert aether_map_get('scope') is None, 'map token survived outer return'"), 0, "no map after the outer return")
+            ghl_t_map_free(inner)
+            ghl_t_map_free(outer)
+        }
+
+        // The last case: finalize, then init again. A new interpreter, which
+        // the map helpers must be registered into afresh.
+        spec.it_when(have_python, "finalize, then init again: a new interpreter with the map helpers", reason) callback {
+            if vm != null {
+                python.vm_free(vm)
+                vm = null
+            }
+            token = ghl_t_map_new()
+            ghl_t_map_put(token, "k", "v")
+            no_grants = sandbox.new("none") {}
+            spec.assert_eq(python.run_sandboxed_with_map(no_grants, "assert aether_map_get('k') == 'v'", token), 0, "the map helpers")
+            python.finalize()
+            spec.assert_eq(python.init(), 0, "re-init")
+            vm4 = python.vm_new()
+            spec.assert_not_null(vm4, "a VM after re-init")
+            spec.assert_eq(python.vm_eval(vm4, "6 * 7"), 0, "it evaluates")
+            spec.assert_eq_long(python.vm_result_int(vm4), 42, "6 * 7")
+            python.vm_free(vm4)
+            spec.assert_eq(python.run_sandboxed_with_map(no_grants, "assert aether_map_get('k') == 'v'", token), 0, "the map helpers after re-init")
+            ghl_t_map_free(token)
+        }
+    }
+
+    _rc = spec.run_summary(fw)
+    if have_python == 1 { python.finalize() }
+    return _rc
+}
