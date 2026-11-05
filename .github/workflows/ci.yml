@@ -155,3 +155,74 @@ jobs:
       - run: ae version
       - name: Homebrew's python@3.13
         run: GUEST_LANG=python PYTHON="$(brew --prefix python@3.13)/bin/python3.13" sh tests/run.sh
+
+  # Duktape: the runtime library only (libduktape207 on Ubuntu 24.04, Duktape
+  # 2.7); no libduktape-dev, which the bridge does not need to build.
+  # tests/duktape_env.sh finds the library in the loader's cache.
+  linux-duktape:
+    name: Linux (in-process, Duktape 2.7)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Duktape
+        run: sudo apt-get update && sudo apt-get install -y libduktape207
+      - name: ae (AE_PIN)
+        run: |
+          . ci/versions.env
+          curl -fsSL "https://raw.githubusercontent.com/aether-lang-dev/aeb/$AEB_REF/get.sh" \
+            | AE_PIN="$AE_PIN" AEB_REF="$AEB_REF" sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - run: ae version
+      - name: Specs and containment rows
+        run: GUEST_LANG=duktape sh tests/run.sh
+
+  linux-duktape-child:
+    name: Linux (in-process and contained child, Duktape 2.7)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Duktape
+        run: sudo apt-get update && sudo apt-get install -y libduktape207
+      - name: ae (AE_CHILD_PIN)
+        run: |
+          . ci/versions.env
+          curl -fsSL "https://raw.githubusercontent.com/aether-lang-dev/aeb/$AEB_REF/get.sh" \
+            | AE_PIN="$AE_CHILD_PIN" AEB_REF="$AEB_REF" sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - run: ae version
+      - name: Specs and containment rows, the child required
+        run: GUEST_LANG=duktape GHL_REQUIRE_CHILD=1 sh tests/run.sh
+
+  linux-duktape-spawn:
+    name: Linux (in-process and contained child, Duktape 2.7, ae AE_SPAWN_PIN)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Duktape
+        run: sudo apt-get update && sudo apt-get install -y libduktape207
+      - name: ae (AE_SPAWN_PIN)
+        run: |
+          . ci/versions.env
+          curl -fsSL "https://raw.githubusercontent.com/aether-lang-dev/aeb/$AEB_REF/get.sh" \
+            | AE_PIN="$AE_SPAWN_PIN" AEB_REF="$AEB_REF" sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - run: ae version
+      - name: Specs and containment rows, the child required
+        run: GUEST_LANG=duktape GHL_REQUIRE_CHILD=1 sh tests/run.sh
+
+  macos-duktape:
+    name: macOS (in-process, Duktape 2.7)
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Duktape
+        run: brew install duktape
+      - name: ae (AE_PIN)
+        run: |
+          . ci/versions.env
+          curl -fsSL "https://raw.githubusercontent.com/aether-lang-dev/aeb/$AEB_REF/get.sh" \
+            | AE_PIN="$AE_PIN" AEB_REF="$AEB_REF" sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - run: ae version
+      - name: Homebrew's duktape
+        run: GUEST_LANG=duktape sh tests/run.sh
