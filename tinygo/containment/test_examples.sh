@@ -44,18 +44,22 @@ if [ -n "$PRELOAD" ]; then
     has "let through" "$TMP/w3.txt"
 fi
 
-# Way 4
-build_ex way4_child
-build "tinygo/worker/worker.ae" "$BUILD/tinygo-worker"
-(cd "$WORK" && TINYGO_WORKER="$BUILD/tinygo-worker" TINYGO_LIB="$TINYGO_PROBE_LIB" "$BUILD/way4_child") > "$TMP/w4.txt" 2>&1
-if [ "$CHILD" = 1 ]; then
-    has "(NULL)" "$TMP/w4.txt"
-    has "open /etc/passwd: permission denied" "$TMP/w4.txt"
-    has "fork/exec /bin/sh: operation not permitted" "$TMP/w4.txt"
-    has "socket: operation not permitted" "$TMP/w4.txt"
-    has "refused" "$TMP/w4.txt"
-    has "DONE" "$TMP/w4.txt"
-elif [ "$PLAT" = macos ]; then
-    has "not started: " "$TMP/w4.txt"
+# Way 4: std.guest (AE_CHILD_PIN) is what way4_child.ae imports.
+if ver_ge "$ae_ver" "$AE_CHILD_PIN"; then
+    build_ex way4_child
+    build "tinygo/worker/worker.ae" "$BUILD/tinygo-worker"
+    (cd "$WORK" && TINYGO_WORKER="$BUILD/tinygo-worker" TINYGO_LIB="$TINYGO_PROBE_LIB" "$BUILD/way4_child") > "$TMP/w4.txt" 2>&1
+    if [ "$CHILD" = 1 ]; then
+        has "(NULL)" "$TMP/w4.txt"
+        has "open /etc/passwd: permission denied" "$TMP/w4.txt"
+        has "fork/exec /bin/sh: operation not permitted" "$TMP/w4.txt"
+        has "socket: operation not permitted" "$TMP/w4.txt"
+        has "refused" "$TMP/w4.txt"
+        has "DONE" "$TMP/w4.txt"
+    elif [ "$PLAT" = macos ]; then
+        has "not started: " "$TMP/w4.txt"
+    fi
+else
+    echo "  [SKIP] $NAME: way4_child.ae: $CHILD_WHY"
 fi
 echo "  [PASS] $NAME"

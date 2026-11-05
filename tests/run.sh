@@ -36,6 +36,17 @@ host_text() {
     echo "$os $(uname -m), ae $(ae version 2>/dev/null | awk 'NR == 1 { print $2 }'), $1"
 }
 
+# libaether_sandbox.so beside ae's libaether.a (a release install keeps it in
+# lib/aether/ or lib/): the specs' programs are built and run directly, not by
+# `ae run`, so nothing sets AETHER_HOME for them and the bridges' lookup (which
+# honours AETHER_SANDBOX_PRELOAD first) would miss it. stunt_lib.sh does the same.
+case "$(uname -s)" in Linux|FreeBSD)
+    if [ -z "${AETHER_SANDBOX_PRELOAD:-}" ]; then
+        libdir="$(ae cflags --libs 2>/dev/null | tr ' ' '\n' | sed -n 's/^-L//p' | head -1)"
+        [ -n "$libdir" ] && [ -f "$libdir/libaether_sandbox.so" ] && export AETHER_SANDBOX_PRELOAD="$libdir/libaether_sandbox.so"
+    fi ;;
+esac
+
 # Every language with a <lang>/containment/lang.sh, unless GUEST_LANG names one.
 langs="${GUEST_LANG:-$(for f in "$ROOT"/*/containment/lang.sh; do basename "$(dirname "$(dirname "$f")")"; done)}"
 for lang in $langs; do

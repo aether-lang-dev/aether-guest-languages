@@ -90,8 +90,9 @@ fi
 (cd "$ROOT/go" && "$GO" build -o "$BUILD/go-hello" ./examples/hello &&
     CGO_ENABLED=0 "$GO" build -o "$BUILD/go-example-worker" ./examples/worker) > "$TMP/ex.log" 2>&1 ||
     die "the examples did not build" "$TMP/ex.log"
+# contained.ae imports std.guest, which only an ae at AE_CHILD_PIN or later has.
 (cd "$ROOT" && ae build go/examples/ways.ae --lib . -o "$BUILD/go-ways" &&
-    ae build go/examples/contained.ae -o "$BUILD/go-contained") > "$TMP/ex.log" 2>&1 ||
+    { ! ver_ge "$ae_ver" "$AE_CHILD_PIN" || ae build go/examples/contained.ae -o "$BUILD/go-contained"; }) > "$TMP/ex.log" 2>&1 ||
     die "the examples' hosts did not build" "$TMP/ex.log"
 (cd "$WORK" && "$BUILD/go-ways" "$BUILD/go-hello") > "$TMP/ways.txt" 2>&1
 grep -q "^go.run: 0" "$TMP/ways.txt" || die "examples/ways.ae: go.run" "$TMP/ways.txt"
@@ -103,7 +104,9 @@ else
     [ "$(grep -c '^/etc/passwd: read it' "$TMP/ways.txt")" = 2 ] || die "examples/ways.ae: the sandboxed child should read /etc/passwd too" "$TMP/ways.txt"
 fi
 echo "  [PASS] examples/ways.ae: ways 1 to 3 as README.md shows them"
-if [ "$CHILD" = 1 ]; then
+if ! ver_ge "$ae_ver" "$AE_CHILD_PIN"; then
+    echo "  [SKIP] $NAME: examples/contained.ae: $CHILD_WHY"
+elif [ "$CHILD" = 1 ]; then
     (cd "$WORK" && "$BUILD/go-contained" "$BUILD/go-example-worker") > "$TMP/contained.txt" 2>&1
     grep -q '^the host answered VALUE "hello, Go"' "$TMP/contained.txt" &&
         grep -q 'open /etc/passwd: permission denied' "$TMP/contained.txt" &&
