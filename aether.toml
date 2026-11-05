@@ -1,9 +1,10 @@
 # aether-guest-languages as an Aether package: `ae add
 # github.com/aether-lang-dev/aether-guest-languages` puts this repository's
 # root on the consumer's module search path, so `import lua` resolves to
-# lua/module.ae, `import python` to python/module.ae and `import duktape` to
-# duktape/module.ae (`import js` is its alias). See README.md,
+# lua/module.ae, `import python` to python/module.ae, `import duktape` to
+# duktape/module.ae (`import js` is its alias) and `import tinygo` to
+# tinygo/module.ae. See README.md,
 # "Using a language from this repository".
 [package]
 name = "aether-guest-languages"
-modules = "lua, python, duktape, js, tcl, perl, ruby"
+modules = "lua, python, duktape, js, tcl, perl, ruby, tinygo"
