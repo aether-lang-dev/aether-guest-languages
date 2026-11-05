@@ -3,8 +3,9 @@
 # root on the consumer's module search path, so `import lua` resolves to
 # lua/module.ae, `import python` to python/module.ae, `import duktape` to
 # duktape/module.ae (`import js` is its alias) and `import quickjs` to
-# quickjs/module.ae. See README.md,
+# quickjs/module.ae, `import racket` to racket/module.ae and `import rhombus`
+# to rhombus/module.ae. See README.md,
 # "Using a language from this repository".
 [package]
 name = "aether-guest-languages"
-modules = "lua, python, duktape, js, tcl, perl, ruby, quickjs, tinygo, go"
+modules = "lua, python, duktape, js, tcl, perl, ruby, quickjs, tinygo, go, racket, rhombus"

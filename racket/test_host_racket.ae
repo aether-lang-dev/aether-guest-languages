@@ -1,0 +1,129 @@
+// The racket bridge's specs (was contrib.host.racket's end-to-end test, and
+// is now also what runs on every Racket this repository is tested with).
+//
+// The bridge dlopens Racket CS's library at the first call, so a machine
+// without Racket cannot run these: they skip with the reason (on GitHub
+// Actions a skip is a failure). The probe is racket.init() itself.
+//
+// The snippets are <<HEREDOC literals: no interpolation, no escapes, so
+// Racket's own quotes and parens pass through verbatim. evaluate returns what
+// the code printed, not the value of its last expression.
+
+import racket
+import std.spec
+import std.string
+
+@c_callback
+cb_add(vm: ptr) -> int {
+    racket.push_int(vm, racket.arg_int(vm, 1) + racket.arg_int(vm, 2))
+    return 1
+}
+
+@c_callback
+cb_greet(vm: ptr) -> int {
+    racket.push_str(vm, "hello, ${racket.arg_str(vm, 1)}")
+    return 1
+}
+
+@c_callback
+cb_refuse(vm: ptr) -> int {
+    return racket.raise_error(vm, "refused: no")
+}
+
+@c_callback
+cb_pair(vm: ptr) -> int {
+    racket.push_nil(vm)
+    racket.push_bool(vm, 1)
+    return 2
+}
+
+@c_callback
+cb_types(vm: ptr) -> int {
+    n = racket.arg_count(vm)
+    racket.push_str(vm, "${n}:${racket.arg_type(vm, 1)}${racket.arg_type(vm, 2)}${racket.arg_type(vm, 3)}")
+    return 1
+}
+
+main() {
+    fw = spec.init()
+
+    have = 0
+    if racket.init() == 0 { have = 1 }
+    reason = "Racket CS's library is not loadable (set AETHER_RACKET_SONAME; tests/racket_env.sh)"
+
+    spec.describe(fw, "racket") {
+        // fib(10) = 55: input and output share no digits, so an echo of the
+        // input cannot pass for it.
+        spec.it_when(have, "evaluates and returns what was printed", reason) callback {
+            fib_eval = <<RACKET
+(define (fib n) (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2)))))
+(display (fib 10))
+RACKET
+            spec.assert_str_eq(racket.evaluate(fib_eval), "55", "fib(10)")
+            spec.assert_str_eq(racket.evaluate("(+ 2 3)"), "", "a value that is not printed is not returned")
+            spec.assert_str_eq(racket.evaluate("(displayln \"a\") (display \"b\")"), "a\nb", "output order")
+            spec.assert_str_eq(racket.evaluate("(display \"héllo\")"), "héllo", "UTF-8 round trip")
+        }
+
+        spec.it_when(have, "keeps definitions between calls", reason) callback {
+            spec.assert_eq(racket.run("(define aether-keep (* 6 7))"), 0, "defines")
+            spec.assert_str_eq(racket.evaluate("(display aether-keep)"), "42", "sees it in the next call")
+        }
+
+        spec.it_when(have, "reports an error as text from evaluate and -1 from run", reason) callback {
+            boom = racket.evaluate("(display \"before\") (this-is-not-bound 1 2 3)")
+            spec.assert_true(string.starts_with(boom, "before") == 1, "the output so far is kept")
+            spec.assert_true(string.contains(boom, "error:") == 1, "the message follows: ${boom}")
+            spec.assert_not_eq(racket.run("(error \"deliberate\")"), 0, "an erroring run is not a success")
+            spec.assert_true(string.contains(racket.last_error(), "deliberate") == 1, "last_error has the message")
+            spec.assert_not_eq(racket.run("(+ 1"), 0, "an unreadable run is not a success")
+            spec.assert_eq(racket.run("(void)"), 0, "and the VM is still there")
+        }
+
+        spec.it_when(have, "round-trips the string k-v map, and the guest sees it as aether-host-kv", reason) callback {
+            racket.set("answer", "42")
+            spec.assert_str_eq(racket.get("answer"), "42", "set then get")
+            spec.assert_str_eq(racket.get("nope"), "", "absent is empty")
+            racket.set("acc", "10")
+            _ = racket.run("(hash-set! aether-host-kv \"acc\" (number->string (+ 5 (string->number (hash-ref aether-host-kv \"acc\" \"0\")))))")
+            spec.assert_str_eq(racket.get("acc"), "15", "the guest mutates a key Aether set")
+            racket.set("name", "été")
+            spec.assert_str_eq(racket.evaluate("(display (hash-ref aether-host-kv \"name\"))"), "été", "non-ASCII value")
+        }
+
+        // The fib set-piece: Racket writes ten terms into the map, Aether reads them.
+        spec.it_when(have, "carries a whole map across calls", reason) callback {
+            populate = <<RACKET
+(define (fib n) (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2)))))
+(for ([i (in-range 10)])
+  (hash-set! aether-host-kv (format "fib~a" i) (number->string (fib i))))
+RACKET
+            spec.assert_eq(racket.run(populate), 0, "populates")
+            seq = racket.get("fib0")
+            i = 1
+            while i < 10 {
+                seq = "${seq} ${racket.get("fib${i}")}"
+                i = i + 1
+            }
+            spec.assert_str_eq(seq, "0 1 1 2 3 5 8 13 21 34", "ten terms")
+        }
+
+        spec.it_when(have, "calls registered Aether functions", reason) callback {
+            spec.assert_eq(racket.register("add", cb_add), 0, "register add")
+            spec.assert_eq(racket.register("greet", cb_greet), 0, "register greet")
+            spec.assert_eq(racket.register("refuse", cb_refuse), 0, "register refuse")
+            spec.assert_eq(racket.register("pair", cb_pair), 0, "register pair")
+            spec.assert_eq(racket.register("types", cb_types), 0, "register types")
+            spec.assert_str_eq(racket.evaluate("(display (add 2 40))"), "42", "integers in and out")
+            spec.assert_str_eq(racket.evaluate("(display (greet \"stunt\"))"), "hello, stunt", "a string in and out")
+            spec.assert_str_eq(racket.evaluate("(define-values (a b) (pair)) (display (list a b))"), "(#f #t)", "two results")
+            spec.assert_str_eq(racket.evaluate("(display (types \"x\" 7 #t))"), "3:321", "argument types")
+            out = racket.evaluate("(with-handlers ([exn:fail? (lambda (e) (display (exn-message e)))]) (refuse))")
+            spec.assert_str_eq(out, "refused: no", "raise_error is an exception the code can catch")
+            spec.assert_true(string.contains(racket.evaluate("(refuse)"), "error: refused: no") == 1, "or one that ends the run")
+        }
+    }
+
+    _rc = spec.run_summary(fw)
+    return _rc
+}

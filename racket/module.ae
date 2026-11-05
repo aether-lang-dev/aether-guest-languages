@@ -1,0 +1,98 @@
+// racket: embedded Racket CS, moved from aether's contrib.host.racket
+// (PROVENANCE.md).
+//
+// The bridge's C is compiled into the program that imports this module
+// (@source below). Racket CS's embedding library is loaded with dlopen at the
+// first call, as for the other languages here: AETHER_RACKET_SONAME (the
+// library: Racket.framework/Versions/<v>/Racket on macOS, a libracketcs.so
+// elsewhere), else AETHER_RACKET_HOME (an installation's root), else the usual
+// places. Booting also needs Racket's boot images and collects directory:
+// AETHER_RACKET_BOOT_DIR, AETHER_RACKET_COLLECTS, AETHER_RACKET_CONFIG, found
+// beside the library when not given (racket/README.md).
+//
+// Two tiers:
+//
+//  1. The original surface: evaluate Racket source in the persistent VM, and
+//     hand it strings (a k-v map, or the shared map).
+//
+//         r = racket.evaluate("(display (+ 2 3))")     // r = "5"
+//         racket.set("x", "10")
+//         v = racket.get("x")                            // v = "10"
+//
+//     evaluate returns what the source printed, not the last value; on an
+//     error it returns what was printed and "error: <message>". run prints to
+//     stdout and returns 0, or -1 on an error (racket.last_error() is the
+//     message).
+//
+//  2. Host functions (new here): register an Aether `@c_callback` as a Racket
+//     procedure. It reads its arguments (strings, integers and booleans) with
+//     racket.arg_* (1-based) and pushes up to as many results as it likes with
+//     racket.push_*, returning the count; racket.raise_error makes the Racket
+//     call raise an exception.
+//
+//         @c_callback
+//         add(vm: ptr) -> int {
+//             racket.push_int(vm, racket.arg_int(vm, 1) + racket.arg_int(vm, 2))
+//             return 1
+//         }
+//         racket.register("add", add)
+//         racket.evaluate("(display (add 2 40))")        // "42"
+//
+// Nothing here can stop a run that does not end (racket/README.md, "Stopping
+// a run").
+@source("aether_host_racket.c")
+
+import std.sandbox   // sandbox.Grants, the grant list the run_sandboxed calls take
+
+
+exports (
+    racket_run_sandboxed, racket_run_sandboxed_with_map,
+    racket_run, racket_evaluate,
+    racket_set, racket_get, racket_init, racket_finalize,
+    racket_last_error,
+    // host functions
+    racket_register,
+    racket_arg_count, racket_arg_type, racket_arg_str, racket_arg_int, racket_arg_bool,
+    racket_push_int, racket_push_str, racket_push_bool, racket_push_nil,
+    racket_raise_error,
+    // argument types (racket_arg_type)
+    RACKET_TNIL, RACKET_TBOOL, RACKET_TINT, RACKET_TSTR
+)
+
+const RACKET_TNIL  = 0
+const RACKET_TBOOL = 1
+const RACKET_TINT  = 2
+const RACKET_TSTR  = 3
+
+extern racket_run_sandboxed(perms: sandbox.Grants, code: string) -> int
+// First-class shared map: the Racket code reads/writes the Aether-owned
+// shared map live via aether-map-get / aether-map-put, so keys it discovers
+// at runtime come back too. Enumerate with map.keys(map).
+extern racket_run_sandboxed_with_map(perms: sandbox.Grants, code: string, map_token: long) -> int
+extern racket_run(code: string) -> int
+// Evaluate `code` in the persistent VM; returns its printed output as a
+// string ("" if the VM cannot load). State persists across calls. The string
+// is a fresh one the caller owns.
+extern racket_evaluate(code: string) -> string @heap
+// Live string-only k-v map over the persistent VM (shared with Rhombus).
+extern racket_set(key: string, value: string) -> int
+extern racket_get(key: string) -> string @heap
+// Boot now (otherwise lazy, at the first call); 0 on success.
+extern racket_init() -> int
+// The VM lives until the process exits; this is a no-op.
+extern racket_finalize()
+extern racket_last_error() -> string
+
+// Register an Aether callback `(vm: ptr) -> int` as the Racket procedure `name`.
+extern racket_register(name: string, host_fn: ptr) -> int
+extern racket_arg_count(vm: ptr) -> int
+extern racket_arg_type(vm: ptr, i: int) -> int
+extern racket_arg_str(vm: ptr, i: int) -> string
+extern racket_arg_int(vm: ptr, i: int) -> long
+extern racket_arg_bool(vm: ptr, i: int) -> int
+extern racket_push_int(vm: ptr, v: long)
+extern racket_push_str(vm: ptr, v: string)
+extern racket_push_bool(vm: ptr, v: int)
+extern racket_push_nil(vm: ptr)
+// Raise a Racket exception from the callback (`return racket.raise_error(vm, m)`).
+extern racket_raise_error(vm: ptr, msg: string) -> int

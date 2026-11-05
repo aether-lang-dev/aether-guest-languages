@@ -1,0 +1,36 @@
+// rhombus: Rhombus on the embedded Racket CS VM, moved from aether's
+// contrib.host.rhombus (PROVENANCE.md).
+//
+// Rhombus is a #lang on the Racket runtime, so this runs on the same VM as
+// `import racket`: the same process, the same persistent state, the same
+// string-only k-v map. This module only names the bridge's rhombus_* entry
+// points, which wrap the source as a `#lang rhombus` module body; the bridge
+// (racket/aether_host_racket.c) is compiled in by importing racket.
+//
+//   import rhombus
+//
+//   r = rhombus.evaluate("println(2 + 3)")      // r = "5"
+//   rhombus.set("x", "10")                      // visible to racket.get
+//   v = rhombus.get("x")
+//
+// Needs the `rhombus` collection in the Racket you load (it is in Racket's
+// main distribution; with a minimal Racket, `raco pkg install rhombus`). Its
+// graph is large and is required at the first rhombus.* call.
+import racket
+import std.sandbox   // sandbox.Grants, the grant list the run_sandboxed calls take
+
+
+exports (rhombus_run_sandboxed, rhombus_run_sandboxed_with_map,
+         rhombus_run, rhombus_evaluate,
+         rhombus_set, rhombus_get, rhombus_init, rhombus_finalize)
+
+extern rhombus_run_sandboxed(perms: sandbox.Grants, code: string) -> int
+extern rhombus_run_sandboxed_with_map(perms: sandbox.Grants, code: string, map_token: long) -> int
+extern rhombus_run(code: string) -> int
+// Evaluate `code` as a #lang rhombus module body; returns its printed output.
+extern rhombus_evaluate(code: string) -> string @heap
+// The k-v map is racket's: one VM, one hash.
+extern rhombus_set(key: string, value: string) -> int
+extern rhombus_get(key: string) -> string @heap
+extern rhombus_init() -> int
+extern rhombus_finalize()

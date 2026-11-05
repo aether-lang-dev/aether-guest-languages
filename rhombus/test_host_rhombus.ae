@@ -1,0 +1,67 @@
+// The rhombus module's specs: Rhombus runs on the racket bridge's VM, so one
+// VM and one k-v map serve both. Skips (with the reason) when Racket's
+// library cannot be loaded, or when the Racket has no `rhombus` collection
+// (a minimal Racket: raco pkg install rhombus). On GitHub Actions a skip is
+// a failure.
+//
+// Rhombus is indentation-sensitive, so the snippets are <<HEREDOC literals.
+
+import racket
+import rhombus
+import std.spec
+import std.string
+
+main() {
+    fw = spec.init()
+
+    have = 0
+    if racket.init() == 0 { have = 1 }
+    have_rhombus = 0
+    if have == 1 {
+        probe = rhombus.evaluate("println(1)")
+        if string.starts_with(probe, "1") == 1 { have_rhombus = 1 }
+    }
+    reason_rhombus = "this Racket has no rhombus collection (raco pkg install rhombus)"
+
+    spec.describe(fw, "rhombus") {
+        spec.it_when(have_rhombus, "evaluates Rhombus and returns what was printed", reason_rhombus) callback {
+            fib_eval = <<RHOMBUS
+fun fib(n):
+  if n < 2 | n | fib(n-1) + fib(n-2)
+println(fib(10))
+RHOMBUS
+            spec.assert_str_eq(string.trim(rhombus.evaluate(fib_eval)), "55", "fib(10)")
+        }
+
+        spec.it_when(have_rhombus, "reports an error as text, and run as -1", reason_rhombus) callback {
+            boom = rhombus.evaluate("println(not_a_real_binding)")
+            spec.assert_true(string.contains(boom, "error:") == 1, "the message: ${boom}")
+            spec.assert_not_eq(rhombus.run("println(not_a_real_binding)"), 0, "run fails too")
+            spec.assert_eq(rhombus.run("println(2)"), 0, "and works after")
+        }
+
+        // One VM, one map: Racket writes ten terms, Rhombus reads them.
+        spec.it_when(have_rhombus, "shares the VM and the k-v map with racket", reason_rhombus) callback {
+            populate = <<RACKET
+(define (fib n) (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2)))))
+(for ([i (in-range 10)])
+  (hash-set! aether-host-kv (format "fib~a" i) (number->string (fib i))))
+RACKET
+            spec.assert_eq(racket.run(populate), 0, "populates")
+            seq = rhombus.get("fib0")
+            i = 1
+            while i < 10 {
+                seq = "${seq} ${rhombus.get("fib${i}")}"
+                i = i + 1
+            }
+            spec.assert_str_eq(seq, "0 1 1 2 3 5 8 13 21 34", "ten terms through rhombus.get")
+            racket.set("shared", "hello")
+            spec.assert_str_eq(rhombus.get("shared"), "hello", "racket to rhombus")
+            rhombus.set("back", "world")
+            spec.assert_str_eq(racket.get("back"), "world", "rhombus to racket")
+        }
+    }
+
+    _rc = spec.run_summary(fw)
+    return _rc
+}
