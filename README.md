@@ -19,6 +19,9 @@ for you. Every way stays supported; they differ in how much they contain
 each show all four, with examples; Go and Java as child processes are never in your process, so their
 first three ways are a child process with less and more around it; and a JVM does not start inside
 ways 2 to 4 on Linux today, which java/README.md explains):
+[factor/README.md](factor/README.md#four-ways-to-run-factor-from-aether)
+each show all four, with examples; Go as a child process is never in your process, so its
+first three ways are a child process with less and more around it):
 
 1. **Embed.** The interpreter is loaded into the Aether program and called
    directly (`import lua`, then `lua.run(...)`, the script often a heredoc,
@@ -66,11 +69,13 @@ the tests.
 | Go 1.21 or later, as a c-shared library (compiled; `go build -buildmode=c-shared`) | `import tinygo` | `tinygo/worker` (std.guest) | [tinygo/README.md](tinygo/README.md#containment-table) |
 | Go 1.18 or later (checked 1.22, 1.27), as a child process | `import go` (starts a program; no in-process way) | `go/worker` (std.guest, Go) | [go/README.md](go/README.md#containment-table) |
 | Java 21 or later (checked 21, 25), as a JVM child process | `import java` (starts a JVM; no in-process way) | `java/worker` (std.guest, Java); the JVM does not start inside the preload yet | [java/README.md](java/README.md#containment-table) |
+| Factor (experimental: the embed-api fork of Factor, not a distribution's) | `import factor` | `factor/worker` (std.guest); cannot start on ae 0.889.0 (preload refuses executable memory) | [factor/README.md](factor/README.md#containment-table) |
 
 ## Layout
 
 ```
 aether.toml            the package: exports every language directory (modules = "lua, python, duktape, js, tcl, perl, ruby, quickjs, tinygo, go, java")
+aether.toml            the package: exports every language directory (modules = "lua, python, duktape, js, tcl, perl, ruby, quickjs, tinygo, go, factor")
 ci/versions.env        toolchain pins (AE_PIN, AE_CHILD_PIN, AE_SPAWN_PIN, AEB_REF, AETHER_STUNT_REF)
 lua/
   module.ae            import lua: the bridge's API
@@ -171,6 +176,15 @@ java/
   containment/         the containment hosts and Checks.java; lang.sh; test_ways.sh, the four ways
                        and what libc sees (libghltrace.c)
   examples/            the programs in README.md's four ways
+factor/
+  module.ae            import factor: the bridge's API
+  aether_host_factor.c the bridge, compiled into the importing program (@source)
+  factor_abi.h         the function-pointer types the bridge calls libfactor through
+  test_host_factor.ae  the bridge's spec (test_support.c: its C helper)
+  examples/            the programs in README.md's four ways
+  worker/              factor-worker: Factor in a contained child (std.guest)
+  containment/         the containment hosts and checks.factor, stunt's rows in Factor;
+                       lang.sh; preload.factor, the vocabularies loaded before the lockdown
   PROVENANCE.md        where the bridge came from, and what the move changed
 tests/
   run.sh               everything, every language (GUEST_LANG=<lang> for one)
@@ -178,6 +192,7 @@ tests/
   test_stunt_*.sh      one per policy: aether's contrib_host_stunt lists
   test_catalogue.sh    every catalogue row is named here or left out
   parity.sh            renders and checks a README's Stunt parity table
+  factor_env.sh        find the embed-api fork's libfactor and image (the fork's checkout)
   <lang>_env.sh        find the language's runtime library on this machine (lua, python,
                        duktape, tcl, perl, ruby; quickjs: checks ae ships its engine)
                        duktape, tcl, perl, ruby), or for tinygo the go toolchain, which
@@ -238,8 +253,13 @@ environment variable names an exact soname or path when that is not enough:
 Homebrew's `/opt/homebrew/lib/libduktape.so`), `AETHER_TCL_SONAME`
 (`libtcl8.6.so.0`), `AETHER_PERL_SONAME` (for example
 `/usr/lib/x86_64-linux-gnu/libperl.so.5.38`) and `AETHER_RUBY_SONAME`
-(for example `/usr/lib/libruby.so.3.4.12`). `tests/<lang>_env.sh` is one way
-to find each. No language's dev package is needed to build. QuickJS is
+(for example `/usr/lib/libruby.so.3.4.12`). Factor takes two: `AETHER_FACTOR_SONAME`
+names the embed-api fork's libfactor (Factor's makefile calls the shared
+engine `libfactor.so`, or on Linux `libfactor.a`, an ELF shared object that
+`dlopen` takes by path) and `AETHER_FACTOR_IMAGE` the `factor.image`
+bootstrapped for it, which the VM needs to start; a distribution's Factor has
+no `factor_embed_eval` and is refused at load (factor/README.md).
+`tests/<lang>_env.sh` is one way to find each. No language's dev package is needed to build. QuickJS is
 compiled in from aether's `contrib.quickjs`, so there is nothing to find.
 The two Go bridges are the exceptions to the pattern: `tinygo.load` takes
 the path of a library you built with `go build -buildmode=c-shared` (the
@@ -289,6 +309,7 @@ GUEST_LANG=perl sh tests/run.sh    # PERL=/path/to/perl to pick the perl
 GUEST_LANG=tinygo sh tests/run.sh  # GO=/path/to/go to pick the go
 GUEST_LANG=go sh tests/run.sh      # GO=/path/to/go to pick the go command
 GUEST_LANG=java sh tests/run.sh    # JAVA_HOME=/path/to/jdk to pick the JDK (21 or later)
+GUEST_LANG=factor sh tests/run.sh  # FACTOR_HOME=<the fork's checkout>; skips without it
 sh tests/run.sh --write-parity     # rewrite the parity tables' columns this host ran
 ```
 
@@ -319,6 +340,15 @@ duktape, tcl-tk and ruby, the system perl (5.34), and the runner's Go
 on Ubuntu 24.04 and a JDK 21 from the runner or `brew install openjdk@21` on
 macOS; its Linux child jobs pass with the JVM blocked by the preload, which the
 tests check (java/README.md).
+
+Factor is the exception to "install the runtime package": a distribution's
+Factor has no embedding API, so its Linux jobs build the embed-api fork at
+`FACTOR_FORK_REF` and bootstrap its image (cached under the commit; the slow
+part is the bootstrap), and its macOS job only compiles the bridge, hosts and
+worker and checks that the specs and rows skip cleanly. Its contained-child
+jobs run with `GHL_REQUIRE_CHILD=1` like the others, and pass because the one
+known reason Factor cannot start there is named in `factor/containment/lang.sh`
+(factor/README.md, "4. A contained child").
 
 ## Moving from `contrib.host.<lang>`
 
@@ -477,6 +507,21 @@ the thing to know: a JVM does not start under `libaether_sandbox.so`, which
 refuses it executable memory, so on Linux neither `java.run_sandboxed` nor the
 contained child can run one today (java/README.md, "The wall that stops a
 JVM"). The agent and the bridge's other calls are unaffected.
+The Factor bridge was copied from aether at `2609ec841`
+(factor/PROVENANCE.md), and moves the same way, the import line and the
+dependency (it was never in `CONTRIB_HOST_LANGS`: it needed the fork, and
+still does):
+
+```diff
+-import contrib.host.factor
++import factor
+```
+
+What changes: no `make contrib MODULES=factor` step, and no archive to build
+and place by hand; `run_sandboxed` and `run_sandboxed_with_map` now push the
+grants (aether's accepted `perms` and ignored them), after starting the VM, so
+under the preload they bind Factor's own libc calls; and there is a contained
+child (factor/README.md says why it cannot start yet).
 
 The plan for aether's copies: they stay in `contrib/host/` for a transition
 period, with their READMEs pointing here; fixes land here first. They are

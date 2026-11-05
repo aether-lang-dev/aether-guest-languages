@@ -1,0 +1,27 @@
+// Way 2: Factor inside a sandbox block. README.md, "2. Embed inside a
+// sandbox block". Run it under LD_PRELOAD (way 3) to see the grants bind
+// Factor's own calls:
+//
+//   LD_PRELOAD="$(ae cflags --libs | tr ' ' '\n' | sed -n 's/^-L//p' | head -1)/libaether_sandbox.so" ./way2_sandbox
+import factor
+import std.sandbox
+
+main() {
+    // The vocabularies the script names are loaded now, with no level in
+    // force: a USING: reads the disk the first time it names one.
+    _ = factor.eval("USING: io.files io.encodings.utf8 continuations kernel sequences math.parser namespaces ;")
+
+    reader = sandbox.new("reader") { grant_fs_read("/etc/hostname") }
+    script = <<FACTOR
+        USING: io.files io.encodings.utf8 continuations kernel sequences math.parser namespaces ;
+        IN: scratchpad
+        : try-read ( path key -- )
+            [ [ utf8 file-contents length number>string " bytes" append ] [ 2drop "refused" ] recover ] dip
+            set-global ;
+        "/etc/hostname" "hostname" try-read
+        "/etc/passwd" "passwd" try-read
+    FACTOR
+    if factor.run_sandboxed(reader, script) != 0 { println("factor failed") }
+    println("/etc/hostname: ${factor.get("hostname")}")
+    println("/etc/passwd:   ${factor.get("passwd")}")
+}

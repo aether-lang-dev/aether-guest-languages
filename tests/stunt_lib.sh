@@ -212,6 +212,15 @@ else
         CHILD_WHY="guest.launch refuses on macOS and starts nothing (checked: $(tail -1 "$TMP/probe.txt" | cut -c1-90)...)"
     else
         CHILD_WHY="the contained child did not start: $(tail -1 "$TMP/probe.txt")"
+        # A language whose runtime cannot start in the child at all, for a
+        # reason that is known and documented (lang.sh's lang_child_blocked,
+        # given the probe's output), is not a child that failed to start by
+        # accident: GHL_REQUIRE_CHILD does not fail on it, and the day the
+        # block is lifted the probe passes and the child mode runs.
+        if type lang_child_blocked > /dev/null 2>&1 && why="$(lang_child_blocked "$TMP/probe.txt")"; then
+            CHILD_WHY="$why"
+            CHILD_BLOCKED=1
+        fi
     fi
 fi
 if [ "$CHILD" = 0 ] && [ "$CHILD_BLOCKED" = 1 ]; then

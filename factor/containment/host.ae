@@ -1,0 +1,138 @@
+// The host the containment tests drive (tests/test_stunt_*.sh). Usage:
+//
+//   host inproc <policy> <check> <expectation>
+//
+// Runs one row of stunt's catalogue (aether contrib/host/stunt), written in
+// Factor (checks.factor beside this, or $FACTOR_CHECKS), in the Factor bridge
+// in this process, under the policy's grants, and prints stunt's line for it:
+//
+//   <check>: <outcome> (<detail>) - expected <expectation>: PASS|FAIL
+//
+// exiting 0 when it matched. Run it under libaether_sandbox.so (LD_PRELOAD)
+// for Factor's own libc calls (io.files, the FFI, dlopen, run-process) to be
+// checked: in-process, nothing else sees them.
+//
+// Both of the bridge's sandboxed entry points carry rows, each pushing the
+// policy's grants as a level for the length of the call:
+//   - factor.run_sandboxed_with_map, for the rows that do not call a host
+//     function: the libc rows and the shared-map rows. The line comes back
+//     through the map, as an output the script writes (aether-map-put).
+//   - factor.run_sandboxed, for the rows that call one (binding-*,
+//     callback-*): the bridge has no host-function API, so the host answers
+//     them in C over libfactor's key-value hooks (host_support.c), which
+//     run_sandboxed_with_map would have taken for the shared map.
+// read_file and getenv check the grants themselves, as stunt's host does.
+//
+// <policy> is "-" for no grants, or kind=pattern,... with kinds fs_read,
+// fs_write, exec, env, tcp (host:port), native, fork. "<outer>|<inner>"
+// runs the check inside sandbox.enforce(<outer>), so the bridge's level
+// nests in the block's. The policy grammar is in policy/module.ae; the
+// contained child's host is child_host.ae.
+
+@source("host_support.c")
+
+import factor
+import policy
+import std.sandbox
+import std.os
+import std.string
+
+extern exit(code: int)
+extern aether_sandbox_depth() -> int
+extern ghl_map_new() -> long
+extern ghl_map_put(key: string, value: string)
+extern ghl_map_get(key: string) -> string
+extern ghl_hooks_install() -> int
+
+// Which entry point carries a row: the hooks for host functions, the bridge's
+// own map for the rest.
+fn uses_hooks(check: string) -> int {
+    if string.starts_with(check, "binding-") == 1 { return 1 }
+    if string.starts_with(check, "callback-") == 1 { return 1 }
+    return 0
+}
+
+fn run_row(g: sandbox.Grants, check: string, expect: string, source: string) -> string {
+    token = ghl_map_new()
+    ghl_map_put("input", "stunt-in")
+    if os.getenv("GHL_DEBUG") == "1" {
+        // The source's own errors, which a sandboxed run discards.
+        println(factor.eval("${source}\n\"${check}\" \"${expect}\" check-line print"))
+    }
+    if os.getenv("GHL_DEBUG") == "2" {
+        // The same, under the grants.
+        sandbox.enforce(g) callback {
+            println(factor.eval("${source}\n\"${check}\" \"${expect}\" check-line print"))
+        }
+    }
+    if uses_hooks(check) == 1 {
+        if ghl_hooks_install() != 1 {
+            return "${check}: libfactor has no factor_embed_map_set_hooks - expected ${expect}: FAIL"
+        }
+        rc = factor.run_sandboxed(g, "${source}\n\"__line\" \"${check}\" \"${expect}\" check-line 1array json-args host-call 2drop\n")
+        line = ghl_map_get("line")
+        if rc != 0 || line == "" {
+            return "${check}: the script failed (run_sandboxed returned ${rc}) - expected ${expect}: FAIL"
+        }
+        return line
+    }
+    rc = factor.run_sandboxed_with_map(g, "${source}\nUSE: aether.host.map\n\"line\" \"${check}\" \"${expect}\" check-line aether-map-put\n", token)
+    line = ghl_map_get("line")
+    if rc != 0 || line == "" {
+        return "${check}: the script failed (run_sandboxed_with_map returned ${rc}) - expected ${expect}: FAIL"
+    }
+    return line
+}
+
+fn finish(line: string, before: int, check: string) {
+    after = aether_sandbox_depth()
+    if after != before {
+        println("host: ${check}: the bridge left ${after - before} level(s) in force")
+        exit(1)
+    }
+    println(line)
+    exit(policy.verdict(line))
+}
+
+fn run_inproc(spec: string, check: string, expect: string) {
+    // Before any level is in force: start the VM, which reads the image and
+    // maps its code heap executable, and load the vocabularies the checks
+    // use, which reads the disk the first time a USING: names them
+    // (preload.factor). Under a level that reads nothing, neither works.
+    pre = factor.eval(policy.preload_source())
+    if pre != "" {
+        println("host: the preload failed: ${pre}")
+        exit(1)
+    }
+    source = "${policy.facts()}${policy.checks_source()}"
+    bar = string.index_of(spec, "|")
+    if bar < 0 {
+        before = aether_sandbox_depth()
+        finish(run_row(policy.grants(spec), check, expect, source), before, check)
+        return
+    }
+    outer = policy.grants(string.substring(spec, 0, bar))
+    inner = policy.grants(string.substring(spec, bar + 1, string.length(spec)))
+    sandbox.enforce(outer) callback {
+        if aether_sandbox_depth() != 1 {
+            println("host: the enforce block is not one level deep")
+            exit(1)
+        }
+        before = aether_sandbox_depth()
+        finish(run_row(inner, check, expect, source), before, check)
+    }
+}
+
+main() {
+    if os.args_count() != 5 {
+        println("usage: host inproc <policy> <check> <expectation>")
+        exit(2)
+    }
+    mode = os.args_get(1)
+    if mode == "inproc" {
+        run_inproc(os.args_get(2), os.args_get(3), os.args_get(4))
+    } else {
+        println("host: unknown mode ${mode}")
+        exit(2)
+    }
+}

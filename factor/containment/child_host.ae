@@ -1,0 +1,257 @@
+// The contained child's host for the containment tests (tests/stunt_lib.sh).
+// Usage:
+//
+//   child_host <policy> <check> <expectation>
+//
+// Runs one row of stunt's catalogue, written in Factor (checks.factor, or
+// $FACTOR_CHECKS), in factor-worker ($FACTOR_WORKER, factor/worker), started by
+// std.guest's guest.launch (sandbox.spawn_socket: Landlock and seccomp on
+// Linux; nothing starts on macOS or Windows, where it fails closed) under
+// the policy's grants. It answers the worker's calls as host.ae's host
+// functions do (a file it grants goes down as a descriptor); the shared map
+// is the host's own here, its input frozen as the runtime freezes it. Prints
+// stunt's line, or for a host-checked row (spin, silent, oversize,
+// half-frame) how the guest ended, and exits 0 when it matched. Needs ae
+// 0.878.0 or later.
+//
+// The worker loads libfactor and starts the VM from the image before it locks
+// itself down: after, it can read nothing, and every vocabulary checks.factor
+// uses is in the image, so a parse reads nothing either.
+
+@source("host_support.c")
+
+import policy
+import std.guest
+import std.sandbox
+import std.os
+import std.fs
+import std.list
+import std.string
+
+extern exit(code: int)
+extern aether_sandbox_check_slow(category: string, resource: string) -> int
+extern ghl_map_new() -> long
+extern ghl_map_put(key: string, value: string)
+extern ghl_map_get(key: string) -> string
+extern ghl_map_put_guest(key: string, value: string) -> int
+
+// The argument of a one-argument JSON array call: ["x"] or [7], as text.
+fn json_arg(args: string) -> string {
+    inner = string.trim(string.substring(args, 1, string.length(args) - 1))
+    if string.starts_with(inner, "\"") == 1 && string.length(inner) >= 2 {
+        return string.substring(inner, 1, string.length(inner) - 1)
+    }
+    return inner
+}
+
+// One CALL, answered as the in-process host functions answer the same call.
+fn serve(g: *guest.Guest, perms: sandbox.Grants, e: guest.Event) {
+    name = e.name
+    if name == "read_file" {
+        path = json_arg(e.text)
+        allowed = list.new()
+        sandbox.enforce(perms) callback {
+            if aether_sandbox_check_slow("fs_read", path) == 1 { list.add(allowed, "y") }
+        }
+        if list.size(allowed) == 1 {
+            guest.grant_file(g, path, path)
+        } else {
+            guest.deny(g, path, "fs_read ${path}")
+        }
+        return
+    }
+    if name == "getenv" {
+        vname = json_arg(e.text)
+        box = list.new()
+        sandbox.enforce(perms) callback {
+            if aether_sandbox_check_slow("env", vname) == 0 {
+                list.add(box, "R")
+            } else {
+                list.add(box, "V${os.getenv(vname)}")
+            }
+        }
+        got, _e = list.get_string(box, 0)
+        if got == "R" {
+            guest.fail(g, "refused: env ${vname}")
+        } else if got == "V" {
+            guest.fail(g, "${vname} is unset")
+        } else {
+            guest.answer(g, guest.json_string(string.substring(got, 1, string.length(got))))
+        }
+        return
+    }
+    if name == "greet" {
+        guest.answer(g, guest.json_string("hello, ${json_arg(e.text)}"))
+        return
+    }
+    if name == "add" {
+        inner = string.substring(e.text, 1, string.length(e.text) - 1)
+        comma = string.index_of(inner, ",")
+        if comma > 0 {
+            x, xe = string.to_int(string.trim(string.substring(inner, 0, comma)))
+            y, ye = string.to_int(string.trim(string.substring(inner, comma + 1, string.length(inner))))
+            if xe == "" && ye == "" {
+                guest.answer(g, "${x + y}")
+                return
+            }
+        }
+        guest.fail(g, "add takes two ints")
+        return
+    }
+    if name == "aether_map_get" {
+        v = ghl_map_get(json_arg(e.text))
+        if v == "" { guest.answer(g, "null") } else { guest.answer(g, guest.json_string(v)) }
+        return
+    }
+    if name == "aether_map_put" {
+        inner = string.substring(e.text, 1, string.length(e.text) - 1)
+        comma = string.index_of(inner, ",")
+        key = json_arg("[${string.substring(inner, 0, comma)}]")
+        value = json_arg("[${string.substring(inner, comma + 1, string.length(inner))}]")
+        if ghl_map_put_guest(key, value) == 1 { guest.answer(g, "true") } else { guest.answer(g, "false") }
+        return
+    }
+    guest.fail(g, "no host function ${name}")
+}
+
+// The script a host-checked row runs in the child: checks.factor's words.
+fn host_checked_script(check: string) -> string {
+    // A loop nothing interrupts, so nothing answers the CANCEL: the host must
+    // kill the worker. (There is no spin row for Factor: lang.sh.)
+    if check == "silent" { return "silent-loop" }
+    // One 1 MiB print is one SAY frame, past the host's max_frame.
+    if check == "oversize" { return "oversize" }
+    // A frame's 4-byte header saying 64 bytes, 10 of them, then nothing, to
+    // the worker's own socket (std.ipc's AETHER_IPC_FD).
+    if check == "half-frame" { return "half-frame" }
+    return ""
+}
+
+fn run_child(spec: string, check: string, expect: string) {
+    worker = os.getenv("FACTOR_WORKER")
+    if worker == "" {
+        println("host: FACTOR_WORKER is not set (the path of factor-worker)")
+        exit(2)
+    }
+    perms = policy.grants(spec)
+    // The worker boots Factor from the image, which it must read, after
+    // loading libfactor, which is not in a system directory: so every policy
+    // is the stunt test's plus a read grant on the two files
+    // (AETHER_FACTOR_SONAME and AETHER_FACTOR_IMAGE, from tests/factor_env.sh),
+    // as any host of factor-worker must give it. No row reads there.
+    soname = os.getenv("AETHER_FACTOR_SONAME")
+    image = os.getenv("AETHER_FACTOR_IMAGE")
+    if soname == "" || image == "" {
+        println("host: AETHER_FACTOR_SONAME and AETHER_FACTOR_IMAGE are not set (libfactor and the image)")
+        exit(2)
+    }
+    sandbox.grant_fs_read(perms, soname)
+    sandbox.grant_fs_read(perms, image)
+    // And Factor opens the system's random devices as it starts (its
+    // random number generators); with them refused it fails while printing
+    // the error.
+    // Loading the vocabularies reads one file of Factor's own tree, the list
+    // of platforms the unix vocabulary is for.
+    home = os.getenv("FACTOR_HOME")
+    if home == "" {
+        println("host: FACTOR_HOME is not set (the directory of Factor's tree and image, from tests/factor_env.sh)")
+        exit(2)
+    }
+    sandbox.grant_fs_read(perms, "${home}/basis/unix/platforms.txt")
+    sandbox.grant_fs_read(perms, "${home}/*")
+    sandbox.grant_fs_read(perms, "/dev/random")
+    sandbox.grant_fs_read(perms, "/dev/urandom")
+    // And its cache directory, which it lists as it starts: with no HOME it
+    // is ./.cache/factor of the working directory, made here, since the
+    // worker cannot make it, and read from there.
+    cache = "${os.getcwd()}/.cache/factor"
+    merr = fs.mkdir_p(cache)
+    if merr != "" {
+        println("host: cannot make ${cache}: ${merr}")
+        exit(2)
+    }
+    sandbox.grant_fs_read(perms, "${cache}/*")
+    // (and the write grant its cleanup of that directory asks the preload
+    // for: it tries to delete a staging file that is not there)
+    sandbox.grant_fs_write(perms, "${cache}/*")
+    args = list.new()
+    list.add(args, soname)
+    list.add(args, image)
+    // The vocabularies checks.factor uses, which the worker loads before its
+    // lockdown (a USING: reads the disk the first time it names a
+    // vocabulary).
+    list.add(args, policy.preload_source())
+    g, err = guest.launch(perms, worker, args, "factor-worker", "")
+    if err != "" {
+        println("host: guest.launch: ${err}")
+        exit(1)
+    }
+    ghl_map_new()
+    ghl_map_put("input", "stunt-in")
+    for name in ["read_file", "getenv", "greet", "aether_map_get"] {
+        guest.mount(&g, name, 1, 1)
+    }
+    guest.mount(&g, "add", 2, 2)
+    guest.mount(&g, "aether_map_put", 2, 2)
+
+    host_checked = 0
+    script = ""
+    if expect == "host" {
+        host_checked = 1
+        script = "${policy.facts()}${policy.checks_source()}\n${host_checked_script(check)}"
+        // The worker starts Factor (loads the image, a second or two, or
+        // several on a slow disk) before it reads the first frame: the
+        // deadline starts with the script, so it must outlast that, and
+        // the silent row is then ended by it, not by the start.
+        g.deadline_ms = 8000
+        g.grace_ms = 1000
+    } else {
+        g.deadline_ms = 20000
+        script = "${policy.facts()}${policy.checks_source()}\n\"${check}\" \"${expect}\" check-line print"
+    }
+    guest.start(&g, script)
+    line = ""
+    last = guest.Event { kind: "", name: "", text: "", code: 0, tags: "" }
+    going = 1
+    while going == 1 {
+        e = guest.next(&g)
+        if e.kind == "SAY" {
+            line = e.text
+        } else if e.kind == "CALL" {
+            serve(&g, perms, e)
+        } else if e.kind == "LOG" {
+        } else {
+            last = e
+            going = 0
+        }
+    }
+    guest.close(&g)
+
+    if host_checked == 1 {
+        verdict_line = "${check}: ${last.kind} (${guest.printable(last.text)})"
+        ok = 0
+                if check == "silent" && last.kind == "KILLED" && string.contains(last.text, "no answer to CANCEL") == 1 { ok = 1 }
+        if check == "oversize" && last.kind == "KILLED" && string.contains(last.text, "frame refused") == 1 { ok = 1 }
+        if check == "half-frame" && last.kind == "KILLED" && string.contains(last.text, "timed out inside a frame") == 1 { ok = 1 }
+        if ok == 1 {
+            println("${verdict_line} - host-checked: PASS")
+            exit(0)
+        }
+        println("${verdict_line} - host-checked: FAIL")
+        exit(1)
+    }
+    if last.kind != "DONE" || line == "" {
+        println("${check}: the worker ended ${last.kind} (${guest.printable(last.text)}), last said \"${guest.printable(line)}\" - expected ${expect}: FAIL")
+        exit(1)
+    }
+    println(line)
+    exit(policy.verdict(line))
+}
+
+main() {
+    if os.args_count() != 4 {
+        println("usage: child_host <policy> <check> <expectation>")
+        exit(2)
+    }
+    run_child(os.args_get(1), os.args_get(2), os.args_get(3))
+}
