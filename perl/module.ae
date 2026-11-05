@@ -1,0 +1,79 @@
+// perl: embedded Perl, moved from aether's contrib.host.perl
+// (PROVENANCE.md).
+//
+// The bridge's C is compiled into the program that imports this module
+// (@source below); libperl itself is loaded with dlopen at the first call,
+// as before: AETHER_PERL_SONAME, else libperl.so. No perl dev package is
+// needed to build (perl_abi.h).
+//
+// Usage:
+//   import perl
+//
+//   perl.run("print qq{hello\n}")
+//
+//   worker = sandbox.new("worker") {
+//       grant_env("HOME")
+//       grant_fs_read("/etc/*")
+//   }
+//   perl.run_sandboxed(worker, "print $ENV{HOME}")
+//
+// Host functions (added here; aether's bridge had none):
+//   perl.register("greet", greet_cb)       // a Perl sub greet(...)
+//   perl.run("print greet('x')")
+//
+//   @c_callback
+//   greet_cb(ctx: ptr) -> int {
+//       perl.push_str(ctx, "hello, ${perl.arg_str(ctx, 1)}")
+//       return 1
+//   }
+//
+// The C-side symbols are prefixed `aether_perl_` because plain
+// `perl_run` / `perl_init` collide with libperl's own exported
+// symbols at link time. The `@extern("aether_perl_*")` annotations
+// below bind those C symbols to the Aether-side `perl_*` names so
+// the dotted-call shape `perl.run(...)` resolves uniformly with
+// the other host bridges (ruby.run / tcl.run / etc.).
+//
+// One name per operation (#2976): the C names `aether_perl_run` and the
+// rest are not exported beside these; call `perl.run(...)`.
+@source("aether_host_perl.c")
+
+import std.sandbox   // sandbox.Grants, the grant list the run_sandboxed calls take
+
+
+exports (
+    perl_run_sandboxed, perl_run_sandboxed_with_map,
+    perl_run, perl_init, perl_finalize,
+    perl_register, perl_arg_count, perl_arg_str, perl_arg_int,
+    perl_push_str, perl_push_int, perl_raise_error
+)
+
+// Canonical `perl.*` shape (matches ruby.run / tcl.run / etc.).
+// Run Perl code within a sandbox. 0 on success, -1 on error ($@ goes to stderr).
+@extern("aether_perl_run_sandboxed") perl_run_sandboxed(perms: sandbox.Grants, code: string) -> int
+// The same with the shared map `map_token` names: aether_map_get(key) and
+// aether_map_put(key, value) in the script, and %_aether_input (the keys the
+// host put, frozen) and %_aether_output.
+@extern("aether_perl_run_sandboxed_with_map") perl_run_sandboxed_with_map(perms: sandbox.Grants, code: string, map_token: long) -> int
+// Run Perl code without a sandbox (full access). 0 on success, -1 on error.
+@extern("aether_perl_run") perl_run(code: string) -> int
+// Start the interpreter (called by the first use). 0, or -1 when libperl cannot be loaded.
+@extern("aether_perl_init") perl_init() -> int
+// Destroy the interpreter, flushing what the script printed.
+@extern("aether_perl_finalize") perl_finalize()
+
+// --- Host functions the script calls -----------------------------------------
+// Defines the Perl sub `name` (a package-qualified name such as app::add
+// works), whose calls run an Aether `@c_callback (ctx: ptr) -> int`. The
+// arguments are strings. Return 1 to answer with the last push, 0 to answer
+// undef.
+@extern("aether_perl_register") perl_register(name: string, host_fn: ptr) -> int
+// Inside a callback: the arguments, 1..arg_count.
+@extern("aether_perl_arg_count") perl_arg_count(ctx: ptr) -> int
+@extern("aether_perl_arg_str") perl_arg_str(ctx: ptr, i: int) -> string
+@extern("aether_perl_arg_int") perl_arg_int(ctx: ptr, i: int) -> long
+@extern("aether_perl_push_str") perl_push_str(ctx: ptr, v: string)
+@extern("aether_perl_push_int") perl_push_int(ctx: ptr, v: long)
+// `return perl.raise_error(ctx, msg)`: the Perl sub dies with msg (and a
+// newline) after the callback has returned, so the callback's defers run.
+@extern("aether_perl_raise_error") perl_raise_error(ctx: ptr, msg: string) -> int

@@ -1,0 +1,179 @@
+// The bridge's host-function tier and shared map, through `import perl` as a
+// program uses them. aether's bridge had a shared-map test only as a C
+// harness inside tests/sandbox/test_shared_map_all.sh, whose Perl case could
+// not see what the script wrote; the host functions are new here
+// (PROVENANCE.md). The callbacks are Aether @c_callback functions, so
+// module.ae's externs and the @source build are covered too; test_support.c
+// holds what Aether cannot say directly (maps by token, two threads).
+//
+// Skips, as test_host_perl.ae does, when libperl cannot be loaded. Asserts on
+// return codes and on state read back from Perl (a `die` in the script, the
+// shared map), never on the interpreter's stdout.
+
+@source("test_support.c")
+
+import perl
+import std.spec
+import std.sandbox
+import std.string
+
+extern ghl_t_map_new() -> long
+extern ghl_t_map_put(token: long, key: string, value: string)
+extern ghl_t_map_get(token: long, key: string) -> string
+extern ghl_t_map_free(token: long)
+extern ghl_t_two_threads() -> int
+
+@c_callback
+cb_add(ctx: ptr) -> int {
+    perl.push_int(ctx, perl.arg_int(ctx, 1) + perl.arg_int(ctx, 2))
+    return 1
+}
+
+@c_callback
+cb_echo(ctx: ptr) -> int {
+    perl.push_str(ctx, perl.arg_str(ctx, 1))
+    return 1
+}
+
+// The count of its arguments, and the last one.
+@c_callback
+cb_count(ctx: ptr) -> int {
+    perl.push_str(ctx, "${perl.arg_count(ctx)}:${perl.arg_str(ctx, perl.arg_count(ctx))}")
+    return 1
+}
+
+// Pushes, then returns 0: the script gets undef.
+@c_callback
+cb_push_then_zero(ctx: ptr) -> int {
+    perl.push_int(ctx, 99)
+    return 0
+}
+
+// A push before a raise is dropped.
+@c_callback
+cb_raise(ctx: ptr) -> int {
+    perl.push_int(ctx, 1)
+    return perl.raise_error(ctx, perl.arg_str(ctx, 1))
+}
+
+main() {
+    fw = spec.init()
+
+    have_perl = 0
+    if perl.init() == 0 { have_perl = 1 }
+    reason = "libperl not loadable (set AETHER_PERL_SONAME)"
+    no_grants = sandbox.new("none") {}
+
+    spec.describe(fw, "perl host functions") {
+        spec.it_when(have_perl, "register, then call: strings and ints in, a value out", reason) callback {
+            spec.assert_eq(perl.register("add", cb_add), 0, "add")
+            spec.assert_eq(perl.register("echo", cb_echo), 0, "echo")
+            spec.assert_eq(perl.register("count", cb_count), 0, "count")
+            spec.assert_eq(perl.register("app::math::add", cb_add), 0, "a package-qualified name")
+            spec.assert_eq(perl.run("die 'wrong' unless add(2, 40) == 42; die 'wrong' unless app::math::add(-5, 3) == -2;"), 0, "ints")
+            spec.assert_eq(perl.run("die 'wrong' unless echo('hello') eq 'hello' && echo('') eq '';"), 0, "strings")
+            spec.assert_eq(perl.run("die 'wrong' unless count('a', 'b', 'c') eq '3:c' && count() eq '0:';"), 0, "argument counts")
+        }
+
+        spec.it_when(have_perl, "text goes through as UTF-8, and quotes and backslashes survive", reason) callback {
+            code = <<PL
+                my $s = "caf\x{e9} \x{263a} it's \"q\" \\ end";
+                my $r = echo($s);
+                die 'wrong' unless length($r) == length($s) && $r eq $s;
+            PL
+            spec.assert_eq(perl.run(code), 0, "a string with a wide character comes back whole")
+        }
+
+        spec.it_when(have_perl, "a callback that pushes then returns 0 answers undef", reason) callback {
+            spec.assert_eq(perl.register("nothing", cb_push_then_zero), 0, "registered")
+            spec.assert_eq(perl.run("die 'wrong' if defined nothing();"), 0, "undef")
+        }
+
+        spec.it_when(have_perl, "raise_error dies in the script, which can catch it", reason) callback {
+            spec.assert_eq(perl.register("boom", cb_raise), 0, "registered")
+            spec.assert_eq(perl.run("my $ok = eval { boom('refused: nope'); 1 }; die 'wrong' if $ok; die 'wrong: ' . $@ unless $@ eq \"refused: nope\\n\";"), 0, "caught, with the message")
+            spec.assert_not_eq(perl.run("boom('uncaught')"), 0, "uncaught, the run fails")
+        }
+
+        spec.it_when(have_perl, "a name that is not a Perl identifier is refused", reason) callback {
+            spec.assert_not_eq(perl.register("a b", cb_add), 0, "a space")
+            spec.assert_not_eq(perl.register("1x", cb_add), 0, "a leading digit")
+            spec.assert_not_eq(perl.register("x';system 'true';'", cb_add), 0, "a quote")
+        }
+
+        spec.it_when(have_perl, "an unregistered function is a catchable error, not a crash", reason) callback {
+            spec.assert_eq(perl.run("my $ok = eval { nope(); 1 }; die 'wrong' if $ok; die 'wrong' unless $@ =~ /^Undefined subroutine/;"), 0, "undefined subroutine")
+        }
+
+        spec.it_when(have_perl, "two threads call a host function at once", reason) callback {
+            spec.assert_eq(ghl_t_two_threads(), 0, "both threads saw all 200 answers")
+        }
+    }
+
+    spec.describe(fw, "perl shared map") {
+        spec.it_when(have_perl, "inputs are read, outputs reach the host's map, frozen inputs stay", reason) callback {
+            token = ghl_t_map_new()
+            ghl_t_map_put(token, "name", "it's \"quoted\"; system('x') #")
+            ghl_t_map_put(token, "score", "97")
+            code = <<PL
+                die 'wrong name' unless aether_map_get('name') eq "it's \"quoted\"; system('x') #";
+                die 'wrong score' unless aether_map_get('score') == 97;
+                die 'wrong hash' unless $_aether_input{score} == 97;
+                die 'missing is undef' if defined aether_map_get('absent');
+                aether_map_put('grade', 'A');
+                die 'read back' unless aether_map_get('grade') eq 'A';
+                die 'frozen input was written' if aether_map_put('score', '0');
+                die 'frozen input changed' unless aether_map_get('score') == 97;
+            PL
+            spec.assert_eq(perl.run_sandboxed_with_map(no_grants, code, token), 0, "the script")
+            spec.assert_str_eq(ghl_t_map_get(token, "grade"), "A", "the output is in the host's map")
+            spec.assert_str_eq(ghl_t_map_get(token, "score"), "97", "the input is untampered")
+            ghl_t_map_free(token)
+        }
+
+        spec.it_when(have_perl, "outside a map run there is no map", reason) callback {
+            spec.assert_eq(perl.run("die 'wrong' if defined aether_map_get('score'); die 'wrong' if aether_map_put('x', 'y');"), 0, "nothing to read, nothing written")
+        }
+    }
+
+    spec.describe(fw, "perl environment under a sandbox") {
+        // Perl keeps %ENV as a copy taken at start: the bridge hides the
+        // variables the grants do not grant for the run, and puts them back.
+        spec.it_when(have_perl, "%ENV holds only what the grants grant, and is whole after", reason) callback {
+            spec.assert_eq(perl.run("$ENV{AGL_PERL_A} = 'a'; $ENV{AGL_PERL_B} = 'b';"), 0, "two variables")
+            only_a = sandbox.new("only-a") { grant_env("AGL_PERL_A") }
+            spec.assert_eq(perl.run_sandboxed(only_a, "die 'wrong' unless $ENV{AGL_PERL_A} eq 'a'; die 'wrong' if exists $ENV{AGL_PERL_B}; die 'wrong' if exists $ENV{PATH};"), 0, "inside")
+            spec.assert_eq(perl.run_sandboxed(no_grants, "die 'wrong' if keys %ENV;"), 0, "no grants, none")
+            spec.assert_eq(perl.run("die 'wrong' unless $ENV{AGL_PERL_B} eq 'b' && exists $ENV{PATH};"), 0, "after: the host's environment is back")
+        }
+
+        spec.it_when(have_perl, "a pattern grant is matched as the sandbox matches it", reason) callback {
+            pat = sandbox.new("pat") { grant_env("AGL_PERL_*") }
+            spec.assert_eq(perl.run_sandboxed(pat, "die 'wrong' unless $ENV{AGL_PERL_A} eq 'a' && $ENV{AGL_PERL_B} eq 'b'; die 'wrong' if exists $ENV{PATH};"), 0, "AGL_PERL_*")
+        }
+    }
+
+    spec.describe(fw, "perl loading") {
+        spec.it_when(have_perl, "XS modules load: DynaLoader's native half is there", reason) callback {
+            spec.assert_eq(perl.run("use POSIX (); die 'wrong' unless POSIX::floor(2.7) == 2; use Socket (); die 'wrong' unless defined Socket::inet_aton('127.0.0.1'); use List::Util (); die 'wrong' unless List::Util::sum(1, 2, 3) == 6;"), 0, "POSIX, Socket and List::Util")
+        }
+
+        // The last case: finalize, then init again.
+        spec.it_when(have_perl, "finalize, then init again: a new interpreter with the prelude", reason) callback {
+            spec.assert_eq(perl.run("$main::before = 1;"), 0, "state")
+            perl.finalize()
+            spec.assert_eq(perl.init(), 0, "re-init")
+            spec.assert_eq(perl.run("die 'wrong: state survived' if defined $main::before;"), 0, "a new interpreter")
+            token = ghl_t_map_new()
+            ghl_t_map_put(token, "k", "v")
+            spec.assert_eq(perl.run_sandboxed_with_map(no_grants, "die 'wrong' unless aether_map_get('k') eq 'v';", token), 0, "the map after re-init")
+            spec.assert_eq(perl.register("add", cb_add), 0, "register again")
+            spec.assert_eq(perl.run("die 'wrong' unless add(1, 2) == 3;"), 0, "and call")
+            ghl_t_map_free(token)
+        }
+    }
+
+    _rc = spec.run_summary(fw)
+    if have_perl == 1 { perl.finalize() }
+    return _rc
+}
