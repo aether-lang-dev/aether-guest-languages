@@ -1,0 +1,22 @@
+import std.guest
+import std.sandbox
+import std.list
+
+main() {
+    perms = sandbox.new("js") {}
+    args = list.new()
+    g, err = guest.launch(perms, "build/quickjs-worker", args, "js", "")
+    if err != "" { println("not started: ${err}") return }   // macOS: refused
+    guest.mount(&g, "greet", 1, 1)
+    guest.start(&g, "print(greet('js'))")
+    while true {
+        e = guest.next(&g)
+        if e.kind == "SAY" {
+            println(guest.printable(e.text))
+        } else if e.kind == "CALL" {
+            guest.answer(&g, guest.json_string("hello"))
+        } else {
+            break
+        }
+    }
+}

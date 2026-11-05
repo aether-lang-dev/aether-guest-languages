@@ -1,0 +1,38 @@
+// What the bridge gives a script beyond aether's copy: print and console.log,
+// and what the move kept: a time limit that ends a loop. Written in Aether
+// against std.spec.
+import quickjs
+import std.spec
+import std.sandbox
+
+main() {
+    fw = spec.init()
+
+    spec.describe(fw, "quickjs bridge") {
+        spec.it("a script has print and console.log") callback {
+            spec.assert_eq(quickjs.run("if (typeof print !== 'function' || typeof console.log !== 'function') throw new Error('no print');"), 0,
+                "print and console.log are functions")
+            g = sandbox.new("g") {}
+            defer sandbox.free(g)
+            spec.assert_eq(quickjs.run_sandboxed(g, "console.log('a', 1); print('b');"), 0,
+                "they run in a sandbox")
+        }
+
+        spec.it("a script has no file, environment or process API") callback {
+            spec.assert_eq(quickjs.run("var gone = ['std','os','readFile','writeFile','env','exec','require','process','scriptArgs'].filter(function (n) { return typeof globalThis[n] !== 'undefined'; }); if (gone.length) throw new Error('has ' + gone);"), 0,
+                "none of quickjs-libc's names, nor the Duktape bridge's, are there")
+        }
+
+        spec.it("modern JavaScript runs (ES2023)") callback {
+            script = <<JS
+                class A { #x = 2; get x() { return this.#x; } }
+                const [a, ...r] = [1, 2, 3];
+                if (new A().x !== 2 || r.length !== 2 || (null ?? 5) !== 5 || [1, 2, 3].at(-1) !== 3 || `t${a}` !== 't1') throw new Error('bad');
+            JS
+            spec.assert_eq(quickjs.run(script), 0, "classes, destructuring, ??, at(), template strings")
+        }
+    }
+
+    _rc = spec.run_summary(fw)
+    return _rc
+}

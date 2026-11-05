@@ -1,0 +1,40 @@
+// quickjs: embedded QuickJS JavaScript (quickjs-ng 0.17.0, ES2023), moved
+// from aether's contrib.host.quickjs (PROVENANCE.md).
+//
+// The bridge's C is compiled into the program that imports this module
+// (@source below). The engine itself is aether's contrib.quickjs, imported
+// here: its C and the QuickJS amalgamation it pins come with every aether
+// release, so there is one copy of QuickJS and one pin, aether's. Nothing is
+// loaded at run time and nothing needs installing.
+//
+//   import quickjs
+//
+//   quickjs.run("print((2 + 3) * 7)")
+//
+//   worker = sandbox.new("worker") { grant_env("HOME") }
+//   quickjs.run_sandboxed(worker, "print(1 + 1)")
+//
+// A script has `print` and `console.log` and no other way out: quickjs-libc
+// (the engine's own file, network and OS modules) is not compiled in. With
+// the shared map it also has aether_map_get and aether_map_put
+// (run_sandboxed_with_map). To give a script host functions held to the
+// grants, register them with the engine (`import contrib.quickjs as engine`,
+// engine.function) and run under sandbox.enforce.
+@source("aether_host_quickjs.c")
+
+import std.sandbox
+// The engine: importing contrib.quickjs is what compiles its C (and the
+// QuickJS amalgamation) into the program, through its @source. Without it a
+// program importing only this module fails to link (qjs_* undefined).
+import contrib.quickjs as qjs_engine
+
+exports (
+    quickjs_run_sandboxed, quickjs_run_sandboxed_with_map,
+    quickjs_run, quickjs_init, quickjs_finalize
+)
+
+extern quickjs_run_sandboxed(perms: sandbox.Grants, code: string) -> int
+extern quickjs_run_sandboxed_with_map(perms: sandbox.Grants, code: string, map_token: long) -> int
+extern quickjs_run(code: string) -> int
+extern quickjs_init() -> int
+extern quickjs_finalize()

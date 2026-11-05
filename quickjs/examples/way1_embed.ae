@@ -1,0 +1,11 @@
+import quickjs
+
+main() {
+    script = <<JS
+        const t = ['a', "b", 'c'];
+        t.forEach((x, i) => print(i + 1, x));
+        class Point { #x; constructor(x) { this.#x = x; } get x() { return this.#x; } }
+        print(JSON.stringify({ q: 'quote"d', n: new Point(7).x ?? 0 }), [3, 1, 2].toSorted().join());
+    JS
+    if quickjs.run(script) != 0 { println("js failed") }
+}
