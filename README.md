@@ -9,6 +9,7 @@ for you. Every way stays supported; they differ in how much they contain
 ([lua/README.md](lua/README.md#four-ways-to-run-lua-from-aether),
 [python/README.md](python/README.md#four-ways-to-run-python-from-aether),
 [duktape/README.md](duktape/README.md#four-ways-to-run-javascript-from-aether),
+[quickjs/README.md](quickjs/README.md#four-ways-to-run-javascript-from-aether),
 [tcl/README.md](tcl/README.md#four-ways-to-run-tcl-from-aether),
 [perl/README.md](perl/README.md#four-ways-to-run-perl-from-aether) and
 [ruby/README.md](ruby/README.md#four-ways-to-run-ruby-from-aether)
@@ -53,6 +54,7 @@ the tests.
 | Lua 5.3, 5.4, 5.5 | `import lua` | `lua/worker` (std.guest) | [lua/README.md](lua/README.md#containment-table) |
 | CPython 3.10 to 3.14 | `import python` | `python/worker` (std.guest) | [python/README.md](python/README.md#containment-table) |
 | JavaScript, Duktape 2.x (ES5.1) | `import duktape` (`import js`, the alias) | `duktape/worker` (std.guest) | [duktape/README.md](duktape/README.md#containment-table) |
+| JavaScript, QuickJS (quickjs-ng 0.17.0, ES2023) | `import quickjs` | `quickjs/worker` (std.guest) | [quickjs/README.md](quickjs/README.md#containment-table) |
 | Tcl 8.5, 8.6 (9.0 in principle) | `import tcl` | `tcl/worker` (std.guest) | [tcl/README.md](tcl/README.md#containment-table) |
 | Perl 5 (threaded), 5.34 to 5.44 tested | `import perl` | `perl/worker` (std.guest) | [perl/README.md](perl/README.md#containment-table) |
 | CRuby 2.6 to 3.4 (checked) | `import ruby` | `ruby/worker` (std.guest) | [ruby/README.md](ruby/README.md#containment-table) |
@@ -60,7 +62,7 @@ the tests.
 ## Layout
 
 ```
-aether.toml            the package: exports every language directory (modules = "lua, python, duktape, js, tcl, perl, ruby")
+aether.toml            the package: exports every language directory (modules = "lua, python, duktape, js, quickjs, tcl, perl, ruby")
 ci/versions.env        toolchain pins (AE_PIN, AE_CHILD_PIN, AE_SPAWN_PIN, AEB_REF, AETHER_STUNT_REF)
 lua/
   module.ae            import lua: the bridge's API
@@ -89,6 +91,16 @@ duktape/
   worker/              duktape-worker: Duktape in a contained child (std.guest)
   containment/         the containment hosts and checks.js, stunt's rows in JavaScript;
                        lang.sh; most rows are left out, with why: Duktape has no I/O
+  PROVENANCE.md        where the bridge came from, and what the move changed
+quickjs/
+  module.ae            import quickjs: the bridge's API
+  aether_host_quickjs.c the bridge, compiled into the importing program (@source);
+                       the engine is aether's contrib.quickjs, not a copy
+  test_host_quickjs.ae, test_quickjs_bridge.ae  the bridge's specs
+  examples/            the programs in README.md's four ways
+  worker/              quickjs-worker: QuickJS in a contained child (std.guest)
+  containment/         the containment hosts and checks.js, stunt's rows in JavaScript;
+                       lang.sh; most rows are left out, with why: no I/O of its own
   PROVENANCE.md        where the bridge came from, and what the move changed
 js/
   module.ae            import js: the back-compat alias of duktape
@@ -125,7 +137,7 @@ tests/
   test_catalogue.sh    every catalogue row is named here or left out
   parity.sh            renders and checks a README's Stunt parity table
   <lang>_env.sh        find the language's runtime library on this machine (lua, python,
-                       duktape, tcl, perl, ruby)
+                       duktape, tcl, perl, ruby; quickjs: checks ae ships its engine)
 ```
 
 ## Using a language from this repository
@@ -148,7 +160,7 @@ the tree it installed (there are no tagged releases yet):
 ```
 
 Then `import lua` resolves to `lua/module.ae`, and likewise `import python`,
-`import duktape` (`import js`, its alias), `import tcl`, `import perl` and
+`import duktape` (`import js`, its alias), `import quickjs`, `import tcl`, `import perl` and
 `import ruby` to their directories' `module.ae`:
 `ae build`, `ae run` and `ae lib-path` put the package on the module search
 path, and the bridge's C is compiled into your program from the `@source`
@@ -166,7 +178,8 @@ branch):
 one-off without a manifest, `ae build app.ae --lib <checkout>` does the
 same, since the checkout's root holds each language's `<lang>/module.ae`.
 
-At run time the bridge `dlopen`s the language's library. Each bridge tries
+At run time the bridge `dlopen`s the language's library (all but QuickJS,
+whose engine is compiled into the program: nothing to find, nothing to set). Each bridge tries
 the usual sonames for its platform first (its README lists them), and an
 environment variable names an exact soname or path when that is not enough:
 `AETHER_LUA_SONAME` (for example `liblua5.4.so.0`, or
@@ -229,7 +242,7 @@ language: Linux (Ubuntu 24.04) on `AE_PIN` (in-process), on `AE_CHILD_PIN`
 (in-process and contained child) and on `AE_SPAWN_PIN` (the same, on the
 first ae whose preload holds the exec rows), and macOS on `AE_PIN`. Linux
 installs only each language's runtime package, never a dev package:
-liblua5.4-dev (Lua), libpython3.12, libduktape207, tcl8.6, perl and
+liblua5.4-dev (Lua), libpython3.12, libduktape207, tcl8.6 (QuickJS needs nothing installed), perl and
 libperl5.38t64, ruby and libruby3.2; macOS uses Homebrew's lua (5.5) and
 lua@5.4, python@3.13, duktape, tcl-tk and ruby, and the system perl (5.34).
 
@@ -279,6 +292,22 @@ libduktape is found under its usual names without `AETHER_DUKTAPE_SONAME`.
 Duktape has no I/O of its own, so what it can do in a sandbox is what the
 bridge's `env`, `readFile`, `writeFile` and `exec` are allowed: they hold on
 macOS as on Linux, with no preload (duktape/README.md).
+The QuickJS bridge was copied from aether at `2609ec841`
+(quickjs/PROVENANCE.md), and moves the same way:
+
+```diff
+-import contrib.host.quickjs
++import quickjs
+```
+
+What changes: no `make contrib` step; and a script now has `print` and
+`console.log` (aether's could only compute). The engine is not copied:
+the bridge imports aether's `contrib.quickjs`, which every release ships with
+its pinned quickjs-ng 0.17.0, so there is still one copy of QuickJS and one
+pin. QuickJS has no I/O of its own (`quickjs-libc` is not compiled in), so
+most of stunt's rows are left out and nothing in it needs the preload
+(quickjs/README.md).
+
 The Tcl bridge was copied from aether at `2609ec841`
 (tcl/PROVENANCE.md), and moves the same way:
 

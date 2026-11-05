@@ -227,6 +227,69 @@ jobs:
       - name: Homebrew's duktape
         run: GUEST_LANG=duktape sh tests/run.sh
 
+  # QuickJS: nothing to install. The engine is aether's contrib.quickjs, which
+  # every ae release ships with its pinned amalgamation, compiled into the
+  # program, so the jobs need only ae.
+  linux-quickjs:
+    name: Linux (in-process, quickjs-ng 0.17.0)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: ae (AE_PIN)
+        run: |
+          . ci/versions.env
+          curl -fsSL "https://raw.githubusercontent.com/aether-lang-dev/aeb/$AEB_REF/get.sh" \
+            | AE_PIN="$AE_PIN" AEB_REF="$AEB_REF" sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - run: ae version
+      - name: Specs and containment rows
+        run: GUEST_LANG=quickjs sh tests/run.sh
+
+  linux-quickjs-child:
+    name: Linux (in-process and contained child, quickjs-ng 0.17.0)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: ae (AE_CHILD_PIN)
+        run: |
+          . ci/versions.env
+          curl -fsSL "https://raw.githubusercontent.com/aether-lang-dev/aeb/$AEB_REF/get.sh" \
+            | AE_PIN="$AE_CHILD_PIN" AEB_REF="$AEB_REF" sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - run: ae version
+      - name: Specs and containment rows, the child required
+        run: GUEST_LANG=quickjs GHL_REQUIRE_CHILD=1 sh tests/run.sh
+
+  linux-quickjs-spawn:
+    name: Linux (in-process and contained child, quickjs-ng 0.17.0, ae AE_SPAWN_PIN)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: ae (AE_SPAWN_PIN)
+        run: |
+          . ci/versions.env
+          curl -fsSL "https://raw.githubusercontent.com/aether-lang-dev/aeb/$AEB_REF/get.sh" \
+            | AE_PIN="$AE_SPAWN_PIN" AEB_REF="$AEB_REF" sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - run: ae version
+      - name: Specs and containment rows, the child required
+        run: GUEST_LANG=quickjs GHL_REQUIRE_CHILD=1 sh tests/run.sh
+
+  macos-quickjs:
+    name: macOS (in-process, quickjs-ng 0.17.0)
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: ae (AE_PIN)
+        run: |
+          . ci/versions.env
+          curl -fsSL "https://raw.githubusercontent.com/aether-lang-dev/aeb/$AEB_REF/get.sh" \
+            | AE_PIN="$AE_PIN" AEB_REF="$AEB_REF" sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - run: ae version
+      - name: Specs and containment rows
+        run: GUEST_LANG=quickjs sh tests/run.sh
+
   # Tcl: the runtime library only (libtcl8.6.so.0 from tcl8.6); no tcl-dev,
   # which the bridge does not need to build. The `tcl` package adds the
   # unversioned tclsh that tests/tcl_env.sh asks for Tcl's library directory.
