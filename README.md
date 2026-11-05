@@ -6,8 +6,9 @@ more, each held to the same named checks.
 
 A language here can be run four ways, and the repository does not choose
 for you. Every way stays supported; they differ in how much they contain
-([lua/README.md](lua/README.md#four-ways-to-run-lua-from-aether) and
-[python/README.md](python/README.md#four-ways-to-run-python-from-aether)
+([lua/README.md](lua/README.md#four-ways-to-run-lua-from-aether),
+[python/README.md](python/README.md#four-ways-to-run-python-from-aether) and
+[perl/README.md](perl/README.md#four-ways-to-run-perl-from-aether)
 show all four, with examples):
 
 1. **Embed.** The interpreter is loaded into the Aether program and called
@@ -48,11 +49,12 @@ the tests.
 |---|---|---|---|
 | Lua 5.3, 5.4, 5.5 | `import lua` | `lua/worker` (std.guest) | [lua/README.md](lua/README.md#containment-table) |
 | CPython 3.10 to 3.14 | `import python` | `python/worker` (std.guest) | [python/README.md](python/README.md#containment-table) |
+| Perl 5 (threaded), 5.34 to 5.44 tested | `import perl` | `perl/worker` (std.guest) | [perl/README.md](perl/README.md#containment-table) |
 
 ## Layout
 
 ```
-aether.toml            the package: exports lua/ and python/ (modules = "lua, python")
+aether.toml            the package: exports lua/, python/ and perl/ (modules = "lua, python, perl")
 ci/versions.env        toolchain pins (AE_PIN, AE_CHILD_PIN, AE_SPAWN_PIN, AEB_REF, AETHER_STUNT_REF)
 lua/
   module.ae            import lua: the bridge's API
@@ -72,13 +74,22 @@ python/
   containment/         the containment hosts and checks.py, stunt's rows in Python;
                        lang.sh; test_imports.sh, importing under a sandbox
   PROVENANCE.md        where the bridge came from, and what the move changed
+perl/
+  module.ae            import perl: the bridge's API
+  aether_host_perl.c   the bridge, compiled into the importing program (@source)
+  perl_abi.h           the Perl types the bridge uses (no perl dev headers needed)
+  test_host_perl*.ae   the bridge's specs (test_support.c: their C helpers)
+  worker/              perl-worker: Perl in a contained child (std.guest)
+  containment/         the containment hosts and checks.pl, stunt's rows in Perl;
+                       lang.sh; test_imports.sh, loading modules under a sandbox
+  PROVENANCE.md        where the bridge came from, and what the move changed
 tests/
   run.sh               everything, every language (GUEST_LANG=<lang> for one)
   stunt_lib.sh         holds a language to stunt's catalogue, by name
   test_stunt_*.sh      one per policy: aether's contrib_host_stunt lists
   test_catalogue.sh    every catalogue row is named here or left out
   parity.sh            renders and checks a README's Stunt parity table
-  lua_env.sh, python_env.sh  find the runtime library on this machine
+  lua_env.sh, python_env.sh, perl_env.sh  find the runtime library on this machine
 ```
 
 ## Using a language from this repository
@@ -100,8 +111,8 @@ the tree it installed (there are no tagged releases yet):
 "github.com/aether-lang-dev/aether-guest-languages" = "sha256-..."
 ```
 
-Then `import lua` resolves to `lua/module.ae`, and `import python` to
-`python/module.ae`:
+Then `import lua` resolves to `lua/module.ae`, `import python` to
+`python/module.ae` and `import perl` to `perl/module.ae`:
 `ae build`, `ae run` and `ae lib-path` put the package on the module search
 path, and the bridge's C is compiled into your program from the `@source`
 line in `module.ae`, with nothing to build beforehand.
@@ -116,15 +127,17 @@ branch):
 
 `ae build` then prints `Overriding ... -> ../aether-guest-languages`. For a
 one-off without a manifest, `ae build app.ae --lib <checkout>` does the
-same, since the checkout's root holds `lua/module.ae` and
-`python/module.ae`.
+same, since the checkout's root holds `lua/module.ae`, `python/module.ae` and
+`perl/module.ae`.
 
 At run time the bridge `dlopen`s the language's library: for Lua, set
 `AETHER_LUA_SONAME` (for example `liblua5.4.so.0`, or
 `/opt/homebrew/lib/liblua.dylib`) unless the system has an unversioned
 `liblua.so`; for Python, `AETHER_PYTHON_SONAME` (for example
-`libpython3.12.so.1.0`) unless it has `libpython3.so`. Neither language's
-dev package is needed to build.
+`libpython3.12.so.1.0`) unless it has `libpython3.so`; for Perl,
+`AETHER_PERL_SONAME` (for example `/usr/lib/x86_64-linux-gnu/libperl.so.5.38`)
+unless it has `libperl.so`. None of the languages' dev packages is needed to
+build.
 
 ## Toolchain
 
@@ -157,6 +170,7 @@ sh tests/run.sh containment        # the rows only
 GUEST_LANG=python sh tests/run.sh  # one language
 LUA_VERSION=5.4 GUEST_LANG=lua sh tests/run.sh
 PYTHON=/usr/bin/python3.12 GUEST_LANG=python sh tests/run.sh
+GUEST_LANG=perl sh tests/run.sh    # PERL=/path/to/perl to pick the perl
 sh tests/run.sh --write-parity     # rewrite the parity tables' columns this host ran
 ```
 
@@ -171,9 +185,10 @@ child rows run where ae is 0.878.0 or later and the kernel has Landlock
 CI (`.github/workflows/ci.yml`), one language per job: Linux with Ubuntu's
 liblua5.4-dev, and with its libpython3.12, each on `AE_PIN` (in-process)
 and on `AE_CHILD_PIN` (in-process and contained child); macOS with
-Homebrew's lua (5.5) and lua@5.4, and with its python@3.13, on `AE_PIN`.
+Homebrew's lua (5.5) and lua@5.4, with its python@3.13 and with the system's
+perl (5.34), on `AE_PIN`. Perl on Linux uses Ubuntu's perl and libperl5.38t64.
 
-## Moving from `contrib.host.lua` or `contrib.host.python`
+## Moving from `contrib.host.lua`, `contrib.host.python` or `contrib.host.perl`
 
 The Lua bridge was copied from aether at `d3732a0ed` (lua/PROVENANCE.md).
 Its functions and names are unchanged, so moving is the import line and the
@@ -203,6 +218,21 @@ What changes: no `make contrib MODULES=python` step and no python3-dev at
 build time; the `_aether_map` module no longer depends on the build host's
 Python.h; a free-threaded CPython is refused with a message rather than
 loaded.
+
+The Perl bridge was copied from aether at `2609ec841`
+(perl/PROVENANCE.md), and moves the same way:
+
+```diff
+-import contrib.host.perl
++import perl
+```
+
+What changes: no `make contrib MODULES=perl` step and no perl dev headers
+at build time, and fixes aether's copy needed to be usable: it ignored a
+failed `perl_parse` (macOS's perl crashed on the first sub), could not load
+XS modules, wrote a shared-map output the host never saw, spliced the map's
+values into Perl source and unset the host's own environment variables for
+good; host functions (`perl.register`) and `perl.last_error()` are new.
 
 The plan for aether's copies: they stay in `contrib/host/` for a transition
 period, with their READMEs pointing here; fixes land here first. They are

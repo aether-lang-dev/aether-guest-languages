@@ -1,8 +1,9 @@
 # aether-guest-languages as an Aether package: `ae add
 # github.com/aether-lang-dev/aether-guest-languages` puts this repository's
 # root on the consumer's module search path, so `import lua` resolves to
-# lua/module.ae and `import python` to python/module.ae. See README.md,
+# lua/module.ae, `import python` to python/module.ae and `import perl` to
+# perl/module.ae. See README.md,
 # "Using a language from this repository".
 [package]
 name = "aether-guest-languages"
-modules = "lua, python"
+modules = "lua, python, perl"
