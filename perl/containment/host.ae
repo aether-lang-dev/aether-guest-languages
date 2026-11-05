@@ -1,0 +1,163 @@
+// The host the containment tests drive (tests/test_stunt_*.sh). Usage:
+//
+//   host inproc <policy> <check> <expectation>
+//
+// Runs one row of stunt's catalogue (aether contrib/host/stunt), written in
+// Perl (checks.pl beside this, or $PERL_CHECKS), in the Perl bridge in this
+// process, under the policy's grants, and prints stunt's line for it:
+//
+//   <check>: <outcome> (<detail>) - expected <expectation>: PASS|FAIL
+//
+// exiting 0 when it matched. Run it under libaether_sandbox.so (LD_PRELOAD)
+// for Perl's own libc calls (open, connect, the shell, fork, dlopen) to be
+// checked: in-process, nothing else sees them.
+//
+// Every row goes through perl.run_sandboxed_with_map, the bridge's own
+// sandboxed run; the line comes back through the map, as an output the
+// script writes. The rows that call host functions (binding-*, callback-*)
+// find them as Perl subs, which perl.register made before the sandbox:
+// read_file and getenv check the grants themselves, as stunt's host does,
+// and refuse by raising an error that starts "refused: ".
+//
+// Before it, the modules checks.pl uses are loaded with no sandbox in force,
+// as a host does for a script it lends them to: under a policy with no read
+// grant on perl's library directories, a module that is not loaded yet
+// cannot be (perl/README.md). spin, which needs a bridge-level instruction
+// limit Perl has no way to give, is not run in-process (lang.sh).
+//
+// <policy> is "-" for no grants, or kind=pattern,... with kinds fs_read,
+// fs_write, exec, env, tcp (host:port), native, fork. "<outer>|<inner>"
+// runs the check inside sandbox.enforce(<outer>), so the bridge's level
+// nests in the block's. The policy grammar is in policy/module.ae; the
+// contained child's host is child_host.ae.
+
+@source("host_support.c")
+
+import perl
+import policy
+import std.sandbox
+import std.os
+import std.fs
+import std.list
+import std.string
+
+extern exit(code: int)
+extern aether_sandbox_depth() -> int
+// 1 when every level in force grants it (runtime/aether_sandbox.h).
+extern aether_sandbox_check_slow(category: string, resource: string) -> int
+extern ghl_map_new() -> long
+extern ghl_map_put(key: string, value: string)
+extern ghl_map_get(key: string) -> string
+
+// The modules checks.pl uses, loaded before any sandbox.
+const PRELOAD = "use Errno (); use Socket (); use Fcntl (); use POSIX (); use DynaLoader ();"
+
+// ---- host functions the guest calls ------------------------------------------
+
+// read_file(path): the file's text; dies "refused: ..." when the grants do
+// not allow reading it, or with the error.
+@c_callback
+host_read_file(ctx: ptr) -> int {
+    path = perl.arg_str(ctx, 1)
+    if aether_sandbox_check_slow("fs_read", path) == 0 {
+        return perl.raise_error(ctx, "refused: fs_read ${path}")
+    }
+    text, err = fs.read(path)
+    if err != "" { return perl.raise_error(ctx, err) }
+    perl.push_str(ctx, text)
+    return 1
+}
+
+// getenv(name): the variable; dies "refused: ..." when the grants do not
+// allow it, or "<name> is unset".
+@c_callback
+host_getenv(ctx: ptr) -> int {
+    name = perl.arg_str(ctx, 1)
+    if aether_sandbox_check_slow("env", name) == 0 {
+        return perl.raise_error(ctx, "refused: env ${name}")
+    }
+    v = os.getenv(name)
+    if v == "" { return perl.raise_error(ctx, "${name} is unset") }
+    perl.push_str(ctx, v)
+    return 1
+}
+
+@c_callback
+host_greet(ctx: ptr) -> int {
+    perl.push_str(ctx, "hello, ${perl.arg_str(ctx, 1)}")
+    return 1
+}
+
+@c_callback
+host_add(ctx: ptr) -> int {
+    if perl.arg_count(ctx) != 2 {
+        return perl.raise_error(ctx, "add takes two ints")
+    }
+    perl.push_int(ctx, perl.arg_int(ctx, 1) + perl.arg_int(ctx, 2))
+    return 1
+}
+
+// ---- the rows ---------------------------------------------------------------
+
+fn run_row(g: sandbox.Grants, check: string, expect: string, source: string) -> string {
+    token = ghl_map_new()
+    ghl_map_put("input", "stunt-in")
+    rc = perl.run_sandboxed_with_map(g, "${source}\naether_map_put(\"line\", check_line(\"${check}\", \"${expect}\"));\n", token)
+    line = ghl_map_get("line")
+    if rc != 0 || line == "" {
+        return "${check}: the script failed (run_sandboxed_with_map returned ${rc}: ${perl.last_error()}) - expected ${expect}: FAIL"
+    }
+    return line
+}
+
+fn finish(line: string, before: int, check: string) {
+    after = aether_sandbox_depth()
+    if after != before {
+        println("host: ${check}: the bridge left ${after - before} level(s) in force")
+        exit(1)
+    }
+    println(line)
+    exit(policy.verdict(line))
+}
+
+fn run_inproc(spec: string, check: string, expect: string) {
+    source = "${policy.facts()}${policy.checks_source()}"
+    if perl.run(PRELOAD) != 0 {
+        println("host: cannot load what checks.pl needs (${PRELOAD}): ${perl.last_error()}")
+        exit(1)
+    }
+    perl.register("read_file", host_read_file)
+    perl.register("getenv", host_getenv)
+    perl.register("greet", host_greet)
+    perl.register("add", host_add)
+    bar = string.index_of(spec, "|")
+    if bar < 0 {
+        before = aether_sandbox_depth()
+        finish(run_row(policy.grants(spec), check, expect, source), before, check)
+        return
+    }
+    outer = policy.grants(string.substring(spec, 0, bar))
+    inner = policy.grants(string.substring(spec, bar + 1, string.length(spec)))
+    sandbox.enforce(outer) callback {
+        if aether_sandbox_depth() != 1 {
+            println("host: the enforce block is not one level deep")
+            exit(1)
+        }
+        before = aether_sandbox_depth()
+        finish(run_row(inner, check, expect, source), before, check)
+    }
+}
+
+main() {
+    if os.args_count() != 5 {
+        println("usage: host inproc <policy> <check> <expectation>")
+        exit(2)
+    }
+    mode = os.args_get(1)
+    if mode == "inproc" {
+        run_inproc(os.args_get(2), os.args_get(3), os.args_get(4))
+    } else {
+        println("host: unknown mode ${mode}")
+        exit(2)
+    }
+}

@@ -10,6 +10,7 @@ for you. Every way stays supported; they differ in how much they contain
 [python/README.md](python/README.md#four-ways-to-run-python-from-aether) and
 [duktape/README.md](duktape/README.md#four-ways-to-run-javascript-from-aether)
 [tcl/README.md](tcl/README.md#four-ways-to-run-tcl-from-aether)
+[perl/README.md](perl/README.md#four-ways-to-run-perl-from-aether)
 show all four, with examples):
 
 1. **Embed.** The interpreter is loaded into the Aether program and called
@@ -52,12 +53,14 @@ the tests.
 | CPython 3.10 to 3.14 | `import python` | `python/worker` (std.guest) | [python/README.md](python/README.md#containment-table) |
 | JavaScript, Duktape 2.x (ES5.1) | `import duktape` (`import js`, the alias) | `duktape/worker` (std.guest) | [duktape/README.md](duktape/README.md#containment-table) |
 | Tcl 8.5, 8.6 (9.0 in principle) | `import tcl` | `tcl/worker` (std.guest) | [tcl/README.md](tcl/README.md#containment-table) |
+| Perl 5 (threaded), 5.34 to 5.44 tested | `import perl` | `perl/worker` (std.guest) | [perl/README.md](perl/README.md#containment-table) |
 
 ## Layout
 
 ```
 aether.toml            the package: exports lua/, python/, duktape/ and js/ (modules = "lua, python, duktape, js")
 aether.toml            the package: exports lua/, python/ and tcl/ (modules = "lua, python, tcl")
+aether.toml            the package: exports lua/, python/ and perl/ (modules = "lua, python, perl")
 ci/versions.env        toolchain pins (AE_PIN, AE_CHILD_PIN, AE_SPAWN_PIN, AEB_REF, AETHER_STUNT_REF)
 lua/
   module.ae            import lua: the bridge's API
@@ -98,6 +101,14 @@ tcl/
   worker/              tcl-worker: Tcl in a contained child (std.guest)
   containment/         the containment hosts and checks.tcl, stunt's rows in Tcl;
                        lang.sh, what the harness needs to know about Tcl
+perl/
+  module.ae            import perl: the bridge's API
+  aether_host_perl.c   the bridge, compiled into the importing program (@source)
+  perl_abi.h           the Perl types the bridge uses (no perl dev headers needed)
+  test_host_perl*.ae   the bridge's specs (test_support.c: their C helpers)
+  worker/              perl-worker: Perl in a contained child (std.guest)
+  containment/         the containment hosts and checks.pl, stunt's rows in Perl;
+                       lang.sh; test_imports.sh, loading modules under a sandbox
   PROVENANCE.md        where the bridge came from, and what the move changed
 tests/
   run.sh               everything, every language (GUEST_LANG=<lang> for one)
@@ -107,6 +118,7 @@ tests/
   parity.sh            renders and checks a README's Stunt parity table
   lua_env.sh, python_env.sh, duktape_env.sh  find the runtime library on this machine
   lua_env.sh, python_env.sh, tcl_env.sh  find the runtime library on this machine
+  lua_env.sh, python_env.sh, perl_env.sh  find the runtime library on this machine
 ```
 
 ## Using a language from this repository
@@ -132,6 +144,7 @@ Then `import lua` resolves to `lua/module.ae`, `import python` to
 `python/module.ae` and `import duktape` to `duktape/module.ae` (`import js`
 to `js/module.ae`, its alias):
 `python/module.ae` and `import tcl` to `tcl/module.ae`:
+`python/module.ae` and `import perl` to `perl/module.ae`:
 `ae build`, `ae run` and `ae lib-path` put the package on the module search
 path, and the bridge's C is compiled into your program from the `@source`
 line in `module.ae`, with nothing to build beforehand.
@@ -149,6 +162,8 @@ one-off without a manifest, `ae build app.ae --lib <checkout>` does the
 same, since the checkout's root holds `lua/module.ae`, `python/module.ae`
 and `duktape/module.ae`.
 and `tcl/module.ae`.
+same, since the checkout's root holds `lua/module.ae`, `python/module.ae` and
+`perl/module.ae`.
 
 At run time the bridge `dlopen`s the language's library: for Lua, set
 `AETHER_LUA_SONAME` (for example `liblua5.4.so.0`, or
@@ -163,6 +178,10 @@ No language's dev package is needed to build.
 `AETHER_TCL_SONAME` (for example `libtcl8.6.so.0`), unless one of the names
 tcl/README.md lists loads (Debian's `libtcl8.6.so.0`, Homebrew's tcl-tk,
 macOS's own Tcl). No language's dev package is needed to build.
+`libpython3.12.so.1.0`) unless it has `libpython3.so`; for Perl,
+`AETHER_PERL_SONAME` (for example `/usr/lib/x86_64-linux-gnu/libperl.so.5.38`)
+unless it has `libperl.so`. None of the languages' dev packages is needed to
+build.
 
 ## Toolchain
 
@@ -197,6 +216,7 @@ GUEST_LANG=duktape sh tests/run.sh
 GUEST_LANG=tcl TCL_VERSION=8.6 sh tests/run.sh
 LUA_VERSION=5.4 GUEST_LANG=lua sh tests/run.sh
 PYTHON=/usr/bin/python3.12 GUEST_LANG=python sh tests/run.sh
+GUEST_LANG=perl sh tests/run.sh    # PERL=/path/to/perl to pick the perl
 sh tests/run.sh --write-parity     # rewrite the parity tables' columns this host ran
 ```
 
@@ -223,6 +243,12 @@ Homebrew's lua (5.5) and lua@5.4, its python@3.13 and its tcl-tk, on
 `AE_PIN`.
 
 ## Moving from `contrib.host.lua`, `contrib.host.python` or `contrib.host.tcl`
+liblua5.4-dev, and with its libpython3.12, each on `AE_PIN` (in-process)
+and on `AE_CHILD_PIN` (in-process and contained child); macOS with
+Homebrew's lua (5.5) and lua@5.4, with its python@3.13 and with the system's
+perl (5.34), on `AE_PIN`. Perl on Linux uses Ubuntu's perl and libperl5.38t64.
+
+## Moving from `contrib.host.lua`, `contrib.host.python` or `contrib.host.perl`
 
 The Lua bridge was copied from aether at `d3732a0ed` (lua/PROVENANCE.md).
 Its functions and names are unchanged, so moving is the import line and the
@@ -280,6 +306,20 @@ What changes: no `make contrib MODULES=tcl` step and no tcl-dev at build
 time; one build runs against Tcl 8.5, 8.6 and 9.0 whatever `tcl.h` the build
 host had; libtcl is found by name on Debian, Homebrew and macOS without
 `AETHER_TCL_SONAME`; and `tcl.run_sandboxed_with_map` is exported.
+The Perl bridge was copied from aether at `2609ec841`
+(perl/PROVENANCE.md), and moves the same way:
+
+```diff
+-import contrib.host.perl
++import perl
+```
+
+What changes: no `make contrib MODULES=perl` step and no perl dev headers
+at build time, and fixes aether's copy needed to be usable: it ignored a
+failed `perl_parse` (macOS's perl crashed on the first sub), could not load
+XS modules, wrote a shared-map output the host never saw, spliced the map's
+values into Perl source and unset the host's own environment variables for
+good; host functions (`perl.register`) and `perl.last_error()` are new.
 
 The plan for aether's copies: they stay in `contrib/host/` for a transition
 period, with their READMEs pointing here; fixes land here first. They are
