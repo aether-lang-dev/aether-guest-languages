@@ -1,0 +1,105 @@
+// factor-worker: Factor in a contained child, the guest's side of std.guest.
+//
+// A host starts this with guest.launch (sandbox.spawn_socket: Landlock and
+// seccomp on Linux; refused on macOS and Windows, where nothing starts) and
+// sends it the functions it may call (MOUNT) and a Factor script (SCRIPT).
+// The worker loads libfactor and boots the VM from the image (the arguments
+// below) before it locks itself down, then runs the script with the bridge's
+// eval inside std.guest.child's lockdown:
+//
+//   what the script prints   SAY, once, when it ends: the bridge's eval gives
+//                            the output of a script, not a stream of it
+//   the host's functions     a script asks for one with the key-value hook
+//                            (key ^A name ^A json-args), and the worker makes
+//                            the call: CALL name args, the host's answer going
+//                            back as "KIND ^A text"; a granted file is
+//                            {"granted": true, "text": ...}
+//   the end                  DONE 0
+//
+// Usage (by a host): factor-worker <libfactor soname or path> <factor.image> [<vocabularies to load: Factor source, a USING: form>]
+//
+// There is no CANCEL hook. std.guest's engines look for a CANCEL from a hook
+// the language runs every so many instructions (Lua's debug.sethook,
+// Python's trace function); Factor has none, and its green threads are
+// cooperative, so nothing runs while a word loops. A CANCEL arrives as the
+// reply to a host call, which a script then reads as "CANCEL"; a script that
+// never calls is stopped by the host's grace period (the "silent" row), not
+// cancelled. The containment is the host's, not the script's.
+
+import factor
+import std.guest.child
+import std.os
+import std.string
+
+extern exit(code: int)
+extern setenv(name: string, value: string, overwrite: int) -> int
+extern ghl_keep(p: ptr)
+extern ghl_kept() -> ptr
+extern ghl_call_set(cb: ptr)
+extern ghl_req_name() -> string
+extern ghl_req_args() -> string
+extern ghl_set_reply(kind: string, text: string)
+extern ghl_hooks_install() -> int
+
+@source("worker_support.c")
+
+// The Host the callback below answers through (one per process).
+fn host() -> *child.Host {
+    return ghl_kept() as *child.Host
+}
+
+// The host function the script asked for: its name and arguments are in
+// worker_support.c, and so is where the answer goes.
+@c_callback
+w_call(vm: ptr) -> int {
+    r = child.call_host(host(), ghl_req_name(), ghl_req_args())
+    ghl_set_reply(r.kind, r.text)
+    return 0
+}
+
+main() {
+    h, err = child.open("factor-worker")
+    if err != "" {
+        println(err)
+        exit(2)
+    }
+    if child.read_script(h) != "" { exit(1) }
+    // libfactor is loaded and the VM started here, before the lockdown:
+    // afterwards the worker opens nothing. guest.launch gives the worker no
+    // environment, so the host names the library and the image as arguments.
+    if os.args_count() > 2 {
+        setenv("AETHER_FACTOR_SONAME", os.args_get(1), 1)
+        setenv("AETHER_FACTOR_IMAGE", os.args_get(2), 1)
+    }
+    if factor.init() != 0 {
+        child.error(h, "factor-worker: cannot load libfactor (AETHER_FACTOR_SONAME)")
+        exit(1)
+    }
+    up = factor.eval("USING: math prettyprint ; 1 1 + pprint")
+    if up != "2" {
+        child.error(h, "factor-worker: the VM did not start from the image (AETHER_FACTOR_IMAGE): ${up}")
+        exit(1)
+    }
+    // The vocabularies the script will name (the host's third argument): a
+    // USING: of one reads the disk the first time it is parsed, which the
+    // lockdown no longer allows.
+    if os.args_count() > 3 {
+        pre = factor.eval(os.args_get(3))
+        if pre != "" {
+            child.error(h, "factor-worker: loading the script's vocabularies failed: ${pre}")
+            exit(1)
+        }
+    }
+    ghl_keep(h as ptr)
+    ghl_call_set(w_call)
+    if ghl_hooks_install() != 1 {
+        child.error(h, "factor-worker: libfactor has no factor_embed_map_set_hooks (needs the embed-api fork with the k-v hooks)")
+        exit(1)
+    }
+    child.run(h) callback {
+        out = factor.eval(h.source)
+        if string.length(out) > 0 { child.say(h, out) }
+        child.done(h, 0)
+    }
+    exit(0)
+}

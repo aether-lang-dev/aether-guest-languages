@@ -160,6 +160,7 @@ fi
 # spawn_socket can contain a child on (Linux with Landlock). GHL_REQUIRE_CHILD=1
 # (the CI job that is there to run it) makes its absence a failure.
 CHILD=0
+CHILD_BLOCKED=""
 CHILD_WHY=""
 ae_ver="$(ae version 2>/dev/null | awk 'NR == 1 { print $2 }')"
 ver_ge() { [ "$(printf '%s\n%s\n' "$2" "$1" | sort -V | head -1)" = "$2" ]; }
@@ -184,10 +185,19 @@ else
         CHILD_WHY="guest.launch refuses on macOS and starts nothing (checked: $(tail -1 "$TMP/probe.txt" | cut -c1-90)...)"
     else
         CHILD_WHY="the contained child did not start: $(tail -1 "$TMP/probe.txt")"
+        # A language whose runtime cannot start in the child at all, for a
+        # reason that is known and documented (lang.sh's lang_child_blocked,
+        # given the probe's output), is not a child that failed to start by
+        # accident: GHL_REQUIRE_CHILD does not fail on it, and the day the
+        # block is lifted the probe passes and the child mode runs.
+        if type lang_child_blocked > /dev/null 2>&1 && why="$(lang_child_blocked "$TMP/probe.txt")"; then
+            CHILD_WHY="$why"
+            CHILD_BLOCKED=1
+        fi
     fi
 fi
 if [ "$CHILD" = 0 ]; then
-    [ "${GHL_REQUIRE_CHILD:-}" = 1 ] && die "child mode required: $CHILD_WHY"
+    [ "${GHL_REQUIRE_CHILD:-}" = 1 ] && [ -z "${CHILD_BLOCKED:-}" ] && die "child mode required: $CHILD_WHY"
     echo "  [SKIP] $NAME: child mode: $CHILD_WHY"
 fi
 

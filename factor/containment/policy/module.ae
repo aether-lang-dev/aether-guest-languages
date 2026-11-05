@@ -1,0 +1,111 @@
+// policy: what the in-process host (host.ae) and the contained-child host
+// (child_host.ae) share: the policy grammar, the facts a row's script is
+// given, the checks' source, and the judge's verdict. add_grant and grants
+// are aether's tests/integration/contrib_host_stunt/host.ae, unchanged.
+
+exports(add_grant, grants, facts, checks_source, preload_source, verdict)
+
+import std.sandbox
+import std.os
+import std.fs
+import std.string
+
+extern exit(code: int)
+
+add_grant(g: sandbox.Grants, item: string) {
+    eq = string.index_of(item, "=")
+    kind = item
+    pat = ""
+    if eq >= 0 {
+        kind = string.substring(item, 0, eq)
+        pat = string.substring(item, eq + 1, string.length(item))
+    }
+    if kind == "fs_read" { sandbox.grant_fs_read(g, pat) return }
+    if kind == "fs_write" { sandbox.grant_fs_write(g, pat) return }
+    if kind == "exec" { sandbox.grant_exec(g, pat) return }
+    if kind == "env" { sandbox.grant_env(g, pat) return }
+    if kind == "native" { sandbox.grant_native(g, pat) return }
+    if kind == "fork" { sandbox.grant_fork(g) return }
+    if kind == "tcp" {
+        host = pat
+        port = 0
+        colon = string.index_of(pat, ":")
+        if colon >= 0 {
+            host = string.substring(pat, 0, colon)
+            p, perr = string.to_int(string.substring(pat, colon + 1, string.length(pat)))
+            if perr == "" { port = p }
+        }
+        sandbox.grant_tcp(g, host, port)
+        return
+    }
+    println("host: unknown grant kind ${kind}")
+    exit(2)
+}
+
+grants(spec: string) -> sandbox.Grants {
+    g = sandbox.new("factor") {
+    }
+    if spec != "-" && spec != "" {
+        items = string.split(spec, ",")
+        n = string.array_size(items)
+        i = 0
+        while i < n {
+            add_grant(g, string.array_get(items, i))
+            i = i + 1
+        }
+        string.array_free(items)
+    }
+    return g
+}
+
+// What the host knows before the sandbox is in force, as Factor constants of
+// the vocabulary stunt (checks.factor's): that HOME is in its environment (so
+// a NULL from getenv is a refusal, not an unset variable), that /bin/sh is
+// there, and the libraries the dlopen rows load (GHL_LIBM, GHL_LIBC_NAME,
+// GHL_LIBC_PATH: the names stunt's own rows use, set by tests/stunt_lib.sh;
+// "" when there is none).
+facts() -> string {
+    f = "IN: stunt\n"
+    if os.getenv("HOME") != "" { f = "${f}CONSTANT: HOST_HOME_SET t\n" } else { f = "${f}CONSTANT: HOST_HOME_SET f\n" }
+    if fs.exists("/bin/sh") == 1 { f = "${f}CONSTANT: HOST_SH t\n" } else { f = "${f}CONSTANT: HOST_SH f\n" }
+    f = "${f}CONSTANT: LIBM_PATH \"${os.getenv("GHL_LIBM")}\"\n"
+    f = "${f}CONSTANT: LIBC_NAME \"${os.getenv("GHL_LIBC_NAME")}\"\n"
+    f = "${f}CONSTANT: LIBC_PATH \"${os.getenv("GHL_LIBC_PATH")}\"\n"
+    return f
+}
+
+checks_source() -> string {
+    path = os.getenv("FACTOR_CHECKS")
+    if path == "" {
+        println("host: FACTOR_CHECKS is not set (the path of checks.factor)")
+        exit(2)
+    }
+    text, err = fs.read(path)
+    if err != "" {
+        println("host: cannot read ${path}: ${err}")
+        exit(2)
+    }
+    return text
+}
+
+// The vocabularies checks.factor uses, to be loaded before the sandbox is in
+// force (preload.factor beside the checks).
+preload_source() -> string {
+    path = os.getenv("FACTOR_PRELOAD")
+    if path == "" {
+        println("host: FACTOR_PRELOAD is not set (the path of preload.factor)")
+        exit(2)
+    }
+    text, err = fs.read(path)
+    if err != "" {
+        println("host: cannot read ${path}: ${err}")
+        exit(2)
+    }
+    return text
+}
+
+// The judge's verdict, from the end of the line.
+verdict(line: string) -> int {
+    if string.ends_with(line, ": PASS") == 1 { return 0 }
+    return 1
+}
