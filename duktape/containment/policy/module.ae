@@ -1,0 +1,99 @@
+// policy: what the in-process host (host.ae) and the contained-child host
+// (child_host.ae) share: the policy grammar, the facts a row's script is
+// given, the checks' source, and the judge's verdict. add_grant and grants
+// are aether's tests/integration/contrib_host_stunt/host.ae, unchanged.
+
+exports(add_grant, grants, facts, checks_source, verdict)
+
+import std.sandbox
+import std.os
+import std.fs
+import std.string
+
+extern exit(code: int)
+
+add_grant(g: sandbox.Grants, item: string) {
+    eq = string.index_of(item, "=")
+    kind = item
+    pat = ""
+    if eq >= 0 {
+        kind = string.substring(item, 0, eq)
+        pat = string.substring(item, eq + 1, string.length(item))
+    }
+    if kind == "fs_read" { sandbox.grant_fs_read(g, pat) return }
+    if kind == "fs_write" { sandbox.grant_fs_write(g, pat) return }
+    if kind == "exec" { sandbox.grant_exec(g, pat) return }
+    if kind == "env" { sandbox.grant_env(g, pat) return }
+    if kind == "native" { sandbox.grant_native(g, pat) return }
+    if kind == "fork" { sandbox.grant_fork(g) return }
+    if kind == "tcp" {
+        host = pat
+        port = 0
+        colon = string.index_of(pat, ":")
+        if colon >= 0 {
+            host = string.substring(pat, 0, colon)
+            p, perr = string.to_int(string.substring(pat, colon + 1, string.length(pat)))
+            if perr == "" { port = p }
+        }
+        sandbox.grant_tcp(g, host, port)
+        return
+    }
+    println("host: unknown grant kind ${kind}")
+    exit(2)
+}
+
+grants(spec: string) -> sandbox.Grants {
+    g = sandbox.new("duktape") {
+    }
+    if spec != "-" && spec != "" {
+        items = string.split(spec, ",")
+        n = string.array_size(items)
+        i = 0
+        while i < n {
+            add_grant(g, string.array_get(items, i))
+            i = i + 1
+        }
+        string.array_free(items)
+    }
+    return g
+}
+
+// What the host knows before the sandbox is in force, as JavaScript globals:
+// that HOME is in its environment (so an undefined from env() is a refusal,
+// not an unset variable), that /bin/sh is there, which files the bridge's
+// readFile could read (/etc/passwd and ./stunt-fixture.txt: an undefined for
+// one of them is a refusal, not a missing file), and that the working
+// directory takes a new file (so a writeFile that answers false is a refusal,
+// not a full disk).
+facts() -> string {
+    f = "HOST_EXISTS = [];\n"
+    if os.getenv("HOME") != "" { f = "${f}HOST_HOME_SET = true;\n" }
+    if fs.exists("/bin/sh") == 1 { f = "${f}HOST_SH = true;\n" }
+    if fs.exists("/etc/passwd") == 1 { f = "${f}HOST_EXISTS.push('/etc/passwd');\n" }
+    if fs.exists("./stunt-fixture.txt") == 1 { f = "${f}HOST_EXISTS.push('./stunt-fixture.txt');\n" }
+    if fs.write("./stunt-probe.txt", "probe\n") == "" {
+        f = "${f}HOST_CWD_WRITABLE = true;\n"
+        _d = fs.delete("./stunt-probe.txt")
+    }
+    return f
+}
+
+checks_source() -> string {
+    path = os.getenv("DUKTAPE_CHECKS")
+    if path == "" {
+        println("host: DUKTAPE_CHECKS is not set (the path of checks.js)")
+        exit(2)
+    }
+    text, err = fs.read(path)
+    if err != "" {
+        println("host: cannot read ${path}: ${err}")
+        exit(2)
+    }
+    return text
+}
+
+// The judge's verdict, from the end of the line.
+verdict(line: string) -> int {
+    if string.ends_with(line, ": PASS") == 1 { return 0 }
+    return 1
+}

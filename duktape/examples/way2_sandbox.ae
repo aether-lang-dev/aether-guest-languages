@@ -1,0 +1,13 @@
+import duktape
+import std.sandbox
+
+main() {
+    reader = sandbox.new("reader") { grant_env("HOME") }
+    script = <<JS
+        print('HOME     ', env('HOME'));
+        print('USER     ', env('USER'));
+        print('passwd   ', readFile('/etc/passwd') === undefined ? 'refused' : 'read it');
+        print('exec     ', exec('true'));
+    JS
+    if duktape.run_sandboxed(reader, script) != 0 { println("js failed") }
+}

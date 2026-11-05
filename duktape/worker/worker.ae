@@ -1,0 +1,145 @@
+// duktape-worker: Duktape in a contained child, the guest's side of std.guest.
+//
+// A host starts this with guest.launch (sandbox.spawn_socket: Landlock and
+// seccomp on Linux; refused on macOS and Windows, where nothing starts) and
+// sends it the functions it may call (MOUNT) and a JavaScript script
+// (SCRIPT). The worker loads libduktape (AETHER_DUKTAPE_SONAME, else the
+// bridge's usual names) before it locks itself down, then runs the script in
+// the bridge's two-way VM inside std.guest.child's lockdown:
+//
+//   print(...)          SAY, the arguments String()'d and tab-joined
+//   NAME(...)           for each mounted NAME: CALL NAME [args as JSON],
+//                       the host's answer decoded back (JSON.parse; a granted
+//                       file is {granted: true, text: ...}); a FAIL throws an
+//                       Error with the host's message; a CANCEL throws
+//                       "cancelled by host: ..."
+//   the end             DONE 0, or ERROR and the error's text
+//
+// The bridge's own env, readFile, fileExists, writeFile and exec (the
+// bindings that check a sandbox's grants in-process) are removed before the
+// script runs: a contained script has no use for a binding that asks the
+// worker's own empty grant list, and what it reaches is the host's calls.
+// Duktape has no standard library on disk, no module loader and no I/O of
+// its own, so there is nothing else to load before the lockdown.
+//
+// Usage (by a host): duktape-worker [<libduktape soname or path>]
+//
+// A CANCEL is looked for in every call's reply. There is no hook to look for
+// it from inside a loop: libduktape as packaged has no execution limit
+// (DUK_USE_EXEC_TIMEOUT_CHECK is off), so a script that loops without calling
+// the host never sees one, and the host kills it after its grace period. The
+// containment is the host's, not the worker's.
+
+import duktape
+import std.guest.child
+import std.os
+import std.string
+
+extern exit(code: int)
+extern setenv(name: string, value: string, overwrite: int) -> int
+extern ghl_keep(p: ptr)
+extern ghl_kept() -> ptr
+
+@source("worker_support.c")
+
+// The Host the callbacks below answer through (one per process).
+fn host() -> *child.Host {
+    return ghl_kept() as *child.Host
+}
+
+// __say(text)
+@c_callback
+w_say(vm: ptr) -> int {
+    child.say(host(), duktape.arg_str(vm, 1))
+    return 0
+}
+
+// __call(name, args_json) -> "KIND text". One string: a Duktape C function
+// returns at most one value.
+@c_callback
+w_call(vm: ptr) -> int {
+    r = child.call_host(host(), duktape.arg_str(vm, 1), duktape.arg_str(vm, 2))
+    duktape.push_str(vm, "${r.kind} ${r.text}")
+    return 1
+}
+
+// The glue between JavaScript and the protocol, run before the script.
+fn prelude() -> string {
+    return <<JS
+(function (G) {
+  var say = __say, call = __call, mounts = __MOUNTS;
+  delete G.__say; delete G.__call; delete G.__MOUNTS;
+
+  // The bridge's in-process bindings are not for a contained script.
+  var gone = ['env', 'readFile', 'fileExists', 'writeFile', 'exec'];
+  for (var i = 0; i < gone.length; i++) delete G[gone[i]];
+
+  G.print = function () {
+    var t = [];
+    for (var i = 0; i < arguments.length; i++) t.push(String(arguments[i]));
+    say(t.join('\t'));
+  };
+
+  function mount(name) {
+    G[name] = function () {
+      var r = call(name, JSON.stringify(Array.prototype.slice.call(arguments)));
+      var sp = r.indexOf(' ');
+      var kind = r.substring(0, sp), text = r.substring(sp + 1);
+      if (kind === 'VALUE') return JSON.parse(text);
+      if (kind === 'CANCEL') throw new Error('cancelled by host: ' + text);
+      throw new Error(text);
+    };
+  }
+  for (var j = 0; j < mounts.length; j++) mount(mounts[j]);
+})(this);
+JS
+}
+
+// The mounted names, as a JavaScript array literal.
+fn mounts_js(h: *child.Host) -> string {
+    out = "__MOUNTS = ["
+    n = child.mount_count(h)
+    i = 0
+    while i < n {
+        name, _min, _max = child.mount_at(h, i)
+        out = "${out}\"${name}\","
+        i = i + 1
+    }
+    return "${out}];\n"
+}
+
+main() {
+    h, err = child.open("duktape-worker")
+    if err != "" {
+        println(err)
+        exit(2)
+    }
+    if child.read_script(h) != "" { exit(1) }
+    // libduktape is loaded here, before the lockdown: afterwards the worker
+    // opens nothing. guest.launch gives the worker no environment, so the
+    // host names the library as the first argument.
+    if os.args_count() > 1 && os.args_get(1) != "" {
+        setenv("AETHER_DUKTAPE_SONAME", os.args_get(1), 1)
+    }
+    vm = duktape.vm_new()
+    if vm == null {
+        child.error(h, "duktape-worker: cannot load libduktape (AETHER_DUKTAPE_SONAME)")
+        exit(1)
+    }
+    ghl_keep(h as ptr)
+    duktape.vm_register(vm, "__say", w_say)
+    duktape.vm_register(vm, "__call", w_call)
+    if duktape.vm_eval(vm, "${mounts_js(h)}${prelude()}") != 0 {
+        child.error(h, "duktape-worker: the prelude failed: ${duktape.vm_result_str(vm)}")
+        exit(1)
+    }
+    duktape.vm_pop_result(vm)
+    child.run(h) callback {
+        if duktape.vm_eval(vm, h.source) == 0 {
+            child.done(h, 0)
+        } else {
+            child.error(h, duktape.vm_result_str(vm))
+        }
+    }
+    exit(0)
+}

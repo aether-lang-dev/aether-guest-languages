@@ -1,0 +1,10 @@
+import duktape
+
+main() {
+    script = <<JS
+        var t = ['a', "b", 'c'];
+        for (var i = 0; i < t.length; i++) print(i + 1, t[i]);
+        print(JSON.stringify({ q: 'quote"d' }), Duktape.version);
+    JS
+    if duktape.run(script) != 0 { println("js failed") }
+}
