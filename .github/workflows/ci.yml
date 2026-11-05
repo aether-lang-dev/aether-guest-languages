@@ -1,8 +1,10 @@
 name: CI
 
 # ae comes from aeb's get.sh at the versions ci/versions.env pins (binary
-# releases). The in-process jobs run on AE_PIN; the contained-child job needs
-# std.guest, so AE_CHILD_PIN.
+# releases). The in-process jobs run on AE_PIN; the contained-child jobs need
+# std.guest, so AE_CHILD_PIN. Each job runs one language (GUEST_LANG), and
+# each run also checks the language's README "Stunt parity" table for the
+# columns it can run (tests/parity.sh).
 
 on:
   push:
@@ -26,7 +28,7 @@ jobs:
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - run: ae version
       - name: Specs and containment rows
-        run: sh tests/run.sh
+        run: GUEST_LANG=lua sh tests/run.sh
 
   linux-child:
     name: Linux (in-process and contained child, Lua 5.4)
@@ -43,7 +45,7 @@ jobs:
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - run: ae version
       - name: Specs and containment rows, the child required
-        run: GHL_REQUIRE_CHILD=1 sh tests/run.sh
+        run: GUEST_LANG=lua GHL_REQUIRE_CHILD=1 sh tests/run.sh
 
   macos:
     name: macOS (in-process, Lua 5.5 and 5.4)
@@ -60,6 +62,60 @@ jobs:
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - run: ae version
       - name: Lua 5.5 (Homebrew's lua)
-        run: sh tests/run.sh
+        run: GUEST_LANG=lua sh tests/run.sh
       - name: Lua 5.4 (lua@5.4)
-        run: rm -rf build && LUA_VERSION=5.4 sh tests/run.sh
+        run: rm -rf build && GUEST_LANG=lua LUA_VERSION=5.4 sh tests/run.sh
+
+  # Python: the runtime library only (libpython3.12t64 on Ubuntu 24.04, the
+  # libpython of /usr/bin/python3); no python3-dev, which the bridge does not
+  # need to build. tests/python_env.sh asks PYTHON for its library.
+  linux-python:
+    name: Linux (in-process, Python 3.12)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Python
+        run: sudo apt-get update && sudo apt-get install -y python3 libpython3.12t64
+      - name: ae (AE_PIN)
+        run: |
+          . ci/versions.env
+          curl -fsSL "https://raw.githubusercontent.com/aether-lang-dev/aeb/$AEB_REF/get.sh" \
+            | AE_PIN="$AE_PIN" AEB_REF="$AEB_REF" sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - run: ae version
+      - name: Specs and containment rows
+        run: GUEST_LANG=python PYTHON=/usr/bin/python3 sh tests/run.sh
+
+  linux-python-child:
+    name: Linux (in-process and contained child, Python 3.12)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Python
+        run: sudo apt-get update && sudo apt-get install -y python3 libpython3.12t64
+      - name: ae (AE_CHILD_PIN)
+        run: |
+          . ci/versions.env
+          curl -fsSL "https://raw.githubusercontent.com/aether-lang-dev/aeb/$AEB_REF/get.sh" \
+            | AE_PIN="$AE_CHILD_PIN" AEB_REF="$AEB_REF" sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - run: ae version
+      - name: Specs and containment rows, the child required
+        run: GUEST_LANG=python PYTHON=/usr/bin/python3 GHL_REQUIRE_CHILD=1 sh tests/run.sh
+
+  macos-python:
+    name: macOS (in-process, Python 3.13)
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Python
+        run: brew install python@3.13
+      - name: ae (AE_PIN)
+        run: |
+          . ci/versions.env
+          curl -fsSL "https://raw.githubusercontent.com/aether-lang-dev/aeb/$AEB_REF/get.sh" \
+            | AE_PIN="$AE_PIN" AEB_REF="$AEB_REF" sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - run: ae version
+      - name: Homebrew's python@3.13
+        run: GUEST_LANG=python PYTHON="$(brew --prefix python@3.13)/bin/python3.13" sh tests/run.sh
