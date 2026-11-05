@@ -7,12 +7,12 @@ more, each held to the same named checks.
 A language here can be run four ways, and the repository does not choose
 for you. Every way stays supported; they differ in how much they contain
 ([lua/README.md](lua/README.md#four-ways-to-run-lua-from-aether),
-[python/README.md](python/README.md#four-ways-to-run-python-from-aether) and
-[duktape/README.md](duktape/README.md#four-ways-to-run-javascript-from-aether)
-[tcl/README.md](tcl/README.md#four-ways-to-run-tcl-from-aether)
-[perl/README.md](perl/README.md#four-ways-to-run-perl-from-aether)
+[python/README.md](python/README.md#four-ways-to-run-python-from-aether),
+[duktape/README.md](duktape/README.md#four-ways-to-run-javascript-from-aether),
+[tcl/README.md](tcl/README.md#four-ways-to-run-tcl-from-aether),
+[perl/README.md](perl/README.md#four-ways-to-run-perl-from-aether) and
 [ruby/README.md](ruby/README.md#four-ways-to-run-ruby-from-aether)
-show all four, with examples):
+each show all four, with examples):
 
 1. **Embed.** The interpreter is loaded into the Aether program and called
    directly (`import lua`, then `lua.run(...)`, the script often a heredoc,
@@ -60,10 +60,7 @@ the tests.
 ## Layout
 
 ```
-aether.toml            the package: exports lua/, python/, duktape/ and js/ (modules = "lua, python, duktape, js")
-aether.toml            the package: exports lua/, python/ and tcl/ (modules = "lua, python, tcl")
-aether.toml            the package: exports lua/, python/ and perl/ (modules = "lua, python, perl")
-aether.toml            the package: exports lua/, python/ and ruby/ (modules = "lua, python, ruby")
+aether.toml            the package: exports every language directory (modules = "lua, python, duktape, js, tcl, perl, ruby")
 ci/versions.env        toolchain pins (AE_PIN, AE_CHILD_PIN, AE_SPAWN_PIN, AEB_REF, AETHER_STUNT_REF)
 lua/
   module.ae            import lua: the bridge's API
@@ -127,10 +124,8 @@ tests/
   test_stunt_*.sh      one per policy: aether's contrib_host_stunt lists
   test_catalogue.sh    every catalogue row is named here or left out
   parity.sh            renders and checks a README's Stunt parity table
-  lua_env.sh, python_env.sh, duktape_env.sh  find the runtime library on this machine
-  lua_env.sh, python_env.sh, tcl_env.sh  find the runtime library on this machine
-  lua_env.sh, python_env.sh, perl_env.sh  find the runtime library on this machine
-  lua_env.sh, python_env.sh, ruby_env.sh  find the runtime library on this machine
+  <lang>_env.sh        find the language's runtime library on this machine (lua, python,
+                       duktape, tcl, perl, ruby)
 ```
 
 ## Using a language from this repository
@@ -152,12 +147,9 @@ the tree it installed (there are no tagged releases yet):
 "github.com/aether-lang-dev/aether-guest-languages" = "sha256-..."
 ```
 
-Then `import lua` resolves to `lua/module.ae`, `import python` to
-`python/module.ae` and `import duktape` to `duktape/module.ae` (`import js`
-to `js/module.ae`, its alias):
-`python/module.ae` and `import tcl` to `tcl/module.ae`:
-`python/module.ae` and `import perl` to `perl/module.ae`:
-`python/module.ae` and `import ruby` to `ruby/module.ae`:
+Then `import lua` resolves to `lua/module.ae`, and likewise `import python`,
+`import duktape` (`import js`, its alias), `import tcl`, `import perl` and
+`import ruby` to their directories' `module.ae`:
 `ae build`, `ae run` and `ae lib-path` put the package on the module search
 path, and the bridge's C is compiled into your program from the `@source`
 line in `module.ae`, with nothing to build beforehand.
@@ -172,34 +164,19 @@ branch):
 
 `ae build` then prints `Overriding ... -> ../aether-guest-languages`. For a
 one-off without a manifest, `ae build app.ae --lib <checkout>` does the
-same, since the checkout's root holds `lua/module.ae`, `python/module.ae`
-and `duktape/module.ae`.
-and `tcl/module.ae`.
-same, since the checkout's root holds `lua/module.ae`, `python/module.ae` and
-`perl/module.ae`.
-same, since the checkout's root holds `lua/module.ae`,
-`python/module.ae` and `ruby/module.ae`.
+same, since the checkout's root holds each language's `<lang>/module.ae`.
 
-At run time the bridge `dlopen`s the language's library: for Lua, set
+At run time the bridge `dlopen`s the language's library. Each bridge tries
+the usual sonames for its platform first (its README lists them), and an
+environment variable names an exact soname or path when that is not enough:
 `AETHER_LUA_SONAME` (for example `liblua5.4.so.0`, or
-`/opt/homebrew/lib/liblua.dylib`) unless the system has an unversioned
-`liblua.so`; for Python, `AETHER_PYTHON_SONAME` (for example
-`libpython3.12.so.1.0`) unless it has `libpython3.so`; for Duktape,
-`AETHER_DUKTAPE_SONAME` (for example `libduktape.so.207`, or Homebrew's
-`/opt/homebrew/lib/libduktape.so`) unless it is one of the names the bridge
-tries (`libduktape.so.207`, `libduktape.so.2`, `libduktape.so`, Homebrew's).
-No language's dev package is needed to build.
-`libpython3.12.so.1.0`) unless it has `libpython3.so`; for Tcl,
-`AETHER_TCL_SONAME` (for example `libtcl8.6.so.0`), unless one of the names
-tcl/README.md lists loads (Debian's `libtcl8.6.so.0`, Homebrew's tcl-tk,
-macOS's own Tcl). No language's dev package is needed to build.
-`libpython3.12.so.1.0`) unless it has `libpython3.so`; for Perl,
-`AETHER_PERL_SONAME` (for example `/usr/lib/x86_64-linux-gnu/libperl.so.5.38`)
-unless it has `libperl.so`. None of the languages' dev packages is needed to
-build.
-`libpython3.12.so.1.0`) unless it has `libpython3.so`; for Ruby,
-`AETHER_RUBY_SONAME` (for example `/usr/lib/libruby.so.3.4.12`) unless it has
-`libruby.so`. None of the languages' dev packages is needed to build.
+`/opt/homebrew/lib/liblua.dylib`), `AETHER_PYTHON_SONAME` (for example
+`libpython3.12.so.1.0`), `AETHER_DUKTAPE_SONAME` (`libduktape.so.207`, or
+Homebrew's `/opt/homebrew/lib/libduktape.so`), `AETHER_TCL_SONAME`
+(`libtcl8.6.so.0`), `AETHER_PERL_SONAME` (for example
+`/usr/lib/x86_64-linux-gnu/libperl.so.5.38`) and `AETHER_RUBY_SONAME`
+(for example `/usr/lib/libruby.so.3.4.12`). `tests/<lang>_env.sh` is one way
+to find each. No language's dev package is needed to build.
 
 ## Toolchain
 
@@ -247,32 +224,16 @@ the in-process rows run under the release's `libaether_sandbox.so`; the
 child rows run where ae is 0.878.0 or later and the kernel has Landlock
 (`GHL_REQUIRE_CHILD=1` makes a missing child mode a failure, as CI does).
 
-CI (`.github/workflows/ci.yml`), one language per job: Linux with Ubuntu's
-liblua5.4-dev, with its libpython3.12 and with its libduktape207 (the
-runtime only, no dev package), each on `AE_PIN` (in-process), on
-`AE_CHILD_PIN` (in-process and contained child) and on `AE_SPAWN_PIN`;
-macOS with Homebrew's lua (5.5) and lua@5.4, with its python@3.13 and with
-its duktape, on `AE_PIN`.
+CI (`.github/workflows/ci.yml`), one language per job, four jobs per
+language: Linux (Ubuntu 24.04) on `AE_PIN` (in-process), on `AE_CHILD_PIN`
+(in-process and contained child) and on `AE_SPAWN_PIN` (the same, on the
+first ae whose preload holds the exec rows), and macOS on `AE_PIN`. Linux
+installs only each language's runtime package, never a dev package:
+liblua5.4-dev (Lua), libpython3.12, libduktape207, tcl8.6, perl and
+libperl5.38t64, ruby and libruby3.2; macOS uses Homebrew's lua (5.5) and
+lua@5.4, python@3.13, duktape, tcl-tk and ruby, and the system perl (5.34).
 
-## Moving from `contrib.host.lua`, `contrib.host.python` or `contrib.host.duktape`
-liblua5.4-dev, with its libpython3.12 and with its tcl8.6 (the runtime
-library; no tcl-dev), each on `AE_PIN` (in-process), on `AE_CHILD_PIN`
-(in-process and contained child) and on `AE_SPAWN_PIN`; macOS with
-Homebrew's lua (5.5) and lua@5.4, its python@3.13 and its tcl-tk, on
-`AE_PIN`.
-
-## Moving from `contrib.host.lua`, `contrib.host.python` or `contrib.host.tcl`
-liblua5.4-dev, and with its libpython3.12, each on `AE_PIN` (in-process)
-and on `AE_CHILD_PIN` (in-process and contained child); macOS with
-Homebrew's lua (5.5) and lua@5.4, with its python@3.13 and with the system's
-perl (5.34), on `AE_PIN`. Perl on Linux uses Ubuntu's perl and libperl5.38t64.
-
-## Moving from `contrib.host.lua`, `contrib.host.python` or `contrib.host.perl`
-Homebrew's lua (5.5) and lua@5.4, with its python@3.13 and with its ruby, on
-`AE_PIN`. Ruby's Linux jobs use Ubuntu's ruby and libruby3.2, on `AE_PIN`, on
-`AE_CHILD_PIN` and on `AE_SPAWN_PIN`.
-
-## Moving from `contrib.host.lua`, `contrib.host.python` or `contrib.host.ruby`
+## Moving from `contrib.host.<lang>`
 
 The Lua bridge was copied from aether at `d3732a0ed` (lua/PROVENANCE.md).
 Its functions and names are unchanged, so moving is the import line and the
