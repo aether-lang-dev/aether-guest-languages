@@ -1,0 +1,35 @@
+// Way 4 of README.md: Go in a contained child, over std.guest.
+//
+//   CGO_ENABLED=0 go build -o build/go-example-worker ./go/examples/worker
+//   ae build go/examples/contained.ae -o build/go-contained && build/go-contained build/go-example-worker
+//
+// On macOS guest.launch refuses and starts nothing.
+
+import std.guest
+import std.sandbox
+import std.os
+
+main() {
+    perms = sandbox.new("go") {
+    }                                     // a static Go worker needs nothing from disk
+    g, err = guest.launch(perms, os.args_get(1), null, "go", "")
+    if err != "" {
+        println("not started: ${err}")
+        return
+    }
+    guest.mount(&g, "greet", 1, 1)
+    guest.start(&g, "")
+    while true {
+        e = guest.next(&g)
+        if e.kind == "SAY" {
+            println(guest.printable(e.text))
+        } else if e.kind == "CALL" {
+            guest.answer(&g, guest.json_string("hello, Go"))
+        } else if e.kind == "LOG" {
+        } else {
+            println("${e.kind} ${e.code} ${guest.printable(e.text)}")
+            break
+        }
+    }
+    guest.close(&g)
+}

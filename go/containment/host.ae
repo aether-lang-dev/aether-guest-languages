@@ -1,0 +1,144 @@
+// The host the containment tests drive (tests/test_stunt_*.sh). Usage:
+//
+//   host inproc <policy> <check> <expectation>
+//
+// Runs one row of stunt's catalogue (aether contrib/host/stunt), written in
+// Go (checks.go beside this, built to $GO_CHECKS), as a child the Go bridge
+// starts under the policy's grants, and prints stunt's line for it:
+//
+//   <check>: <outcome> (<detail>) - expected <expectation>: PASS|FAIL
+//
+// exiting 0 when it matched. "inproc" is the other languages' name for ways
+// 2 and 3, the bridge's own sandboxed run; here the bridge starts a process,
+// so nothing runs in this one. Three things are Go's own:
+//
+//   - The bridge gives its child no arguments, so the row and its
+//     expectation travel in the environment (GHL_ROW, GHL_EXPECT), with the
+//     facts the host found before the sandbox (GHL_HOME_SET, GHL_SH; the
+//     library names are the harness's GHL_LIBM, GHL_LIBC_NAME, GHL_LIBC_PATH).
+//   - go.run_sandboxed_with_map starts the child with the preload and the
+//     grants where there is a preload (Linux). Where there is none (macOS)
+//     it returns -1 and starts nothing, which this host reports; with
+//     GHL_GO_UNCONTAINED=1 (tests/go_env.sh sets it on macOS) it starts the
+//     child with go.run instead, so the rows run and show what is not held.
+//   - A child cannot call back into this host, so the rows that call host
+//     functions (binding-*, callback-*) and spin are left out in-process
+//     (go/containment/lang.sh); the shared map is the one channel, and this
+//     host checks its own map afterwards for what the child wrote.
+//
+// <policy> is "-" for no grants, or kind=pattern,... with kinds fs_read,
+// fs_write, exec, env, tcp (host:port), native, fork. "<outer>|<inner>"
+// runs the child inside sandbox.enforce(<outer>); the bridge ignores the
+// enclosing level and the child gets only <inner> (README.md, "Gaps").
+
+@source("host_support.c")
+
+import go
+import policy
+import std.sandbox
+import std.os
+import std.fs
+import std.string
+
+extern exit(code: int)
+extern setenv(name: string, value: string, overwrite: int) -> int
+extern aether_sandbox_depth() -> int
+extern ghl_map_new() -> long
+extern ghl_map_put(key: string, value: string)
+extern ghl_map_get(key: string) -> string
+
+// Everything that reads the environment or the file system, before any
+// enforce block: inside one, getenv and exists answer for the grants.
+// Returns the checks binary's path; the map's token goes to the caller.
+fn prepare(check: string, expect: string) -> string {
+    checks = os.getenv("GO_CHECKS")
+    if checks == "" {
+        println("host: GO_CHECKS is not set (the path of the built checks.go)")
+        exit(2)
+    }
+    setenv("GHL_ROW", check, 1)
+    setenv("GHL_EXPECT", expect, 1)
+    if os.getenv("HOME") != "" { setenv("GHL_HOME_SET", "1", 1) } else { setenv("GHL_HOME_SET", "0", 1) }
+    if fs.exists("/bin/sh") == 1 { setenv("GHL_SH", "1", 1) } else { setenv("GHL_SH", "0", 1) }
+    ghl_map_new()
+    ghl_map_put("input", "stunt-in")
+    return checks
+}
+
+fn run_row(g: sandbox.Grants, checks: string, uncontained: int) -> int {
+    if uncontained == 1 { return go.run(checks) }
+    return go.run_sandboxed_with_map(g, checks, ghl_map_new())
+}
+
+// What the child wrote to the map, as this host sees it: the bridge reads
+// the child's outputs back when it exits, and the host's inputs stay frozen.
+fn verify_map(check: string) -> string {
+    if check == "map-set" && ghl_map_get("output") != "from-go" {
+        return "${check}: the host's map has output = \"${ghl_map_get("output")}\", not \"from-go\" - host map: FAIL"
+    }
+    if check == "map-overwrite-input" && ghl_map_get("input") != "stunt-in" {
+        return "${check}: the host's map has input = \"${ghl_map_get("input")}\" - host map: FAIL"
+    }
+    return ""
+}
+
+fn finish(rc: int, before: int, check: string) {
+    after = aether_sandbox_depth()
+    if after != before {
+        println("host: ${check}: the bridge left ${after - before} level(s) in force")
+        exit(1)
+    }
+    if rc == -1 {
+        println("${check}: the child did not start (the bridge returned -1) - host: FAIL")
+        exit(3)
+    }
+    bad = verify_map(check)
+    if bad != "" {
+        println(bad)
+        exit(1)
+    }
+    exit(rc)
+}
+
+fn run_inproc(spec: string, check: string, expect: string) {
+    checks = prepare(check, expect)
+    uncontained = 0
+    if os.getenv("GHL_GO_UNCONTAINED") == "1" { uncontained = 1 }
+    bar = string.index_of(spec, "|")
+    if bar < 0 {
+        before = aether_sandbox_depth()
+        finish(run_row(policy.grants(spec), checks, uncontained), before, check)
+        return
+    }
+    outer = policy.grants(string.substring(spec, 0, bar))
+    // Starting a process is an act the enclosing level must allow: a
+    // subprocess bridge cannot run in a block that grants no exec (the
+    // bridge returns -1 and nothing starts). The nested test's outer levels
+    // grant files only, so this host adds what the bridge needs to start
+    // the checks program (exec; fork is not needed), which is not the row's
+    // business.
+    sandbox.grant_exec(outer, checks)
+    inner = policy.grants(string.substring(spec, bar + 1, string.length(spec)))
+    sandbox.enforce(outer) callback {
+        if aether_sandbox_depth() != 1 {
+            println("host: the enforce block is not one level deep")
+            exit(1)
+        }
+        before = aether_sandbox_depth()
+        finish(run_row(inner, checks, uncontained), before, check)
+    }
+}
+
+main() {
+    if os.args_count() != 5 {
+        println("usage: host inproc <policy> <check> <expectation>")
+        exit(2)
+    }
+    mode = os.args_get(1)
+    if mode == "inproc" {
+        run_inproc(os.args_get(2), os.args_get(3), os.args_get(4))
+    } else {
+        println("host: unknown mode ${mode}")
+        exit(2)
+    }
+}
