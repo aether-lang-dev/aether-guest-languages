@@ -1,0 +1,62 @@
+// Way 4 of README.md: Java in a contained child, over std.guest.
+//
+//   sh java/build.sh build/java
+//   ae build java/examples/contained.ae -o build/java-contained
+//   JAVA_HOME=... build/java-contained build/java/classes
+//
+// On macOS guest.launch refuses and starts nothing. On Linux the worker is a
+// JVM, which dies at startup today: the preload that spawn_socket adds
+// refuses it executable memory (README.md, "4"). The host reports what
+// happened either way.
+
+import std.guest
+import std.list
+import std.sandbox
+import std.os
+import std.string
+
+main() {
+    classes = os.args_get(1)
+    jh = os.getenv("JAVA_HOME")
+    // A JVM reads the JDK before it runs a line, so the spawn grants it.
+    perms = sandbox.new("java") {
+        grant_fs_read("${jh}/*")
+        grant_fs_read("${classes}/*")
+        grant_fs_read("/proc/*")
+        grant_fs_read("/sys/*")
+    }
+    args = list.new()
+    // AETHER_JAVA_FLAGS, as the bridge reads it: --enable-native-access=ALL-UNNAMED,
+    // and --enable-preview on JDK 21.
+    flags = string.split(os.getenv("AETHER_JAVA_FLAGS"), " ")
+    i = 0
+    while i < string.array_size(flags) {
+        if string.length(string.array_get(flags, i)) > 0 { list.add(args, string.array_get(flags, i)) }
+        i = i + 1
+    }
+    string.array_free(flags)
+    list.add(args, "-XX:-UsePerfData")
+    list.add(args, "-cp")
+    list.add(args, classes)
+    list.add(args, "ghl.worker.Worker")
+    g, err = guest.launch(perms, "${jh}/bin/java", args, "java", "")
+    if err != "" {
+        println("not started: ${err}")
+        return
+    }
+    guest.mount(&g, "greet", 1, 1)
+    guest.start(&g, "say hello from Java\ncall greet [\"Java\"]\nrow open-etc-passwd refused")
+    while true {
+        e = guest.next(&g)
+        if e.kind == "SAY" {
+            println(guest.printable(e.text))
+        } else if e.kind == "CALL" {
+            guest.answer(&g, guest.json_string("hello, Java"))
+        } else if e.kind == "LOG" {
+        } else {
+            println("${e.kind} ${e.code} ${guest.printable(e.text)}")
+            break
+        }
+    }
+    guest.close(&g)
+}

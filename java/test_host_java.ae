@@ -1,0 +1,96 @@
+// The Java bridge's own spec. aether had no test of the helper beyond a
+// JVM-side one; this one is for the C half added here (java.run*), which starts
+// a JVM as a child and returns its exit status, so what is asserted is the
+// status, the environment the child gets and what the platform allows:
+//
+//   - java.run starts a JVM on a class with nothing around it
+//   - java.run_sandboxed starts it under libaether_sandbox.so on Linux, with
+//     an empty grant list as well as with grants (the JVM needs the JDK's
+//     directory read before it runs a line, so what is asserted of the empty
+//     list is that it started: not -1); on macOS, where there is no such
+//     library, it starts nothing and returns -1
+//   - grant_jvm_runtime() builds a list a JVM runs under
+//   - a program that cannot start is -1, never an exit status of 127
+//
+// Skipped with no JDK: tests/run.sh sets JAVA_HOME, JAVA_BIN, JAVA_CLASSES (the
+// classes java/build.sh built), AETHER_JAVA_FLAGS and AETHER_JAVA_AGENT
+// (tests/java_env.sh, java/containment/lang.sh), and GHL_JAVA_UNCONTAINED=1 on
+// macOS, which is how this spec knows the platform has no preload.
+
+import java
+import std.spec
+import std.fs
+import std.os
+import std.sandbox
+import std.string
+
+extern setenv(name: string, value: string, overwrite: int) -> int
+
+main() {
+    fw = spec.init()
+
+    have_java = 0
+    if os.getenv("JAVA_BIN") != "" && os.getenv("JAVA_CLASSES") != "" { have_java = 1 }
+    no_preload = 0
+    if os.getenv("GHL_JAVA_UNCONTAINED") == "1" { no_preload = 1 }
+    classes = os.getenv("JAVA_CLASSES")
+    jh = os.getenv("JAVA_HOME")
+
+    spec.describe(fw, "java") {
+        spec.it_when(have_java, "java.run returns the JVM's exit status", "no JDK (tests/java_env.sh)") callback {
+            setenv("GHL_EXIT", "0", 1)
+            spec.assert_eq(java.run(classes, "ghl.examples.Exit"), 0, "exit 0")
+            setenv("GHL_EXIT", "7", 1)
+            spec.assert_eq(java.run(classes, "ghl.examples.Exit"), 7, "exit 7")
+            setenv("GHL_EXIT", "0", 1)
+        }
+
+        spec.it_when(have_java, "a class that is not there is the JVM's 1, a JVM that cannot start is -1", "no JDK (tests/java_env.sh)") callback {
+            spec.assert_eq(java.run(classes, "ghl.examples.NotThere"), 1, "no such class: java exits 1")
+            setenv("JAVA_BIN", "/nonexistent/ghl-java", 1)
+            spec.assert_eq(java.run(classes, "ghl.examples.Exit"), -1, "no such java")
+            setenv("JAVA_BIN", os.getenv("GHL_REAL_JAVA_BIN"), 1)
+        }
+
+        spec.it_when(have_java, "java.run_sandboxed with the JDK read, with grant_jvm_runtime, and with none", "no JDK (tests/java_env.sh)") callback {
+            setenv("GHL_EXIT", "5", 1)
+            some = sandbox.new("some") {
+                grant_fs_read("${jh}/*")
+                grant_fs_read("${classes}/*")
+                grant_fs_read("/proc/*")
+                grant_fs_read("/sys/*")
+            }
+            runtime = sandbox.new("runtime") {
+                java.grant_jvm_runtime()
+                grant_fs_read("${jh}/*")
+                grant_fs_read("${classes}/*")
+            }
+            empty = sandbox.new("empty") {
+            }
+            if no_preload == 1 {
+                spec.assert_eq(java.run_sandboxed(some, classes, "ghl.examples.Exit"), -1, "no preload: nothing starts")
+                spec.assert_eq(java.run_sandboxed(runtime, classes, "ghl.examples.Exit"), -1, "no preload: nothing starts")
+            } else {
+                // The JVM started (not -1). It ran (5) or, as of ae 0.889.0,
+                // died at startup (1): the preload refuses it executable memory
+                // (java/containment/lang.sh, wall_blocks). 5 is the day that changes.
+                rc1 = java.run_sandboxed(some, classes, "ghl.examples.Exit")
+                rc2 = java.run_sandboxed(runtime, classes, "ghl.examples.Exit")
+                spec.assert_true(rc1 == 5 || rc1 == 1, "a grant list that lets the JVM read its runtime starts it: ${rc1}")
+                spec.assert_true(rc2 == 5 || rc2 == 1, "grant_jvm_runtime and the JDK start it: ${rc2}")
+            }
+            if no_preload == 0 {
+                // Nothing granted: the JVM cannot read its own modules, so it
+                // exits non-zero, but it started (aether's serialiser used to
+                // return -1 for an empty list and start nothing).
+                rc = java.run_sandboxed(empty, classes, "ghl.examples.Exit")
+                spec.assert_true(rc > 0, "an empty grant list starts the JVM, which cannot run (${rc})")
+            } else {
+                spec.assert_eq(java.run_sandboxed(empty, classes, "ghl.examples.Exit"), -1, "no preload: nothing starts")
+            }
+            setenv("GHL_EXIT", "0", 1)
+        }
+    }
+
+    return spec.run_summary(fw)
+}

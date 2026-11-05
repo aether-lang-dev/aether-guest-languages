@@ -27,7 +27,11 @@
 # language cannot express it, in both modes or in-process only), escapes or
 # not held in-process, stricter in the child, or escaping the child's wall
 # (child_escapes). A language whose checks and worker are programs of their
-# own (Go) builds them in a lang_build hook.
+# own (Go) builds them in a lang_build hook. A language whose runtime cannot
+# start inside a wall at all (a JVM under the preload, which refuses it
+# executable memory) says so in wall_blocks, and the tests check that it dies
+# with BLOCK_MARK instead of assuming it: the table then has one "blocked"
+# cell for the mode, and a wall that lets the runtime start puts the rows back.
 #
 # Every outcome is also appended to build/parity-<lang>.tsv, from which
 # tests/parity.sh renders and checks the README's "Stunt parity" table.
@@ -64,6 +68,10 @@ child_escapes() { return 1; }
 # And rows the language cannot express in-process only (the contained child
 # runs them): left_out is for both.
 left_out_inproc() { return 1; }
+# A language whose runtime cannot start in a mode (wall_blocks inproc|child
+# prints why) and the text it dies with (BLOCK_MARK). By default none.
+wall_blocks() { return 1; }
+BLOCK_MARK=""
 . "$ROOT/$LANG_NAME/containment/lang.sh"
 lang_runtime || skip_all "$LANG_NO_RUNTIME"
 
@@ -156,10 +164,26 @@ if [ "$PLAT" = linux ] || [ "$PLAT" = freebsd ]; then
     fi
 fi
 
+# A runtime the preload stops from starting (wall_blocks inproc): checked by
+# running one row under it, which must die with BLOCK_MARK. If it runs, the
+# wall no longer blocks it and the rows run as for any language.
+BLOCKED_INPROC=0
+if [ -n "$PRELOAD" ] && BLOCK_WHY="$(wall_blocks inproc)"; then
+    (cd "$WORK" && LD_PRELOAD="$PRELOAD" "$HOST" inproc - env-cached succeed) > "$TMP/blockprobe.txt" 2>&1
+    block_rc=$?
+    if [ "$block_rc" -ne 0 ] && grep -q "$BLOCK_MARK" "$TMP/blockprobe.txt"; then
+        BLOCKED_INPROC=1
+        echo "  [BLOCKED] inproc: $BLOCK_WHY"
+    elif [ "$block_rc" -ne 0 ]; then
+        die "inproc: the runtime did not start under the preload, and not with '$BLOCK_MARK'" "$TMP/blockprobe.txt"
+    fi
+fi
+
 # The contained child: std.guest (ae >= AE_CHILD_PIN) and a kernel that
 # spawn_socket can contain a child on (Linux with Landlock). GHL_REQUIRE_CHILD=1
 # (the CI job that is there to run it) makes its absence a failure.
 CHILD=0
+CHILD_BLOCKED=0
 CHILD_WHY=""
 ae_ver="$(ae version 2>/dev/null | awk 'NR == 1 { print $2 }')"
 ver_ge() { [ "$(printf '%s\n%s\n' "$2" "$1" | sort -V | head -1)" = "$2" ]; }
@@ -179,6 +203,10 @@ else
     if grep -q "$probe: succeeded" "$TMP/probe.txt"; then
         CHILD=1
         [ "$PLAT" = linux ] || die "a child started on $PLAT, where spawn_socket should refuse" "$TMP/probe.txt"
+    elif [ "$PLAT" = linux ] && CHILD_BLOCK_WHY="$(wall_blocks child)" && grep -q "$BLOCK_MARK" "$TMP/probe.txt"; then
+        # Checked, not assumed: the worker died with the mark.
+        CHILD_BLOCKED=1
+        CHILD_WHY="$CHILD_BLOCK_WHY"
     elif [ "$PLAT" = macos ] && grep -q "cannot contain a child on macOS, so nothing was started" "$TMP/probe.txt"; then
         # Fails closed, as it should: that is checked, not skipped.
         CHILD_WHY="guest.launch refuses on macOS and starts nothing (checked: $(tail -1 "$TMP/probe.txt" | cut -c1-90)...)"
@@ -186,7 +214,10 @@ else
         CHILD_WHY="the contained child did not start: $(tail -1 "$TMP/probe.txt")"
     fi
 fi
-if [ "$CHILD" = 0 ]; then
+if [ "$CHILD" = 0 ] && [ "$CHILD_BLOCKED" = 1 ]; then
+    # Required and blocked: the block is the expected, checked state.
+    echo "  [BLOCKED] child: $CHILD_WHY"
+elif [ "$CHILD" = 0 ]; then
     [ "${GHL_REQUIRE_CHILD:-}" = 1 ] && die "child mode required: $CHILD_WHY"
     echo "  [SKIP] $NAME: child mode: $CHILD_WHY"
 fi
@@ -262,7 +293,9 @@ stunt() {
     fi
     case "$modes" in
         *in-process*)
-            if why="$(left_out_inproc "$check")"; then
+            if [ "$BLOCKED_INPROC" = 1 ]; then
+                blocked_once inproc
+            elif why="$(left_out_inproc "$check")"; then
                 printf '  [LEFT OUT] %s (in-process): %s\n' "$check" "$why"
                 LEFT=$((LEFT + 1))
                 record inproc "$check" "LEFT OUT"
@@ -275,7 +308,19 @@ stunt() {
     case "$POLICY" in *"|"*) return ;; esac
     if [ "$CHILD" = 1 ]; then
         case "$modes" in *child*) stunt_child "$check" "$expect" ;; esac
+    elif [ "$CHILD_BLOCKED" = 1 ]; then
+        case "$modes" in *child*) blocked_once child ;; esac
     fi
+}
+
+# One line in the table per test and mode for a runtime a wall blocks: the
+# rows are not run, since there is nothing to run them in.
+BLOCKED_SEEN=""
+blocked_once() {   # blocked_once <mode>
+    case " $BLOCKED_SEEN " in *" $1 "*) return ;; esac
+    BLOCKED_SEEN="$BLOCKED_SEEN $1"
+    record "$1" "(the runtime does not start)" "BLOCKED"
+    BLOCKED_N=$((${BLOCKED_N:-0} + 1))
 }
 
 stunt_inproc() {
@@ -320,5 +365,5 @@ stunt_child() {
 }
 
 done_checks() {
-    echo "  [PASS] $NAME: $RAN as expected, $NOT_HELD not held (in-process, or escaping the child), $STRICTER stricter in the child, $LEFT left out"
+    echo "  [PASS] $NAME: $RAN as expected, $NOT_HELD not held (in-process, or escaping the child), $STRICTER stricter in the child, $LEFT left out${BLOCKED_N:+, $BLOCKED_N mode(s) blocked (the runtime does not start)}"
 }

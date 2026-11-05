@@ -13,10 +13,12 @@ for you. Every way stays supported; they differ in how much they contain
 [tcl/README.md](tcl/README.md#four-ways-to-run-tcl-from-aether),
 [perl/README.md](perl/README.md#four-ways-to-run-perl-from-aether),
 [ruby/README.md](ruby/README.md#four-ways-to-run-ruby-from-aether),
-[tinygo/README.md](tinygo/README.md#four-ways-to-run-go-from-aether) and
-[go/README.md](go/README.md#four-ways-to-run-go-from-aether)
-each show all four, with examples; Go as a child process is never in your process, so its
-first three ways are a child process with less and more around it):
+[tinygo/README.md](tinygo/README.md#four-ways-to-run-go-from-aether),
+[go/README.md](go/README.md#four-ways-to-run-go-from-aether) and
+[java/README.md](java/README.md#four-ways-to-run-java-from-aether)
+each show all four, with examples; Go and Java as child processes are never in your process, so their
+first three ways are a child process with less and more around it; and a JVM does not start inside
+ways 2 to 4 on Linux today, which java/README.md explains):
 
 1. **Embed.** The interpreter is loaded into the Aether program and called
    directly (`import lua`, then `lua.run(...)`, the script often a heredoc,
@@ -63,11 +65,12 @@ the tests.
 | CRuby 2.6 to 3.4 (checked) | `import ruby` | `ruby/worker` (std.guest) | [ruby/README.md](ruby/README.md#containment-table) |
 | Go 1.21 or later, as a c-shared library (compiled; `go build -buildmode=c-shared`) | `import tinygo` | `tinygo/worker` (std.guest) | [tinygo/README.md](tinygo/README.md#containment-table) |
 | Go 1.18 or later (checked 1.22, 1.27), as a child process | `import go` (starts a program; no in-process way) | `go/worker` (std.guest, Go) | [go/README.md](go/README.md#containment-table) |
+| Java 21 or later (checked 21, 25), as a JVM child process | `import java` (starts a JVM; no in-process way) | `java/worker` (std.guest, Java); the JVM does not start inside the preload yet | [java/README.md](java/README.md#containment-table) |
 
 ## Layout
 
 ```
-aether.toml            the package: exports every language directory (modules = "lua, python, duktape, js, tcl, perl, ruby, quickjs, tinygo, go")
+aether.toml            the package: exports every language directory (modules = "lua, python, duktape, js, tcl, perl, ruby, quickjs, tinygo, go, java")
 ci/versions.env        toolchain pins (AE_PIN, AE_CHILD_PIN, AE_SPAWN_PIN, AEB_REF, AETHER_STUNT_REF)
 lua/
   module.ae            import lua: the bridge's API
@@ -157,6 +160,18 @@ go/
                        lang.sh; test_ways.sh, what the four ways are for a child process
   examples/            the programs in README.md's four ways
   PROVENANCE.md        where the bridge came from, and what the move changed
+java/
+  module.ae            import java: the bridge's API (grant_jvm_runtime, and java.run* to start a JVM)
+  aether_host_java.c   the bridge, compiled into the importing program (@source): go's, for java
+  build.sh             javac and jar: the agent jar and the classes below (JDK 21 or later)
+  src/                 the agent (-javaagent): grant checker, hooks, shared map, Native (libc through FFM)
+  rows/                stunt's rows in Java, shared by the programs below
+  guestchild/          std.guest's worker protocol, in Java
+  worker/              java-worker: Java in a contained child (std.guest)
+  containment/         the containment hosts and Checks.java; lang.sh; test_ways.sh, the four ways
+                       and what libc sees (libghltrace.c)
+  examples/            the programs in README.md's four ways
+  PROVENANCE.md        where the bridge came from, and what the move changed
 tests/
   run.sh               everything, every language (GUEST_LANG=<lang> for one)
   stunt_lib.sh         holds a language to stunt's catalogue, by name
@@ -167,7 +182,8 @@ tests/
                        duktape, tcl, perl, ruby; quickjs: checks ae ships its engine)
                        duktape, tcl, perl, ruby), or for tinygo the go toolchain, which
                        builds the c-shared libraries the tests load
-                       duktape, tcl, perl, ruby), or for go the toolchain and cgo
+                       duktape, tcl, perl, ruby), or for go the toolchain and cgo;
+                       java_env.sh finds a JDK 21 or later (a JVM is started, not loaded)
 ```
 
 ## Using a language from this repository
@@ -195,7 +211,7 @@ Then `import lua` resolves to `lua/module.ae`, and likewise `import python`,
 `import duktape` (`import js`, its alias), `import tcl`, `import perl`,
 `import ruby` and `import tinygo` to their directories' `module.ae`:
 `import duktape` (`import js`, its alias), `import tcl`, `import perl` and
-`import ruby` and `import go` to their directories' `module.ae`:
+`import ruby` and `import go` to their directories' `module.ae` (and `import java`):
 `ae build`, `ae run` and `ae lib-path` put the package on the module search
 path, and the bridge's C is compiled into your program from the `@source`
 line in `module.ae`, with nothing to build beforehand.
@@ -229,7 +245,11 @@ The two Go bridges are the exceptions to the pattern: `tinygo.load` takes
 the path of a library you built with `go build -buildmode=c-shared` (the
 bridge needs no Go toolchain, only the library's author does), and `go`
 loads no library at all: `GO_BIN` names the `go` command for
-`go.run_script`, and a built Go binary needs nothing.
+`go.run_script`, and a built Go binary needs nothing. `java` loads none either:
+`JAVA_BIN` names the `java` command, `AETHER_JAVA_FLAGS` its flags
+(`--enable-native-access=ALL-UNNAMED`, and `--enable-preview` on JDK 21) and
+`AETHER_JAVA_AGENT` the agent jar that sandboxed runs add; `JAVA_HOME` is only
+how the tests find a JDK.
 
 ## Toolchain
 
@@ -268,6 +288,7 @@ PYTHON=/usr/bin/python3.12 GUEST_LANG=python sh tests/run.sh
 GUEST_LANG=perl sh tests/run.sh    # PERL=/path/to/perl to pick the perl
 GUEST_LANG=tinygo sh tests/run.sh  # GO=/path/to/go to pick the go
 GUEST_LANG=go sh tests/run.sh      # GO=/path/to/go to pick the go command
+GUEST_LANG=java sh tests/run.sh    # JAVA_HOME=/path/to/jdk to pick the JDK (21 or later)
 sh tests/run.sh --write-parity     # rewrite the parity tables' columns this host ran
 ```
 
@@ -294,7 +315,10 @@ liblua5.4-dev (Lua), libpython3.12, libduktape207, tcl8.6, perl and
 libperl5.38t64, ruby and libruby3.2, golang-go (Go 1.22; gcc is the
 runner's); macOS uses Homebrew's lua (5.5) and lua@5.4, python@3.13,
 duktape, tcl-tk and ruby, the system perl (5.34), and the runner's Go
-(`brew install go` if it has none).
+(`brew install go` if it has none). Java needs only a JDK, openjdk-21-jdk-headless
+on Ubuntu 24.04 and a JDK 21 from the runner or `brew install openjdk@21` on
+macOS; its Linux child jobs pass with the JVM blocked by the preload, which the
+tests check (java/README.md).
 
 ## Moving from `contrib.host.<lang>`
 
@@ -434,6 +458,25 @@ said: Go makes its own system calls, so on Linux only what a program reaches
 through cgo is held, and a static binary is not held at all. `go.run_sandboxed`
 still starts nothing on macOS. The containment that holds Go's own calls is
 the contained child (go/README.md, "4"), new here.
+
+The Java bridge was copied from aether at `2609ec841`
+(java/PROVENANCE.md), and moves the same way:
+
+```diff
+-import contrib.host.java
++import java
+```
+
+`java.grant_jvm_runtime()` is unchanged. What changes: it builds on JDK 21
+(aether's agent used JDK 22's `allocateFrom`; the Foreign Function calls are
+one class now, `Native`), the agent's grant checker follows the matcher the
+rest of Aether uses (ports in `tcp` grants), and the bridge starts the JVM
+(`java.run`, `java.run_sandboxed`, `java.run_sandboxed_with_map`), where
+aether left that to the caller's `spawn_sandboxed`. What does not change, and is
+the thing to know: a JVM does not start under `libaether_sandbox.so`, which
+refuses it executable memory, so on Linux neither `java.run_sandboxed` nor the
+contained child can run one today (java/README.md, "The wall that stops a
+JVM"). The agent and the bridge's other calls are unaffected.
 
 The plan for aether's copies: they stay in `contrib/host/` for a transition
 period, with their READMEs pointing here; fixes land here first. They are
