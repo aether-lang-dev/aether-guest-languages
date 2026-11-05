@@ -644,3 +644,156 @@ jobs:
       - run: ae version
       - name: Specs and containment rows
         run: GUEST_LANG=go sh tests/run.sh
+
+  # Factor: the embed-api fork of Factor's libfactor and a bootstrapped
+  # factor.image, built from FACTOR_FORK_REF (ci/versions.env). A
+  # distribution's Factor has no factor_embed_eval, so there is nothing to
+  # install: the fork is built here (make, then the stock boot image
+  # bootstrapped into factor.image, which is the slow part, about a quarter of
+  # an hour) and cached under the commit, so a run with a warm cache only
+  # runs the tests. The three Linux jobs share the cache key; the first run of
+  # each commit builds it in all three. This recipe follows the fork's makefile
+  # and aether's contrib/host/factor/README.md ("Building") and is the one
+  # step here not run on a runner before this file was written: the tests
+  # themselves were run against a build of the same commit made by hand.
+  # macOS has no job that runs Factor: the fork was only built and run on
+  # Linux x86_64, so its macOS job builds the bridge, the host and the worker
+  # (the C compiles there) and checks that the specs and rows skip cleanly.
+  linux-factor:
+    name: Linux (in-process, Factor embed-api fork)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fork ref
+        id: ref
+        run: . ci/versions.env && echo "ref=$FACTOR_FORK_REF" >> "$GITHUB_OUTPUT"
+      - name: Fork build (cache)
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: factor-language
+          key: factor-fork-${{ steps.ref.outputs.ref }}-ubuntu-24.04
+      - name: Build the fork and bootstrap its image
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          . ci/versions.env
+          sudo apt-get update && sudo apt-get install -y build-essential git curl
+          mkdir factor-language && cd factor-language
+          git init -q . && git remote add origin "$FACTOR_FORK_REPO"
+          git fetch -q --depth 1 origin "$FACTOR_FORK_REF" && git checkout -q FETCH_HEAD
+          make -j"$(nproc)" linux-x86-64
+          curl -fsSLO "$FACTOR_BOOT_IMAGE_URL"
+          ./factor -i=boot.unix-x86.64.image
+          test -f factor.image
+      - name: ae (AE_PIN)
+        run: |
+          . ci/versions.env
+          curl -fsSL "https://raw.githubusercontent.com/aether-lang-dev/aeb/$AEB_REF/get.sh" \
+            | AE_PIN="$AE_PIN" AEB_REF="$AEB_REF" sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - run: ae version
+      - name: Specs and containment rows
+        run: GUEST_LANG=factor FACTOR_HOME="$PWD/factor-language" sh tests/run.sh
+
+  linux-factor-child:
+    name: Linux (in-process and contained child, Factor embed-api fork)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fork ref
+        id: ref
+        run: . ci/versions.env && echo "ref=$FACTOR_FORK_REF" >> "$GITHUB_OUTPUT"
+      - name: Fork build (cache)
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: factor-language
+          key: factor-fork-${{ steps.ref.outputs.ref }}-ubuntu-24.04
+      - name: Build the fork and bootstrap its image
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          . ci/versions.env
+          sudo apt-get update && sudo apt-get install -y build-essential git curl
+          mkdir factor-language && cd factor-language
+          git init -q . && git remote add origin "$FACTOR_FORK_REPO"
+          git fetch -q --depth 1 origin "$FACTOR_FORK_REF" && git checkout -q FETCH_HEAD
+          make -j"$(nproc)" linux-x86-64
+          curl -fsSLO "$FACTOR_BOOT_IMAGE_URL"
+          ./factor -i=boot.unix-x86.64.image
+          test -f factor.image
+      - name: ae (AE_CHILD_PIN)
+        run: |
+          . ci/versions.env
+          curl -fsSL "https://raw.githubusercontent.com/aether-lang-dev/aeb/$AEB_REF/get.sh" \
+            | AE_PIN="$AE_CHILD_PIN" AEB_REF="$AEB_REF" sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - run: ae version
+      # GHL_REQUIRE_CHILD=1 does not fail on the one known reason the child
+      # cannot start (lang.sh's lang_child_blocked: the preload refuses the
+      # executable memory Factor's VM maps); any other reason fails.
+      - name: Specs and containment rows, the child required
+        run: GUEST_LANG=factor FACTOR_HOME="$PWD/factor-language" GHL_REQUIRE_CHILD=1 sh tests/run.sh
+
+  linux-factor-spawn:
+    name: Linux (in-process and contained child, Factor embed-api fork, ae AE_SPAWN_PIN)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fork ref
+        id: ref
+        run: . ci/versions.env && echo "ref=$FACTOR_FORK_REF" >> "$GITHUB_OUTPUT"
+      - name: Fork build (cache)
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: factor-language
+          key: factor-fork-${{ steps.ref.outputs.ref }}-ubuntu-24.04
+      - name: Build the fork and bootstrap its image
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          . ci/versions.env
+          sudo apt-get update && sudo apt-get install -y build-essential git curl
+          mkdir factor-language && cd factor-language
+          git init -q . && git remote add origin "$FACTOR_FORK_REPO"
+          git fetch -q --depth 1 origin "$FACTOR_FORK_REF" && git checkout -q FETCH_HEAD
+          make -j"$(nproc)" linux-x86-64
+          curl -fsSLO "$FACTOR_BOOT_IMAGE_URL"
+          ./factor -i=boot.unix-x86.64.image
+          test -f factor.image
+      - name: ae (AE_SPAWN_PIN)
+        run: |
+          . ci/versions.env
+          curl -fsSL "https://raw.githubusercontent.com/aether-lang-dev/aeb/$AEB_REF/get.sh" \
+            | AE_PIN="$AE_SPAWN_PIN" AEB_REF="$AEB_REF" sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - run: ae version
+      - name: Specs and containment rows, the child required
+        run: GUEST_LANG=factor FACTOR_HOME="$PWD/factor-language" GHL_REQUIRE_CHILD=1 sh tests/run.sh
+
+  macos-factor:
+    name: macOS (compile check; no Factor to run)
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: ae (AE_PIN)
+        run: |
+          . ci/versions.env
+          curl -fsSL "https://raw.githubusercontent.com/aether-lang-dev/aeb/$AEB_REF/get.sh" \
+            | AE_PIN="$AE_PIN" AEB_REF="$AEB_REF" sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - run: ae version
+      # The bridge, the in-process host, the worker and the contained-child host
+      # all build; and with no libfactor the specs and rows skip with their
+      # reason (GITHUB_ACTIONS is unset for the run: a skip is a failure there).
+      - name: Build the bridge, hosts and worker
+        run: |
+          mkdir -p build
+          ae build factor/test_host_factor.ae -o build/test_host_factor
+          ae build factor/containment/host.ae --lib factor/containment -o build/factor-host
+          ae build factor/containment/child_host.ae --lib factor/containment -o build/factor-child-host
+          ae build factor/worker/worker.ae -o build/factor-worker
+      - name: Skips cleanly without Factor
+        run: env -u GITHUB_ACTIONS GUEST_LANG=factor sh tests/run.sh | tee factor.log && grep -q "SKIP" factor.log

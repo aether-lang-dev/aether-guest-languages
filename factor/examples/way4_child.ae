@@ -1,0 +1,57 @@
+// Way 4: Factor in a contained child over std.guest. README.md, "4. A
+// contained child". Build the worker once:
+//
+//   ae build factor/worker/worker.ae -o build/factor-worker
+//
+// and run this with FACTOR_HOME set to the directory of the fork's tree,
+// AETHER_FACTOR_SONAME and AETHER_FACTOR_IMAGE as for the bridge
+// (tests/factor_env.sh sets all three).
+import std.guest
+import std.sandbox
+import std.list
+import std.os
+import std.fs
+
+main() {
+    home = os.getenv("FACTOR_HOME")
+    soname = os.getenv("AETHER_FACTOR_SONAME")
+    image = os.getenv("AETHER_FACTOR_IMAGE")
+    perms = sandbox.new("factor") {
+    }
+    // What the worker needs to start Factor (README.md, "What the worker
+    // reads"): libfactor and the image, the random devices, one file of the
+    // tree, and the cache directory Factor lists and cleans as it starts.
+    sandbox.grant_fs_read(perms, soname)
+    sandbox.grant_fs_read(perms, image)
+    sandbox.grant_fs_read(perms, "${home}/basis/unix/platforms.txt")
+    sandbox.grant_fs_read(perms, "${home}/*")
+    sandbox.grant_fs_read(perms, "/dev/random")
+    sandbox.grant_fs_read(perms, "/dev/urandom")
+    cache = "${os.getcwd()}/.cache/factor"
+    if fs.mkdir_p(cache) != "" { println("cannot make ${cache}") return }
+    sandbox.grant_fs_read(perms, "${cache}/*")
+    sandbox.grant_fs_write(perms, "${cache}/*")
+
+    args = list.new()
+    list.add(args, soname)
+    list.add(args, image)
+    list.add(args, "USING: kernel math prettyprint io io.files io.encodings.utf8 continuations sequences ;")
+    g, err = guest.launch(perms, "build/factor-worker", args, "factor", "")
+    if err != "" { println("not started: ${err}") return }   // macOS: refused
+    guest.mount(&g, "greet", 1, 1)
+    script = <<FACTOR
+        USING: io kernel math prettyprint ;
+        "hello from Factor" print
+    FACTOR
+    guest.start(&g, script)
+    while true {
+        e = guest.next(&g)
+        if e.kind == "SAY" {
+            println(guest.printable(e.text))
+        } else {
+            println("${e.kind} ${guest.printable(e.text)}")
+            break
+        }
+    }
+    guest.close(&g)
+}

@@ -1,0 +1,25 @@
+// Way 1: Factor in your process, no containment. README.md, "1. Embed".
+import factor
+
+main() {
+    // eval returns what the snippet printed (eval>string): leave a clean
+    // stack and print what you want back. A heredoc carries Factor's own
+    // quotes verbatim.
+    r = factor.eval(<<FACTOR
+        USING: math kernel prettyprint ;
+        IN: scratchpad
+        : fib ( n -- m ) dup 2 < [ ] [ dup 1 - fib swap 2 - fib + ] if ;
+        10 fib pprint
+    FACTOR
+    )
+    println("fib(10) = ${r}")
+
+    // The VM is persistent: set and get share its global namespace.
+    factor.set("who", "Aether")
+    _ = factor.eval(<<FACTOR
+        USING: namespaces kernel sequences ;
+        "who" get "hello, " prepend "greeting" set-global
+    FACTOR
+    )
+    println(factor.get("greeting"))
+}
