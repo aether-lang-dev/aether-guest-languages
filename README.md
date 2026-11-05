@@ -10,9 +10,11 @@ for you. Every way stays supported; they differ in how much they contain
 [python/README.md](python/README.md#four-ways-to-run-python-from-aether),
 [duktape/README.md](duktape/README.md#four-ways-to-run-javascript-from-aether),
 [tcl/README.md](tcl/README.md#four-ways-to-run-tcl-from-aether),
-[perl/README.md](perl/README.md#four-ways-to-run-perl-from-aether) and
-[ruby/README.md](ruby/README.md#four-ways-to-run-ruby-from-aether)
-each show all four, with examples):
+[perl/README.md](perl/README.md#four-ways-to-run-perl-from-aether),
+[ruby/README.md](ruby/README.md#four-ways-to-run-ruby-from-aether) and
+[go/README.md](go/README.md#four-ways-to-run-go-from-aether)
+each show all four, with examples; Go is never in your process, so its
+first three ways are a child process with less and more around it):
 
 1. **Embed.** The interpreter is loaded into the Aether program and called
    directly (`import lua`, then `lua.run(...)`, the script often a heredoc,
@@ -56,11 +58,12 @@ the tests.
 | Tcl 8.5, 8.6 (9.0 in principle) | `import tcl` | `tcl/worker` (std.guest) | [tcl/README.md](tcl/README.md#containment-table) |
 | Perl 5 (threaded), 5.34 to 5.44 tested | `import perl` | `perl/worker` (std.guest) | [perl/README.md](perl/README.md#containment-table) |
 | CRuby 2.6 to 3.4 (checked) | `import ruby` | `ruby/worker` (std.guest) | [ruby/README.md](ruby/README.md#containment-table) |
+| Go 1.18 or later (checked 1.22, 1.27), as a child process | `import go` (starts a program; no in-process way) | `go/worker` (std.guest, Go) | [go/README.md](go/README.md#containment-table) |
 
 ## Layout
 
 ```
-aether.toml            the package: exports every language directory (modules = "lua, python, duktape, js, tcl, perl, ruby")
+aether.toml            the package: exports every language directory (modules = "lua, python, duktape, js, tcl, perl, ruby, go")
 ci/versions.env        toolchain pins (AE_PIN, AE_CHILD_PIN, AE_SPAWN_PIN, AEB_REF, AETHER_STUNT_REF)
 lua/
   module.ae            import lua: the bridge's API
@@ -118,6 +121,18 @@ ruby/
   containment/         the containment hosts and checks.rb, stunt's rows in Ruby;
                        lang.sh; test_requires.sh, requiring under a sandbox
   PROVENANCE.md        where the bridge came from, and what the move changed
+go/
+  module.ae            import go: the bridge's API (starts a Go program as a child)
+  aether_host_go.c     the bridge, compiled into the importing program (@source)
+  test_host_go.ae      the bridge's spec
+  go.mod               one Go module: rows, guestchild, worker, containment, examples
+  rows/                stunt's rows in Go (cgo for the libc ones), shared by the programs below
+  guestchild/          std.guest's worker protocol, in Go
+  worker/              go-worker: Go in a contained child (std.guest)
+  containment/         the containment hosts and checks.go, stunt's rows in Go;
+                       lang.sh; test_ways.sh, what the four ways are for a child process
+  examples/            the programs in README.md's four ways
+  PROVENANCE.md        where the bridge came from, and what the move changed
 tests/
   run.sh               everything, every language (GUEST_LANG=<lang> for one)
   stunt_lib.sh         holds a language to stunt's catalogue, by name
@@ -125,7 +140,7 @@ tests/
   test_catalogue.sh    every catalogue row is named here or left out
   parity.sh            renders and checks a README's Stunt parity table
   <lang>_env.sh        find the language's runtime library on this machine (lua, python,
-                       duktape, tcl, perl, ruby)
+                       duktape, tcl, perl, ruby), or for go the toolchain and cgo
 ```
 
 ## Using a language from this repository
@@ -149,7 +164,7 @@ the tree it installed (there are no tagged releases yet):
 
 Then `import lua` resolves to `lua/module.ae`, and likewise `import python`,
 `import duktape` (`import js`, its alias), `import tcl`, `import perl` and
-`import ruby` to their directories' `module.ae`:
+`import ruby` and `import go` to their directories' `module.ae`:
 `ae build`, `ae run` and `ae lib-path` put the package on the module search
 path, and the bridge's C is compiled into your program from the `@source`
 line in `module.ae`, with nothing to build beforehand.
@@ -176,7 +191,9 @@ Homebrew's `/opt/homebrew/lib/libduktape.so`), `AETHER_TCL_SONAME`
 (`libtcl8.6.so.0`), `AETHER_PERL_SONAME` (for example
 `/usr/lib/x86_64-linux-gnu/libperl.so.5.38`) and `AETHER_RUBY_SONAME`
 (for example `/usr/lib/libruby.so.3.4.12`). `tests/<lang>_env.sh` is one way
-to find each. No language's dev package is needed to build.
+to find each. No language's dev package is needed to build. Go loads no
+library: `GO_BIN` names the `go` command for `go.run_script`, and a built
+Go binary needs nothing.
 
 ## Toolchain
 
@@ -213,6 +230,7 @@ RUBY=/opt/homebrew/opt/ruby/bin/ruby GUEST_LANG=ruby sh tests/run.sh
 LUA_VERSION=5.4 GUEST_LANG=lua sh tests/run.sh
 PYTHON=/usr/bin/python3.12 GUEST_LANG=python sh tests/run.sh
 GUEST_LANG=perl sh tests/run.sh    # PERL=/path/to/perl to pick the perl
+GUEST_LANG=go sh tests/run.sh      # GO=/path/to/go to pick the go command
 sh tests/run.sh --write-parity     # rewrite the parity tables' columns this host ran
 ```
 
@@ -230,8 +248,10 @@ language: Linux (Ubuntu 24.04) on `AE_PIN` (in-process), on `AE_CHILD_PIN`
 first ae whose preload holds the exec rows), and macOS on `AE_PIN`. Linux
 installs only each language's runtime package, never a dev package:
 liblua5.4-dev (Lua), libpython3.12, libduktape207, tcl8.6, perl and
-libperl5.38t64, ruby and libruby3.2; macOS uses Homebrew's lua (5.5) and
-lua@5.4, python@3.13, duktape, tcl-tk and ruby, and the system perl (5.34).
+libperl5.38t64, ruby and libruby3.2, golang-go (Go 1.22; gcc is the
+runner's); macOS uses Homebrew's lua (5.5) and lua@5.4, python@3.13,
+duktape, tcl-tk and ruby, the system perl (5.34), and the runner's Go
+(`brew install go` if it has none).
 
 ## Moving from `contrib.host.<lang>`
 
@@ -323,6 +343,22 @@ eval); a sandboxed run puts the process's environment back when it ends
 lost at exit; and Ruby 3.3 and later get their built-in methods (aether's
 copy raised `NoMethodError` for `Integer#times` and the like). RubyGems is not
 loaded by default (ruby/README.md, "Lifecycle").
+
+The Go bridge was copied from aether at `2609ec841`
+(go/PROVENANCE.md), and moves the same way:
+
+```diff
+-import contrib.host.go
++import go
+```
+
+What changes: no `make contrib MODULES=go` step; an empty grant list is a
+grant list (aether's copy returned -1 for it and started nothing); and the
+README says what the preload does for a Go child, which is less than aether's
+said: Go makes its own system calls, so on Linux only what a program reaches
+through cgo is held, and a static binary is not held at all. `go.run_sandboxed`
+still starts nothing on macOS. The containment that holds Go's own calls is
+the contained child (go/README.md, "4"), new here.
 
 The plan for aether's copies: they stay in `contrib/host/` for a transition
 period, with their READMEs pointing here; fixes land here first. They are
