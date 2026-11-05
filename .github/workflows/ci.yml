@@ -226,3 +226,74 @@ jobs:
       - run: ae version
       - name: Homebrew's duktape
         run: GUEST_LANG=duktape sh tests/run.sh
+
+  # Tcl: the runtime library only (libtcl8.6.so.0 from tcl8.6); no tcl-dev,
+  # which the bridge does not need to build. The `tcl` package adds the
+  # unversioned tclsh that tests/tcl_env.sh asks for Tcl's library directory.
+  linux-tcl:
+    name: Linux (in-process, Tcl 8.6)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tcl
+        run: sudo apt-get update && sudo apt-get install -y tcl8.6 tcl
+      - name: ae (AE_PIN)
+        run: |
+          . ci/versions.env
+          curl -fsSL "https://raw.githubusercontent.com/aether-lang-dev/aeb/$AEB_REF/get.sh" \
+            | AE_PIN="$AE_PIN" AEB_REF="$AEB_REF" sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - run: ae version
+      - name: Specs and containment rows
+        run: GUEST_LANG=tcl sh tests/run.sh
+
+  linux-tcl-child:
+    name: Linux (in-process and contained child, Tcl 8.6)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tcl
+        run: sudo apt-get update && sudo apt-get install -y tcl8.6 tcl
+      - name: ae (AE_CHILD_PIN)
+        run: |
+          . ci/versions.env
+          curl -fsSL "https://raw.githubusercontent.com/aether-lang-dev/aeb/$AEB_REF/get.sh" \
+            | AE_PIN="$AE_CHILD_PIN" AEB_REF="$AEB_REF" sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - run: ae version
+      - name: Specs and containment rows, the child required
+        run: GUEST_LANG=tcl GHL_REQUIRE_CHILD=1 sh tests/run.sh
+
+  linux-tcl-spawn:
+    name: Linux (in-process and contained child, Tcl 8.6, ae AE_SPAWN_PIN)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tcl
+        run: sudo apt-get update && sudo apt-get install -y tcl8.6 tcl
+      - name: ae (AE_SPAWN_PIN)
+        run: |
+          . ci/versions.env
+          curl -fsSL "https://raw.githubusercontent.com/aether-lang-dev/aeb/$AEB_REF/get.sh" \
+            | AE_PIN="$AE_SPAWN_PIN" AEB_REF="$AEB_REF" sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - run: ae version
+      - name: Specs and containment rows, the child required
+        run: GUEST_LANG=tcl GHL_REQUIRE_CHILD=1 sh tests/run.sh
+
+  macos-tcl:
+    name: macOS (in-process, Homebrew's tcl-tk)
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tcl
+        run: brew install tcl-tk
+      - name: ae (AE_PIN)
+        run: |
+          . ci/versions.env
+          curl -fsSL "https://raw.githubusercontent.com/aether-lang-dev/aeb/$AEB_REF/get.sh" \
+            | AE_PIN="$AE_PIN" AEB_REF="$AEB_REF" sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - run: ae version
+      - name: Homebrew's tcl-tk
+        run: GUEST_LANG=tcl sh tests/run.sh

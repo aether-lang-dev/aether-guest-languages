@@ -9,6 +9,7 @@ for you. Every way stays supported; they differ in how much they contain
 ([lua/README.md](lua/README.md#four-ways-to-run-lua-from-aether),
 [python/README.md](python/README.md#four-ways-to-run-python-from-aether) and
 [duktape/README.md](duktape/README.md#four-ways-to-run-javascript-from-aether)
+[tcl/README.md](tcl/README.md#four-ways-to-run-tcl-from-aether)
 show all four, with examples):
 
 1. **Embed.** The interpreter is loaded into the Aether program and called
@@ -50,11 +51,13 @@ the tests.
 | Lua 5.3, 5.4, 5.5 | `import lua` | `lua/worker` (std.guest) | [lua/README.md](lua/README.md#containment-table) |
 | CPython 3.10 to 3.14 | `import python` | `python/worker` (std.guest) | [python/README.md](python/README.md#containment-table) |
 | JavaScript, Duktape 2.x (ES5.1) | `import duktape` (`import js`, the alias) | `duktape/worker` (std.guest) | [duktape/README.md](duktape/README.md#containment-table) |
+| Tcl 8.5, 8.6 (9.0 in principle) | `import tcl` | `tcl/worker` (std.guest) | [tcl/README.md](tcl/README.md#containment-table) |
 
 ## Layout
 
 ```
 aether.toml            the package: exports lua/, python/, duktape/ and js/ (modules = "lua, python, duktape, js")
+aether.toml            the package: exports lua/, python/ and tcl/ (modules = "lua, python, tcl")
 ci/versions.env        toolchain pins (AE_PIN, AE_CHILD_PIN, AE_SPAWN_PIN, AEB_REF, AETHER_STUNT_REF)
 lua/
   module.ae            import lua: the bridge's API
@@ -87,6 +90,15 @@ duktape/
 js/
   module.ae            import js: the back-compat alias of duktape
   test_js_alias.ae     the alias reaches the bridge
+tcl/
+  module.ae            import tcl: the bridge's API
+  aether_host_tcl.c    the bridge, compiled into the importing program (@source)
+  tcl_abi.h            the Tcl types the bridge uses (no Tcl dev package needed)
+  test_host_tcl*.ae    the bridge's specs (test_support.c: their C helpers)
+  worker/              tcl-worker: Tcl in a contained child (std.guest)
+  containment/         the containment hosts and checks.tcl, stunt's rows in Tcl;
+                       lang.sh, what the harness needs to know about Tcl
+  PROVENANCE.md        where the bridge came from, and what the move changed
 tests/
   run.sh               everything, every language (GUEST_LANG=<lang> for one)
   stunt_lib.sh         holds a language to stunt's catalogue, by name
@@ -94,6 +106,7 @@ tests/
   test_catalogue.sh    every catalogue row is named here or left out
   parity.sh            renders and checks a README's Stunt parity table
   lua_env.sh, python_env.sh, duktape_env.sh  find the runtime library on this machine
+  lua_env.sh, python_env.sh, tcl_env.sh  find the runtime library on this machine
 ```
 
 ## Using a language from this repository
@@ -118,6 +131,7 @@ the tree it installed (there are no tagged releases yet):
 Then `import lua` resolves to `lua/module.ae`, `import python` to
 `python/module.ae` and `import duktape` to `duktape/module.ae` (`import js`
 to `js/module.ae`, its alias):
+`python/module.ae` and `import tcl` to `tcl/module.ae`:
 `ae build`, `ae run` and `ae lib-path` put the package on the module search
 path, and the bridge's C is compiled into your program from the `@source`
 line in `module.ae`, with nothing to build beforehand.
@@ -134,6 +148,7 @@ branch):
 one-off without a manifest, `ae build app.ae --lib <checkout>` does the
 same, since the checkout's root holds `lua/module.ae`, `python/module.ae`
 and `duktape/module.ae`.
+and `tcl/module.ae`.
 
 At run time the bridge `dlopen`s the language's library: for Lua, set
 `AETHER_LUA_SONAME` (for example `liblua5.4.so.0`, or
@@ -144,6 +159,10 @@ At run time the bridge `dlopen`s the language's library: for Lua, set
 `/opt/homebrew/lib/libduktape.so`) unless it is one of the names the bridge
 tries (`libduktape.so.207`, `libduktape.so.2`, `libduktape.so`, Homebrew's).
 No language's dev package is needed to build.
+`libpython3.12.so.1.0`) unless it has `libpython3.so`; for Tcl,
+`AETHER_TCL_SONAME` (for example `libtcl8.6.so.0`), unless one of the names
+tcl/README.md lists loads (Debian's `libtcl8.6.so.0`, Homebrew's tcl-tk,
+macOS's own Tcl). No language's dev package is needed to build.
 
 ## Toolchain
 
@@ -175,6 +194,7 @@ sh tests/run.sh                    # every language: specs, containment rows, pa
 sh tests/run.sh containment        # the rows only
 GUEST_LANG=python sh tests/run.sh  # one language
 GUEST_LANG=duktape sh tests/run.sh
+GUEST_LANG=tcl TCL_VERSION=8.6 sh tests/run.sh
 LUA_VERSION=5.4 GUEST_LANG=lua sh tests/run.sh
 PYTHON=/usr/bin/python3.12 GUEST_LANG=python sh tests/run.sh
 sh tests/run.sh --write-parity     # rewrite the parity tables' columns this host ran
@@ -196,6 +216,13 @@ macOS with Homebrew's lua (5.5) and lua@5.4, with its python@3.13 and with
 its duktape, on `AE_PIN`.
 
 ## Moving from `contrib.host.lua`, `contrib.host.python` or `contrib.host.duktape`
+liblua5.4-dev, with its libpython3.12 and with its tcl8.6 (the runtime
+library; no tcl-dev), each on `AE_PIN` (in-process), on `AE_CHILD_PIN`
+(in-process and contained child) and on `AE_SPAWN_PIN`; macOS with
+Homebrew's lua (5.5) and lua@5.4, its python@3.13 and its tcl-tk, on
+`AE_PIN`.
+
+## Moving from `contrib.host.lua`, `contrib.host.python` or `contrib.host.tcl`
 
 The Lua bridge was copied from aether at `d3732a0ed` (lua/PROVENANCE.md).
 Its functions and names are unchanged, so moving is the import line and the
@@ -241,6 +268,18 @@ libduktape is found under its usual names without `AETHER_DUKTAPE_SONAME`.
 Duktape has no I/O of its own, so what it can do in a sandbox is what the
 bridge's `env`, `readFile`, `writeFile` and `exec` are allowed: they hold on
 macOS as on Linux, with no preload (duktape/README.md).
+The Tcl bridge was copied from aether at `2609ec841`
+(tcl/PROVENANCE.md), and moves the same way:
+
+```diff
+-import contrib.host.tcl
++import tcl
+```
+
+What changes: no `make contrib MODULES=tcl` step and no tcl-dev at build
+time; one build runs against Tcl 8.5, 8.6 and 9.0 whatever `tcl.h` the build
+host had; libtcl is found by name on Debian, Homebrew and macOS without
+`AETHER_TCL_SONAME`; and `tcl.run_sandboxed_with_map` is exported.
 
 The plan for aether's copies: they stay in `contrib/host/` for a transition
 period, with their READMEs pointing here; fixes land here first. They are

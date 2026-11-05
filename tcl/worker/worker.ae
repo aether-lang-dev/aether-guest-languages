@@ -1,0 +1,338 @@
+// tcl-worker: Tcl in a contained child, the guest's side of std.guest.
+//
+// A host starts this with guest.launch (sandbox.spawn_socket: Landlock and
+// seccomp on Linux; refused on macOS and Windows, where nothing starts) and
+// sends it the commands it may call (MOUNT) and a Tcl script (SCRIPT). The
+// worker loads libtcl and makes its interpreters (Tcl_Init sources init.tcl
+// from the Tcl library directory) before it locks itself down, then runs the
+// script in a child interpreter of the bridge's two-way VM inside
+// std.guest.child's lockdown:
+//
+//   puts ?-nonewline? ?stdout|stderr? text
+//                       SAY, the text (a SAY frame is a line: -nonewline is
+//                       accepted and changes nothing); puts to a file channel
+//                       is Tcl's own
+//   NAME arg ...        for each mounted NAME: CALL NAME [args as JSON], the
+//                       host's answer decoded back to Tcl (a JSON object is a
+//                       dict: a granted file is {granted 1 text ...}, true
+//                       and false are 1 and 0, null is the empty string); a
+//                       FAIL is an error with the host's message; a CANCEL is
+//                       an error "cancelled by host: ..."
+//   the end             DONE 0, or ERROR and Tcl's message
+//
+// Usage (by a host): tcl-worker [<libtcl soname or path> [<warm-up script>]]
+//
+// <warm-up script> is Tcl run in the script's interpreter before the
+// lockdown. Tcl loads parts of its own library on first use (`clock format`
+// reads clock.tcl, `parray` and every command in tclIndex are found by
+// auto_load, a package by `package require`, an encoding from its .enc file):
+// once the worker has locked itself down it can read nothing, so a script
+// that needs one of them fails ("couldn't read file ...: permission denied",
+// "invalid command name") unless the warm-up used it first, say `clock
+// format 0 -timezone UTC; package require msgcat`. Commands the Tcl core
+// implements in C need no disk.
+//
+// Why a child interpreter: a CANCEL has to reach a script that is in a loop
+// (`while 1 {}` runs no command, so no command can poll). Tcl's way to
+// interrupt that is a time limit on an interpreter, with a handler that runs
+// in another one (a limit cannot carry a callback on its own interpreter),
+// so the script runs in a slave of the VM's interpreter under a time limit
+// of 100 ms, renewed by the handler (std.guest's "interrupt hook" engine:
+// the handler polls for a CANCEL) until one arrives, when it is not renewed
+// and Tcl abandons the script. A CANCEL is also looked for in every call's
+// reply. A script that spends its time inside one command (`expr
+// {7**20000000}`, hours of bignum arithmetic) is not interrupted, because Tcl
+// checks its limits between commands and on a loop's jump (and in `after`):
+// it stops answering, and the host kills it after its grace period. The
+// containment is the host's, not the hook's.
+//
+// The script's interpreter is a plain one, not a safe one: the lockdown, not
+// Tcl, is what holds `open`, `socket`, `exec` and `load`.
+
+import tcl
+import std.guest.child
+import std.os
+import std.string
+
+extern exit(code: int)
+extern setenv(name: string, value: string, overwrite: int) -> int
+extern ghl_keep(p: ptr)
+extern ghl_kept() -> ptr
+
+@source("worker_support.c")
+
+// The Host the callbacks below answer through (one per process).
+fn host() -> *child.Host {
+    return ghl_kept() as *child.Host
+}
+
+// __say text
+@c_callback
+w_say(vm: ptr) -> int {
+    child.say(host(), tcl.arg_str(vm, 1))
+    return 0
+}
+
+// __call name args_json -> "KIND\ntext"
+@c_callback
+w_call(vm: ptr) -> int {
+    r = child.call_host(host(), tcl.arg_str(vm, 1), tcl.arg_str(vm, 2))
+    tcl.push_str(vm, "${r.kind}\n${r.text}")
+    return 1
+}
+
+// __poll -> "" or the reason the host cancelled
+@c_callback
+w_poll(vm: ptr) -> int {
+    tcl.push_str(vm, child.poll(host()))
+    return 1
+}
+
+// The glue between Tcl and the protocol, run in the script's interpreter
+// before the script. Written for Tcl 8.5 and later.
+fn slave_prelude() -> string {
+    return <<TCL
+namespace eval ::__json {
+    variable s ""
+    variable i 0
+}
+
+# A word as a JSON value: a number as itself, anything else a string.
+proc ::__json::enc {v} {
+    if {[regexp {^-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][-+]?[0-9]+)?$} $v]} { return $v }
+    set v [string map [list \\ \\\\ \" \\\" \n \\n \r \\r \t \\t \b \\b \f \\f] $v]
+    while {[regexp -indices {[\x01-\x1f]} $v m]} {
+        set k [lindex $m 0]
+        scan [string index $v $k] %c n
+        set v [string replace $v $k $k [format {\u%04x} $n]]
+    }
+    return "\"$v\""
+}
+
+proc ::__json::ws {} {
+    variable s
+    variable i
+    if {[regexp -start $i -indices {[^ \t\r\n]} $s m]} {
+        set i [lindex $m 0]
+    } else {
+        set i [string length $s]
+    }
+}
+
+proc ::__json::str {} {
+    variable s
+    variable i
+    incr i
+    set out ""
+    while 1 {
+        if {![regexp -start $i -indices {["\\]} $s m]} { error "JSON: unterminated string" }
+        set j [lindex $m 0]
+        append out [string range $s $i [expr {$j - 1}]]
+        if {[string index $s $j] eq "\""} {
+            set i [expr {$j + 1}]
+            return $out
+        }
+        set e [string index $s [expr {$j + 1}]]
+        switch -- $e {
+            b { append out \b; set i [expr {$j + 2}] }
+            f { append out \f; set i [expr {$j + 2}] }
+            n { append out \n; set i [expr {$j + 2}] }
+            r { append out \r; set i [expr {$j + 2}] }
+            t { append out \t; set i [expr {$j + 2}] }
+            u {
+                append out [format %c 0x[string range $s [expr {$j + 2}] [expr {$j + 5}]]]
+                set i [expr {$j + 6}]
+            }
+            default { append out $e; set i [expr {$j + 2}] }
+        }
+    }
+}
+
+proc ::__json::val {} {
+    variable s
+    variable i
+    ws
+    set c [string index $s $i]
+    if {$c eq "\""} { return [str] }
+    if {$c eq "\{"} {
+        set d [dict create]
+        incr i
+        ws
+        if {[string index $s $i] eq "\}"} { incr i; return $d }
+        while 1 {
+            ws
+            set k [str]
+            ws
+            incr i
+            dict set d $k [val]
+            ws
+            set t [string index $s $i]
+            incr i
+            if {$t eq "\}"} { return $d }
+        }
+    }
+    if {$c eq "\["} {
+        set l {}
+        incr i
+        ws
+        if {[string index $s $i] eq "\]"} { incr i; return $l }
+        while 1 {
+            lappend l [val]
+            ws
+            set t [string index $s $i]
+            incr i
+            if {$t eq "\]"} { return $l }
+        }
+    }
+    regexp -start $i -indices {true|false|null|-?[0-9][0-9.eE+-]*} $s m
+    set lit [string range $s [lindex $m 0] [lindex $m 1]]
+    set i [expr {[lindex $m 1] + 1}]
+    switch -- $lit {
+        true { return 1 }
+        false { return 0 }
+        null { return "" }
+    }
+    return $lit
+}
+
+proc ::__json::dec {text} {
+    variable s
+    variable i
+    set s $text
+    set i 0
+    return [val]
+}
+
+# A call of a mounted command: CALL name [args as JSON], then the answer.
+proc ::__ae_invoke {name arglist} {
+    set a {}
+    foreach x $arglist { lappend a [::__json::enc $x] }
+    set r [__call $name "\[[join $a ,]\]"]
+    set nl [string first "\n" $r]
+    set kind [string range $r 0 [expr {$nl - 1}]]
+    set text [string range $r [expr {$nl + 1}] end]
+    switch -- $kind {
+        VALUE { return [::__json::dec $text] }
+        CANCEL { error "cancelled by host: $text" }
+        default { error $text }
+    }
+}
+
+foreach __n $__mounts {
+    proc $__n args "::__ae_invoke [list $__n] \$args"
+}
+unset __n
+
+rename puts ::__ae_puts
+proc puts {args} {
+    set n [llength $args]
+    if {$n > 0 && [lindex $args 0] eq "-nonewline"} {
+        set args [lrange $args 1 end]
+        incr n -1
+    }
+    if {$n == 1} {
+        __say [lindex $args 0]
+    } elseif {$n == 2 && [lindex $args 0] in {stdout stderr}} {
+        __say [lindex $args 1]
+    } else {
+        return [uplevel 1 [linsert $args 0 ::__ae_puts]]
+    }
+    return
+}
+TCL
+}
+
+// The VM's own side: the script's interpreter, the time limit that polls
+// for a CANCEL, and the call that runs a script under it.
+fn master_prelude() -> string {
+    return <<TCL
+# The clock and interp commands load parts of Tcl's library the first time
+# they are used; use them now, before the lockdown.
+clock milliseconds
+interp create ::__ae_slave
+foreach __c {__say __call __poll} { interp alias ::__ae_slave $__c {} $__c }
+unset __c
+interp eval ::__ae_slave [list set __mounts $::__ae_mounts]
+interp eval ::__ae_slave $::__ae_slave_prelude
+interp eval ::__ae_slave $::__ae_warm
+
+set __ae_cancel ""
+
+proc __ae_arm {} {
+    set t [expr {[clock milliseconds] + 100}]
+    interp limit ::__ae_slave time -seconds [expr {$t / 1000}] -milliseconds [expr {$t % 1000}] \
+        -granularity 1 -command __ae_tick
+}
+
+# The limit's handler: no cancel, a new limit 100 ms on; a cancel, the limit
+# is left exceeded and Tcl abandons the script.
+proc __ae_tick {} {
+    set why [__poll]
+    if {$why eq ""} { __ae_arm } else { set ::__ae_cancel $why }
+}
+
+proc __ae_run {script} {
+    __ae_arm
+    set rc [catch {interp eval ::__ae_slave $script} res opts]
+    if {$::__ae_cancel ne ""} { return -code error "cancelled by host: $::__ae_cancel" }
+    return -options $opts $res
+}
+TCL
+}
+
+// The mounted names, as a Tcl list.
+fn mounts_list(h: *child.Host) -> string {
+    out = ""
+    n = child.mount_count(h)
+    i = 0
+    while i < n {
+        name, _min, _max = child.mount_at(h, i)
+        out = "${out}${name} "
+        i = i + 1
+    }
+    return out
+}
+
+main() {
+    h, err = child.open("tcl-worker")
+    if err != "" {
+        println(err)
+        exit(2)
+    }
+    if child.read_script(h) != "" { exit(1) }
+    // libtcl is loaded here, and Tcl_Init sources init.tcl, before the
+    // lockdown: afterwards the worker opens nothing. guest.launch gives the
+    // worker no environment, so the host names the library as the first
+    // argument.
+    if os.args_count() > 1 && os.args_get(1) != "" {
+        setenv("AETHER_TCL_SONAME", os.args_get(1), 1)
+    }
+    vm = tcl.vm_new()
+    if vm == null {
+        child.error(h, "tcl-worker: cannot load libtcl (AETHER_TCL_SONAME)")
+        exit(1)
+    }
+    ghl_keep(h as ptr)
+    tcl.vm_register(vm, "__say", w_say)
+    tcl.vm_register(vm, "__call", w_call)
+    tcl.vm_register(vm, "__poll", w_poll)
+    tcl.vm_set_global_str(vm, "__ae_mounts", mounts_list(h))
+    tcl.vm_set_global_str(vm, "__ae_slave_prelude", slave_prelude())
+    warm = ""
+    if os.args_count() > 2 { warm = os.args_get(2) }
+    tcl.vm_set_global_str(vm, "__ae_warm", warm)
+    if tcl.vm_eval(vm, master_prelude()) != 0 {
+        child.error(h, "tcl-worker: the prelude failed: ${tcl.vm_result_str(vm)}")
+        exit(1)
+    }
+    tcl.vm_pop_result(vm)
+    child.run(h) callback {
+        tcl.vm_set_global_str(vm, "__ae_script", h.source)
+        if tcl.vm_eval(vm, "__ae_run $::__ae_script") == 0 {
+            child.done(h, 0)
+        } else {
+            child.error(h, tcl.vm_result_str(vm))
+        }
+    }
+    exit(0)
+}

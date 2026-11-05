@@ -1,0 +1,319 @@
+// The bridge's two-way tier (#904) through `import tcl`, as a program uses
+// it. In aether this was a C harness (tests/integration/
+// host_tcl_bidirectional); here the callbacks are Aether @c_callback
+// functions, so module.ae's externs and the @source build are covered too.
+// The same cases and the same assertions; test_support.c holds what Aether
+// cannot say directly (a VM used from another thread, the resident size).
+//
+// Skips, as test_host_tcl.ae does, when libtcl cannot be loaded. Asserts on
+// return codes and on values read back from Tcl, never on the interpreter's
+// stdout.
+
+@source("test_support.c")
+
+import tcl
+import std.spec
+import std.string
+import std.list
+
+extern ghl_t_eval_on_other_thread(vm: ptr) -> string
+extern ghl_t_rss_kb() -> long
+extern ghl_t_i64_max() -> long
+extern ghl_t_i64_min() -> long
+
+@c_callback
+cb_add(vm: ptr) -> int {
+    tcl.push_int(vm, tcl.arg_int(vm, 1) + tcl.arg_int(vm, 2))
+    return 1
+}
+
+@c_callback
+cb_echo_str(vm: ptr) -> int {
+    tcl.push_str(vm, tcl.arg_str(vm, 1))
+    return 1
+}
+
+@c_callback
+cb_bool(vm: ptr) -> int {
+    tcl.push_bool(vm, tcl.arg_bool(vm, 1))
+    return 1
+}
+
+@c_callback
+cb_nil(vm: ptr) -> int {
+    tcl.push_nil(vm)
+    return 1
+}
+
+@c_callback
+cb_double(vm: ptr) -> int {
+    tcl.push_double(vm, tcl.arg_double(vm, 1) * 2.0)
+    return 1
+}
+
+// Pushes, then returns 0: the command returns nothing.
+@c_callback
+cb_nothing(vm: ptr) -> int {
+    tcl.push_int(vm, 99)
+    return 0
+}
+
+@c_callback
+cb_raise(vm: ptr) -> int {
+    return tcl.raise_error(vm, tcl.arg_str(vm, 1))
+}
+
+// Each argument's type tag, as a string of digits.
+@c_callback
+cb_types(vm: ptr) -> int {
+    out = ""
+    n = tcl.arg_count(vm)
+    i = 1
+    while i <= n {
+        out = "${out}${tcl.arg_type(vm, i)}"
+        i = i + 1
+    }
+    tcl.push_str(vm, out)
+    return 1
+}
+
+// Evaluates on its own VM in the middle of the script's call, then reads its
+// own argument again: the nested call must leave it intact. Pushes arg1 *
+// 1000 + the nested result + the level the nested eval ran at, times 100.
+@c_callback
+cb_nested(vm: ptr) -> int {
+    before = tcl.arg_int(vm, 1)
+    long inner = -1
+    long level = -1
+    if tcl.vm_eval(vm, "app.math.add 20 3") == 0 { inner = tcl.vm_result_int(vm) }
+    tcl.vm_pop_result(vm)
+    if tcl.vm_eval(vm, "info level") == 0 { level = tcl.vm_result_int(vm) }
+    tcl.vm_pop_result(vm)
+    after = tcl.arg_int(vm, 1)
+    if after != before { return tcl.raise_error(vm, "argument clobbered by the nested call") }
+    tcl.push_int(vm, after * 1000 + inner + level * 100)
+    return 1
+}
+
+// Tcl turns `return` and a stray `break` into success and error only at the
+// outermost level; nested in a callback the bridge has to. Pushes
+// "<rc>:<result>/<rc>:<type>/<rc>:<type>/<rc>:<type>".
+@c_callback
+cb_nested_codes(vm: ptr) -> int {
+    rc1 = tcl.vm_eval(vm, "return 5")
+    v = tcl.vm_result_int(vm)
+    tcl.vm_pop_result(vm)
+    rc2 = tcl.vm_eval(vm, "break")
+    t2 = tcl.vm_result_type(vm)
+    tcl.vm_pop_result(vm)
+    rc3 = tcl.vm_eval(vm, "return -code error nope")
+    t3 = tcl.vm_result_type(vm)
+    tcl.vm_pop_result(vm)
+    rc4 = tcl.vm_eval(vm, "return -level 2 up")
+    t4 = tcl.vm_result_type(vm)
+    tcl.vm_pop_result(vm)
+    tcl.push_str(vm, "${rc1}:${v}/${rc2}:${t2}/${rc3}:${t3}/${rc4}:${t4}")
+    return 1
+}
+
+// A small nested eval, for the limit cases.
+@c_callback
+cb_nest_small(vm: ptr) -> int {
+    tcl.vm_eval(vm, "set ::ticks [expr {[info exists ::ticks] ? $::ticks + 1 : 1}]")
+    tcl.vm_pop_result(vm)
+    return 0
+}
+
+// Runs `code` and holds its result for the reads that follow.
+fn ev(vm: ptr, code: string) -> int {
+    tcl.vm_pop_result(vm)
+    return tcl.vm_eval(vm, code)
+}
+
+fn churn(vm: ptr, rounds: int) {
+    i = 0
+    while i < rounds {
+        tcl.vm_set_global_str(vm, "CHURN", "a string long enough to show if each round keeps one")
+        tcl.vm_eval(vm, "host.echo_str \"$CHURN [app.math.add 1 2]\"")
+        _s = tcl.vm_result_str(vm)
+        tcl.vm_pop_result(vm)
+        tcl.vm_eval(vm, "host.raise boom")
+        tcl.vm_pop_result(vm)
+        tcl.vm_eval(vm, "list a b [expr {1.5 * 2}]")
+        // not popped: the next eval must release it
+        i = i + 1
+    }
+    tcl.vm_pop_result(vm)
+}
+
+main() {
+    fw = spec.init()
+
+    have_tcl = 0
+    if tcl.init() == 0 { have_tcl = 1 }
+    reason = "libtcl not loadable (set AETHER_TCL_SONAME)"
+
+    vm = null
+    if have_tcl == 1 {
+        vm = tcl.vm_new()
+        tcl.vm_register(vm, "app.math.add", cb_add)
+        tcl.vm_register(vm, "host.echo_str", cb_echo_str)
+        tcl.vm_register(vm, "host.bool", cb_bool)
+        tcl.vm_register(vm, "host.nil", cb_nil)
+        tcl.vm_register(vm, "host.double", cb_double)
+        tcl.vm_register(vm, "host.nothing", cb_nothing)
+        tcl.vm_register(vm, "host.raise", cb_raise)
+        tcl.vm_register(vm, "host.types", cb_types)
+        tcl.vm_register(vm, "host.nested", cb_nested)
+        tcl.vm_register(vm, "host.nest_small", cb_nest_small)
+        tcl.vm_register(vm, "ns::inner::add", cb_add)
+        tcl.vm_register(vm, "host.nested_codes", cb_nested_codes)
+    }
+
+    spec.describe(fw, "tcl vm (#904)") {
+        spec.it_when(have_tcl, "callbacks, globals, state kept between evals, namespaced commands", reason) callback {
+            tcl.vm_set_global_str(vm, "GSTR", "héllo €")
+            tcl.vm_set_global_int(vm, "GINT", 100)
+            keys = list.new()
+            list.add(keys, "k1")
+            list.add(keys, "k 2")
+            tcl.vm_set_global_strlist(vm, "KEYS", keys)
+            list.free(keys)
+
+            spec.assert_eq(ev(vm, "set x [expr {[app.math.add 2 3] + $GINT}]"), 0, "eval 1")
+            spec.assert_eq(tcl.vm_result_type(vm), tcl.TCL_TINT, "an expr result is an int")
+            spec.assert_eq_long(tcl.vm_result_int(vm), 105, "callback plus global")
+            spec.assert_eq(ev(vm, "expr {$x + 5}"), 0, "state kept")
+            spec.assert_eq_long(tcl.vm_result_int(vm), 110, "x kept between evals")
+            spec.assert_eq(ev(vm, "ns::inner::add 4 5"), 0, "a namespaced command")
+            spec.assert_eq_long(tcl.vm_result_int(vm), 9, "ns::inner::add")
+            ev(vm, "expr {[llength $KEYS] == 2 && [lindex $KEYS 1] eq {k 2}}")
+            spec.assert_eq(tcl.vm_result_bool(vm), 1, "the string list global is a Tcl list")
+            tcl.vm_pop_result(vm)
+        }
+
+        spec.it_when(have_tcl, "typed results", reason) callback {
+            tcl.vm_set_global_str(vm, "GSTR", "héllo €")
+            ev(vm, "host.echo_str $GSTR")
+            spec.assert_eq(tcl.vm_result_type(vm), tcl.TCL_TSTR, "a string")
+            spec.assert_str_eq(tcl.vm_result_str(vm), "héllo €", "non-ASCII string")
+            ev(vm, "host.double 1.25")
+            spec.assert_eq(tcl.vm_result_type(vm), tcl.TCL_TFLOAT, "a double")
+            spec.assert_true(tcl.vm_result_double(vm) == 2.5, "reads as 2.5")
+            ev(vm, "host.bool yes")
+            spec.assert_eq(tcl.vm_result_bool(vm), 1, "bool pushes 1")
+            spec.assert_eq_long(tcl.vm_result_int(vm), 1, "and reads as 1")
+            ev(vm, "host.nil")
+            spec.assert_eq(tcl.vm_result_type(vm), tcl.TCL_TNIL, "nil is the empty value")
+            spec.assert_str_eq(tcl.vm_result_str(vm), "", "an empty string")
+            ev(vm, "host.nothing")
+            spec.assert_eq(tcl.vm_result_type(vm), tcl.TCL_TNIL, "a callback returning 0 returns nothing, whatever it pushed")
+            ev(vm, "list a b")
+            spec.assert_eq(tcl.vm_result_type(vm), tcl.TCL_TTABLE, "a list")
+            spec.assert_str_eq(tcl.vm_result_str(vm), "a b", "and its string")
+            ev(vm, "expr {2**70}")
+            spec.assert_eq(tcl.vm_result_type(vm), tcl.TCL_TOTHER, "a bignum")
+            spec.assert_eq_long(tcl.vm_result_int(vm), ghl_t_i64_max(), "saturates")
+            ev(vm, "expr {-(2**70)}")
+            spec.assert_eq_long(tcl.vm_result_int(vm), ghl_t_i64_min(), "negative bignum saturates")
+            spec.assert_eq(ev(vm, "return 7"), 0, "a top-level return")
+            spec.assert_eq_long(tcl.vm_result_int(vm), 7, "is a result")
+            spec.assert_eq(ev(vm, "return -code error top"), -1, "a top-level return -code error")
+            spec.assert_eq(tcl.vm_result_type(vm), tcl.TCL_TERR, "is an error")
+            spec.assert_eq(ev(vm, "return -level 2 up"), -1, "a top-level return -level 2")
+            spec.assert_true(string.contains(tcl.vm_result_str(vm), "bad code") == 1, "is a bad code")
+            ev(vm, "host.types [expr {5}] [expr {2.5}] [list a b] {} hello")
+            spec.assert_str_eq(tcl.vm_result_str(vm), "27403", "argument types")
+            tcl.vm_pop_result(vm)
+        }
+
+        spec.it_when(have_tcl, "errors", reason) callback {
+            spec.assert_eq(ev(vm, "catch {host.raise deliberate} m; set m"), 0, "a raise is catchable")
+            spec.assert_str_eq(tcl.vm_result_str(vm), "deliberate", "the caught message")
+            spec.assert_eq(ev(vm, "host.raise uncaught"), -1, "an uncaught raise fails the eval")
+            spec.assert_eq(tcl.vm_result_type(vm), tcl.TCL_TERR, "and reads as an error")
+            spec.assert_str_eq(tcl.vm_result_str(vm), "uncaught", "with its message")
+            spec.assert_eq(ev(vm, "break"), -1, "break outside a loop is an error")
+            spec.assert_eq(tcl.vm_result_type(vm), tcl.TCL_TERR, "and reads as one")
+            spec.assert_eq(ev(vm, "expr {1 +}"), -1, "a syntax error")
+            spec.assert_eq(tcl.vm_result_type(vm), tcl.TCL_TERR, "reads as an error")
+            spec.assert_eq(ev(vm, "expr {6 * 7}"), 0, "an eval after errors succeeds")
+            spec.assert_eq(tcl.vm_result_type(vm), tcl.TCL_TINT, "an int")
+            spec.assert_eq_long(tcl.vm_result_int(vm), 42, "42")
+            tcl.vm_pop_result(vm)
+        }
+
+        spec.it_when(have_tcl, "a nested eval runs at global level and leaves the callback's arguments intact", reason) callback {
+            spec.assert_eq(ev(vm, "proc p {} { host.nested 7 }; p"), 0, "nested eval")
+            spec.assert_eq_long(tcl.vm_result_int(vm), 7023, "7 * 1000 + 23 + level 0")
+            ev(vm, "host.nested_codes")
+            spec.assert_str_eq(tcl.vm_result_str(vm), "0:5/-1:5/-1:5/-1:5", "a nested return and break")
+            tcl.vm_pop_result(vm)
+        }
+
+        // The command limit stops a loop of commands, cannot be caught, is
+        // per outermost eval, and a nested eval does not renew it. The time
+        // limit is the only one that stops a loop of no commands.
+        spec.it_when(have_tcl, "the command limit and the time limit", reason) callback {
+            spec.assert_str_eq(tcl.vm_set_instruction_limit(vm, 2000, 1), "", "set the command limit")
+            spec.assert_eq(ev(vm, "while 1 {incr i}"), -1, "a command loop is stopped")
+            spec.assert_true(string.contains(tcl.vm_result_str(vm), "command count limit") == 1, "by the command limit")
+            spec.assert_eq(ev(vm, "catch {while 1 {incr i}}; set survived 1"), -1, "the command limit cannot be caught")
+            round = 0
+            while round < 4 {
+                spec.assert_eq(ev(vm, "for {set j 0} {$j < 300} {incr j} {incr k}"), 0, "each round is within the budget")
+                round = round + 1
+            }
+            spec.assert_eq(ev(vm, "while 1 {host.nest_small}"), -1, "a nested eval does not renew the budget")
+            tcl.vm_set_instruction_limit(vm, 0, 1)
+
+            spec.assert_str_eq(tcl.vm_set_time_limit(vm, 300, 1), "", "set the time limit")
+            spec.assert_eq(ev(vm, "while 1 {}"), -1, "a loop of no commands is stopped")
+            spec.assert_true(string.contains(tcl.vm_result_str(vm), "time limit") == 1, "by the time limit")
+            tcl.vm_set_time_limit(vm, 0, 1)
+            spec.assert_eq(ev(vm, "after 400; expr 1"), 0, "the time limit is removed")
+            tcl.vm_pop_result(vm)
+        }
+
+        spec.it_when(have_tcl, "another thread is refused, and the VM works afterwards on its own", reason) callback {
+            spec.assert_str_eq(ghl_t_eval_on_other_thread(vm), "-1|5|tcl vm used from a thread other than the one that created it", "refused without touching Tcl")
+            spec.assert_eq(ev(vm, "expr {1 + 1}"), 0, "own thread after a refusal")
+            spec.assert_eq_long(tcl.vm_result_int(vm), 2, "2")
+            tcl.vm_pop_result(vm)
+        }
+
+        spec.it_when(have_tcl, "two VMs share nothing", reason) callback {
+            vm2 = tcl.vm_new()
+            spec.assert_not_null(vm2, "a second VM")
+            tcl.vm_set_global_int(vm, "GINT", 100)
+            spec.assert_eq(tcl.vm_eval(vm2, "list [info exists GINT] [llength [info commands app.math.add]]"), 0, "eval on the second")
+            spec.assert_str_eq(tcl.vm_result_str(vm2), "0 0", "no global and no command of the first")
+            tcl.vm_pop_result(vm2)
+            tcl.vm_free(vm2)
+        }
+
+        // Two loops, the smaller growth bounded. A reference kept per round
+        // grows a loop by several hundred kilobytes.
+        spec.it_when(have_tcl, "memory stays flat over many rounds", reason) callback {
+            churn(vm, 20000)
+            a = ghl_t_rss_kb()
+            churn(vm, 20000)
+            b = ghl_t_rss_kb()
+            churn(vm, 20000)
+            c = ghl_t_rss_kb()
+            g1 = b - a
+            g2 = c - b
+            g = g1
+            if g2 < g1 { g = g2 }
+            spec.assert_true(g < 128, "memory flat over 20000 rounds (${g1} kB, then ${g2} kB)")
+        }
+    }
+
+    _rc = spec.run_summary(fw)
+
+    if have_tcl == 1 {
+        tcl.vm_free(vm)
+        tcl.finalize()
+    }
+    return _rc
+}
