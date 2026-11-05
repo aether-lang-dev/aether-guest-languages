@@ -24,8 +24,12 @@ ruby_interp() {
 ruby_soname() {
     ruby_interp || return 1
     [ -n "${AETHER_RUBY_SONAME:-}" ] && return 0
-    so="$("$rb" -rrbconfig -e 'puts File.join(RbConfig::CONFIG["libdir"], RbConfig::CONFIG["LIBRUBY_SO"])' 2>/dev/null)"
-    [ -f "$so" ] || return 1
+    # Debian and Ubuntu put the library under the multiarch directory
+    # (archlibdir, /usr/lib/x86_64-linux-gnu) while libdir stays /usr/lib;
+    # Arch, Fedora and Homebrew have the two the same. Try both.
+    so="$("$rb" -rrbconfig -e 'c = RbConfig::CONFIG
+[c["archlibdir"], c["libdir"]].compact.uniq.each { |d| f = File.join(d, c["LIBRUBY_SO"]); (puts f; exit) if File.file?(f) }' 2>/dev/null)"
+    [ -n "$so" ] && [ -f "$so" ] || return 1
     export AETHER_RUBY_SONAME="$so"
     # The bridge starts Ruby without RubyGems (ruby/README.md). A library that
     # is a bundled gem there (fiddle, from Ruby 3.5) is found only with it:
