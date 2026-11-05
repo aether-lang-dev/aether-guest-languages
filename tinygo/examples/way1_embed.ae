@@ -1,0 +1,19 @@
+// Way 1: load a Go c-shared library and call it. No containment.
+//
+//   CGO_ENABLED=1 go build -buildmode=c-shared -o libgreet.so tinygo/examples/greet.go
+//   TINYGO_LIB=./libgreet.so ae run tinygo/examples/way1_embed.ae
+import tinygo
+import std.os
+
+main() {
+    handle, err = tinygo.load(os.getenv("TINYGO_LIB"))
+    if handle == null {
+        println("load failed: ${err}")
+        return
+    }
+    println("Answer = ${tinygo.call_int_void(handle, "Answer")}")
+    println("Add(2, 40) = ${tinygo.call_int_int_int(handle, "Add", 2, 40)}")
+    // Greet returns C.CString(...): the _owned call copies it and frees the C pointer.
+    println(tinygo.call_str_str_owned(handle, "Greet", "world"))
+    tinygo.unload(handle)
+}

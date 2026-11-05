@@ -1,0 +1,43 @@
+// Way 4: the Go library in a contained child. tinygo-worker loads it before
+// it locks itself down, and calls the functions the script names.
+//
+//   ae build tinygo/worker/worker.ae -o build/tinygo-worker
+//   CGO_ENABLED=1 go build -buildmode=c-shared -o build/libprobe.so tinygo/examples/probe.go
+//   ae build tinygo/examples/way4_child.ae -o build/way4
+//   TINYGO_WORKER=build/tinygo-worker TINYGO_LIB=build/libprobe.so build/way4
+//
+// On macOS guest.launch refuses and starts nothing.
+import std.guest
+import std.sandbox
+import std.list
+import std.os
+
+main() {
+    lib = os.getenv("TINYGO_LIB")
+    perms = sandbox.new("go") {
+    }
+    // spawn_socket's Landlock floor lets the loader read the system's
+    // libraries and nothing else: the library itself has to be granted.
+    sandbox.grant_fs_read(perms, lib)
+    args = list.new()
+    list.add(args, lib)
+    g, err = guest.launch(perms, os.getenv("TINYGO_WORKER"), args, "go", "")
+    if err != "" {
+        println("not started: ${err}")
+        return
+    }
+    // One call per line: the exported function and its argument.
+    script = "call GetenvGo USER\ncall GetenvLibc HOME\ncall OpenFile /etc/passwd\ncall RunShell\ncall Connect\ncall DlopenLibc libc.so.6\n"
+    guest.start(&g, script)
+    while true {
+        e = guest.next(&g)
+        if e.kind == "SAY" {
+            println(guest.printable(e.text))
+        } else if e.kind == "CALL" {
+            guest.fail(&g, "no host function")
+        } else {
+            println("${e.kind} ${guest.printable(e.text)}")
+            break
+        }
+    }
+}

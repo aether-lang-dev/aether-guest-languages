@@ -1,0 +1,128 @@
+// The contained child's host for the containment tests (tests/stunt_lib.sh).
+// Usage:
+//
+//   child_host <policy> <check> <expectation>
+//
+// Runs one row of stunt's catalogue, written in Go (checks.go, built into
+// the c-shared library $TINYGO_CHECKS_LIB), in tinygo-worker
+// ($TINYGO_WORKER, tinygo/worker), started by std.guest's guest.launch
+// (sandbox.spawn_socket: Landlock and seccomp on Linux; nothing starts on
+// macOS or Windows, where it fails closed) under the policy's grants. The
+// script it sends is a call of the library's check_<row> by symbol. There
+// are no host functions to answer: the bridge has none, and the worker
+// mounts none. Prints stunt's line, or for a host-checked row (spin, silent,
+// oversize, half-frame) how the guest ended, and exits 0 when it matched.
+// Needs ae 0.878.0 or later.
+//
+// The worker loads the library before it locks itself down (its first
+// argument): after, it can open nothing.
+
+import policy
+import std.guest
+import std.sandbox
+import std.os
+import std.list
+import std.string
+
+extern exit(code: int)
+
+// The script a host-checked row runs in the child: the library's own
+// functions (checks.go), called by the worker.
+fn host_checked_script(check: string) -> string {
+    // host_spin never returns. Called by `call`, the worker polls for the
+    // deadline's CANCEL and ends the process at it.
+    if check == "spin" { return "call host_spin\n" }
+    // The same function called where the worker cannot hear a CANCEL: the
+    // host must kill it.
+    if check == "silent" { return "call_here host_spin\n" }
+    // One 1 MiB string is one SAY frame, past the host's max_frame.
+    if check == "oversize" { return "call host_oversize\n" }
+    // A frame's 4-byte header saying 64 bytes, 10 of them, written to the
+    // worker's socket (AETHER_IPC_FD, which Go copied at load), then nothing.
+    if check == "half-frame" { return "call host_half_frame\n" }
+    return ""
+}
+
+fn run_child(spec: string, check: string, expect: string) {
+    worker = os.getenv("TINYGO_WORKER")
+    if worker == "" {
+        println("host: TINYGO_WORKER is not set (the path of tinygo-worker)")
+        exit(2)
+    }
+    lib = os.getenv("TINYGO_CHECKS_LIB")
+    if lib == "" {
+        println("host: TINYGO_CHECKS_LIB is not set (the path of the library built from checks.go)")
+        exit(2)
+    }
+    // The policy is the stunt test's plus a read grant on the library itself:
+    // spawn_socket's Landlock floor lets the loader read the system's
+    // libraries and nothing else, so the worker could not dlopen a library
+    // from anywhere else. Any host of tinygo-worker has to give it. No row
+    // reads there.
+    perms = policy.grants(spec)
+    sandbox.grant_fs_read(perms, lib)
+    args = list.new()
+    list.add(args, lib)
+    g, err = guest.launch(perms, worker, args, "tinygo-worker", "")
+    if err != "" {
+        println("host: guest.launch: ${err}")
+        exit(1)
+    }
+
+    host_checked = 0
+    script = ""
+    if expect == "host" {
+        host_checked = 1
+        script = host_checked_script(check)
+        g.deadline_ms = 1000
+        g.grace_ms = 1000
+    } else {
+        script = "call ${policy.symbol(check)} ${policy.facts()}\t${expect}\n"
+    }
+    guest.start(&g, script)
+    line = ""
+    last = guest.Event { kind: "", name: "", text: "", code: 0, tags: "" }
+    going = 1
+    while going == 1 {
+        e = guest.next(&g)
+        if e.kind == "SAY" {
+            line = e.text
+        } else if e.kind == "CALL" {
+            guest.fail(&g, "no host function ${e.name}")
+        } else if e.kind == "LOG" {
+        } else {
+            last = e
+            going = 0
+        }
+    }
+    guest.close(&g)
+
+    if host_checked == 1 {
+        verdict_line = "${check}: ${last.kind} (${guest.printable(last.text)})"
+        ok = 0
+        if check == "spin" && last.kind == "ERROR" && string.contains(last.text, "cancelled by host") == 1 { ok = 1 }
+        if check == "silent" && last.kind == "KILLED" && string.contains(last.text, "no answer to CANCEL") == 1 { ok = 1 }
+        if check == "oversize" && last.kind == "KILLED" && string.contains(last.text, "frame refused") == 1 { ok = 1 }
+        if check == "half-frame" && last.kind == "KILLED" && string.contains(last.text, "timed out inside a frame") == 1 { ok = 1 }
+        if ok == 1 {
+            println("${verdict_line} - host-checked: PASS")
+            exit(0)
+        }
+        println("${verdict_line} - host-checked: FAIL")
+        exit(1)
+    }
+    if last.kind != "DONE" || line == "" {
+        println("${check}: the worker ended ${last.kind} (${guest.printable(last.text)}), last said \"${guest.printable(line)}\" - expected ${expect}: FAIL")
+        exit(1)
+    }
+    println(line)
+    exit(policy.verdict(line))
+}
+
+main() {
+    if os.args_count() != 4 {
+        println("usage: child_host <policy> <check> <expectation>")
+        exit(2)
+    }
+    run_child(os.args_get(1), os.args_get(2), os.args_get(3))
+}
