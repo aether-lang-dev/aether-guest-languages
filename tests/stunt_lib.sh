@@ -47,6 +47,23 @@ die() {
     exit 1
 }
 
+case "$(uname -s 2>/dev/null)" in
+    Linux) PLAT=linux ;;
+    Darwin) PLAT=macos ;;
+    FreeBSD) PLAT=freebsd ;;
+    *) PLAT=other ;;
+esac
+command -v ae > /dev/null 2>&1 || die "ae is not on PATH"
+# A language's lang.sh may name rows where the preload itself fails (an
+# error where the policy says succeed or refused); by default there are none.
+preload_fails() { return 1; }
+# And rows a contained child lets through where stunt expects a refusal: by
+# default none (a language whose worker locks itself down, as std.guest.child
+# does, is held by that; one that cannot, like Go, has only the spawn's wall).
+child_escapes() { return 1; }
+# And rows the language cannot express in-process only (the contained child
+# runs them): left_out is for both.
+left_out_inproc() { return 1; }
 . "$ROOT/$LANG_NAME/containment/lang.sh"
 lang_runtime || skip_all "$LANG_NO_RUNTIME"
 
