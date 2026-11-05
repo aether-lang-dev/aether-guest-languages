@@ -69,7 +69,13 @@ for lang in $langs; do
             sh "$t" || fails=$((fails + 1))
         done
         echo "== parity ($lang)"
-        sh "$SCRIPT_DIR/parity.sh" "$parity" "$lang" || fails=$((fails + 1))
+        # A language may say its README table is not for this host's build
+        # (lang_parity_ok in its lang.sh: Go without cgo runs fewer rows).
+        if type lang_parity_ok > /dev/null 2>&1 && ! lang_parity_ok; then
+            echo "  [SKIP] parity ($lang): the README's table is not for this build"
+        else
+            sh "$SCRIPT_DIR/parity.sh" "$parity" "$lang" || fails=$((fails + 1))
+        fi
     fi
 done
 
