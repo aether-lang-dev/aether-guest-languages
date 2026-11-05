@@ -6,8 +6,9 @@ more, each held to the same named checks.
 
 A language here can be run four ways, and the repository does not choose
 for you. Every way stays supported; they differ in how much they contain
-([lua/README.md](lua/README.md#four-ways-to-run-lua-from-aether) shows all
-four for Lua, with examples):
+([lua/README.md](lua/README.md#four-ways-to-run-lua-from-aether) and
+[python/README.md](python/README.md#four-ways-to-run-python-from-aether)
+show all four, with examples):
 
 1. **Embed.** The interpreter is loaded into the Aether program and called
    directly (`import lua`, then `lua.run(...)`, the script often a heredoc,
@@ -36,28 +37,48 @@ language cannot express it. The tests in `tests/` produce the table, so a
 claim in it is a test outcome. That a language runs is not the question the
 table answers; whether it is contained is.
 
+Above it, a **Stunt parity** table gives one row per stunt test (the
+`tests/test_stunt_*.sh` scripts, named after aether's) and one cell per way:
+"matches", or the rows that differ and how. It is generated from a run
+(`sh tests/run.sh --write-parity`), and every run checks it in the columns
+its host can run, so a README that no longer says what the tests do fails
+the tests.
+
 | Language | In-process | Contained child | Table |
 |---|---|---|---|
 | Lua 5.3, 5.4, 5.5 | `import lua` | `lua/worker` (std.guest) | [lua/README.md](lua/README.md#containment-table) |
+| CPython 3.10 to 3.14 | `import python` | `python/worker` (std.guest) | [python/README.md](python/README.md#containment-table) |
 
 ## Layout
 
 ```
-aether.toml            the package: exports lua/ (modules = "lua")
-ci/versions.env        toolchain pins (AE_PIN, AE_CHILD_PIN, AEB_REF, AETHER_STUNT_REF)
+aether.toml            the package: exports lua/ and python/ (modules = "lua, python")
+ci/versions.env        toolchain pins (AE_PIN, AE_CHILD_PIN, AE_SPAWN_PIN, AEB_REF, AETHER_STUNT_REF)
 lua/
   module.ae            import lua: the bridge's API
   aether_host_lua.c    the bridge, compiled into the importing program (@source)
   lua_abi.h            the Lua types the bridge uses (no Lua dev package needed)
   test_host_lua*.ae    the bridge's specs
   worker/              lua-worker: Lua in a contained child (std.guest)
-  containment/         the containment hosts and checks.lua, stunt's rows in Lua
+  containment/         the containment hosts and checks.lua, stunt's rows in Lua;
+                       lang.sh, what the harness needs to know about Lua
+  PROVENANCE.md        where the bridge came from, and what the move changed
+python/
+  module.ae            import python: the bridge's API
+  aether_host_python.c the bridge, compiled into the importing program (@source)
+  python_abi.h         the CPython types the bridge uses (no Python dev package needed)
+  test_host_python*.ae the bridge's specs (test_support.c: their C helpers)
+  worker/              python-worker: CPython in a contained child (std.guest)
+  containment/         the containment hosts and checks.py, stunt's rows in Python;
+                       lang.sh; test_imports.sh, importing under a sandbox
   PROVENANCE.md        where the bridge came from, and what the move changed
 tests/
-  run.sh               everything
+  run.sh               everything, every language (GUEST_LANG=<lang> for one)
   stunt_lib.sh         holds a language to stunt's catalogue, by name
   test_stunt_*.sh      one per policy: aether's contrib_host_stunt lists
   test_catalogue.sh    every catalogue row is named here or left out
+  parity.sh            renders and checks a README's Stunt parity table
+  lua_env.sh, python_env.sh  find the runtime library on this machine
 ```
 
 ## Using a language from this repository
@@ -79,7 +100,8 @@ the tree it installed (there are no tagged releases yet):
 "github.com/aether-lang-dev/aether-guest-languages" = "sha256-..."
 ```
 
-Then `import lua` resolves to `lua/module.ae`:
+Then `import lua` resolves to `lua/module.ae`, and `import python` to
+`python/module.ae`:
 `ae build`, `ae run` and `ae lib-path` put the package on the module search
 path, and the bridge's C is compiled into your program from the `@source`
 line in `module.ae`, with nothing to build beforehand.
@@ -94,12 +116,15 @@ branch):
 
 `ae build` then prints `Overriding ... -> ../aether-guest-languages`. For a
 one-off without a manifest, `ae build app.ae --lib <checkout>` does the
-same, since the checkout's root holds `lua/module.ae`.
+same, since the checkout's root holds `lua/module.ae` and
+`python/module.ae`.
 
 At run time the bridge `dlopen`s the language's library: for Lua, set
 `AETHER_LUA_SONAME` (for example `liblua5.4.so.0`, or
 `/opt/homebrew/lib/liblua.dylib`) unless the system has an unversioned
-`liblua.so`. The Lua dev package is not needed to build.
+`liblua.so`; for Python, `AETHER_PYTHON_SONAME` (for example
+`libpython3.12.so.1.0`) unless it has `libpython3.so`. Neither language's
+dev package is needed to build.
 
 ## Toolchain
 
@@ -127,9 +152,12 @@ commit that needs something newer, saying so.
 ## Tests
 
 ```sh
-sh tests/run.sh               # specs, then the containment rows
-sh tests/run.sh containment   # the rows only
-LUA_VERSION=5.4 sh tests/run.sh
+sh tests/run.sh                    # every language: specs, containment rows, parity check
+sh tests/run.sh containment        # the rows only
+GUEST_LANG=python sh tests/run.sh  # one language
+LUA_VERSION=5.4 GUEST_LANG=lua sh tests/run.sh
+PYTHON=/usr/bin/python3.12 GUEST_LANG=python sh tests/run.sh
+sh tests/run.sh --write-parity     # rewrite the parity tables' columns this host ran
 ```
 
 The containment rows build stunt from aether's source at
@@ -140,14 +168,15 @@ the in-process rows run under the release's `libaether_sandbox.so`; the
 child rows run where ae is 0.878.0 or later and the kernel has Landlock
 (`GHL_REQUIRE_CHILD=1` makes a missing child mode a failure, as CI does).
 
-CI (`.github/workflows/ci.yml`): Linux with Ubuntu's liblua5.4-dev on
-`AE_PIN` (in-process) and on `AE_CHILD_PIN` (in-process and contained
-child), and macOS with Homebrew's lua (5.5) and lua@5.4 on `AE_PIN`.
+CI (`.github/workflows/ci.yml`), one language per job: Linux with Ubuntu's
+liblua5.4-dev, and with its libpython3.12, each on `AE_PIN` (in-process)
+and on `AE_CHILD_PIN` (in-process and contained child); macOS with
+Homebrew's lua (5.5) and lua@5.4, and with its python@3.13, on `AE_PIN`.
 
-## Moving from `contrib.host.lua`
+## Moving from `contrib.host.lua` or `contrib.host.python`
 
-The bridge was copied from aether at `d3732a0ed` (lua/PROVENANCE.md). Its
-functions and names are unchanged, so moving is the import line and the
+The Lua bridge was copied from aether at `d3732a0ed` (lua/PROVENANCE.md).
+Its functions and names are unchanged, so moving is the import line and the
 dependency:
 
 ```diff
@@ -161,10 +190,25 @@ package at build time (a release install of ae could not link
 `contrib.host.lua` without them), and Lua 5.5 works (aether's copy refuses
 to load it: it looks for `luaL_openlibs`, which 5.5 does not export).
 
-The plan for aether's copy: it stays in `contrib/host/lua` for a transition
-period, with its README pointing here; fixes land here first. It is removed
-from aether in a later release, announced in aether's changelog beforehand.
-Do not import both in one program: they define the same C symbols.
+The Python bridge was copied from aether at `9673641e6`
+(python/PROVENANCE.md), and moves the same way, the import line and the
+dependency:
+
+```diff
+-import contrib.host.python
++import python
+```
+
+What changes: no `make contrib MODULES=python` step and no python3-dev at
+build time; the `_aether_map` module no longer depends on the build host's
+Python.h; a free-threaded CPython is refused with a message rather than
+loaded.
+
+The plan for aether's copies: they stay in `contrib/host/` for a transition
+period, with their READMEs pointing here; fixes land here first. They are
+removed from aether in a later release, announced in aether's changelog
+beforehand. Do not import both copies of a language in one program: they
+define the same C symbols.
 
 ## License
 
