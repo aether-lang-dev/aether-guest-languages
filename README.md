@@ -579,11 +579,10 @@ contained child does not work for Racket (Chez Scheme maps anonymous
 executable memory, which the preload refuses a contained child), and nothing
 stops a run that does not end (racket/README.md, "Stopping a run").
 
-The plan for aether's copies: they stay in `contrib/host/` for a transition
-period, with their READMEs pointing here; fixes land here first. They are
-removed from aether in a later release, announced in aether's changelog
-beforehand. Do not import both copies of a language in one program: they
-define the same C symbols.
+Aether's copies are removed by aether PR #3607 (2026-11-06; Lua's and
+Python's went earlier), with no transition period: the bridges here are the
+ones, and fixes land here. Until that lands in a release, do not import both
+copies of a language in one program: they define the same C symbols.
 
 ## License
 
