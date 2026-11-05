@@ -1,0 +1,17 @@
+import racket
+import std.sandbox
+
+// Racket's own file, socket, process and FFI calls go straight to libc, so
+// run_sandboxed does not hold them (way 2); under LD_PRELOAD they are (way 3).
+main() {
+    reader = sandbox.new("reader") { grant_env("HOME") }
+    script = <<RKT
+        (define (try label thunk)
+          (printf "~a: ~a\n" label
+                  (with-handlers ([exn:fail? (lambda (e) "refused")]) (thunk))))
+        (try "HOME   " (lambda () (getenv "HOME")))
+        (try "USER   " (lambda () (getenv "USER")))
+        (try "passwd " (lambda () (if (call-with-input-file "/etc/passwd" read-line) "read it" "?")))
+    RKT
+    if racket.run_sandboxed(reader, script) != 0 { println("racket failed: ${racket.last_error()}") }
+}
