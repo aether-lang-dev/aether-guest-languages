@@ -24,8 +24,8 @@
 # What differs between languages is in <lang>/containment/lang.sh: how to
 # find the runtime, where the checks and the worker are, and the rows that
 # differ from stunt's expectation, by name and with why: left out (the
-# language cannot express it), escapes or not held in-process, stricter in
-# the child.
+# language cannot express it, in both modes or in-process only), escapes or
+# not held in-process, stricter in the child.
 #
 # Every outcome is also appended to build/parity-<lang>.tsv, from which
 # tests/parity.sh renders and checks the README's "Stunt parity" table.
@@ -55,6 +55,9 @@ command -v ae > /dev/null 2>&1 || die "ae is not on PATH"
 # A language's lang.sh may name rows where the preload itself fails (an
 # error where the policy says succeed or refused); by default there are none.
 preload_fails() { return 1; }
+# And rows the language cannot express in-process only (the contained child
+# runs them): left_out is for both.
+left_out_inproc() { return 1; }
 . "$ROOT/$LANG_NAME/containment/lang.sh"
 lang_runtime || skip_all "$LANG_NO_RUNTIME"
 
@@ -243,7 +246,16 @@ stunt() {
         fi
         return
     fi
-    case "$modes" in *in-process*) stunt_inproc "$check" "$expect" ;; esac
+    case "$modes" in
+        *in-process*)
+            if why="$(left_out_inproc "$check")"; then
+                printf '  [LEFT OUT] %s (in-process): %s\n' "$check" "$why"
+                LEFT=$((LEFT + 1))
+                record inproc "$check" "LEFT OUT"
+            else
+                stunt_inproc "$check" "$expect"
+            fi ;;
+    esac
     # "<outer>|<inner>" nests the bridge's level in an enforce block: an
     # in-process shape.
     case "$POLICY" in *"|"*) return ;; esac

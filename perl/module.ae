@@ -44,7 +44,7 @@ import std.sandbox   // sandbox.Grants, the grant list the run_sandboxed calls t
 exports (
     perl_run_sandboxed, perl_run_sandboxed_with_map,
     perl_run, perl_init, perl_finalize,
-    perl_register, perl_arg_count, perl_arg_str, perl_arg_int,
+    perl_last_error, perl_register, perl_arg_count, perl_arg_str, perl_arg_int,
     perl_push_str, perl_push_int, perl_raise_error
 )
 
@@ -61,6 +61,10 @@ exports (
 @extern("aether_perl_init") perl_init() -> int
 // Destroy the interpreter, flushing what the script printed.
 @extern("aether_perl_finalize") perl_finalize()
+
+// The message ($@, "at ... line N.\n" included) of the last run that failed,
+// "" if none has. A later run that succeeds leaves it.
+@extern("aether_perl_last_error") perl_last_error() -> string
 
 // --- Host functions the script calls -----------------------------------------
 // Defines the Perl sub `name` (a package-qualified name such as app::add

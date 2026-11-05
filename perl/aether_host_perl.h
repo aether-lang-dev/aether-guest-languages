@@ -10,6 +10,7 @@ int aether_perl_init(void);
 void aether_perl_finalize(void);
 
 // Host functions a script calls (added here; see PROVENANCE.md).
+const char* aether_perl_last_error(void);
 int aether_perl_register(const char* name, void* fn);
 int aether_perl_arg_count(void* ctx);
 const char* aether_perl_arg_str(void* ctx, int i);

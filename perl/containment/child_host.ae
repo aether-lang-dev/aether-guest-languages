@@ -1,0 +1,236 @@
+// The contained child's host for the containment tests (tests/stunt_lib.sh).
+// Usage:
+//
+//   child_host <policy> <check> <expectation>
+//
+// Runs one row of stunt's catalogue, written in Perl (checks.pl, or
+// $PERL_CHECKS), in perl-worker ($PERL_WORKER, perl/worker), started by
+// std.guest's guest.launch (sandbox.spawn_socket: Landlock and seccomp on
+// Linux; nothing starts on macOS or Windows, where it fails closed) under
+// the policy's grants. It answers the worker's calls as host.ae's host
+// functions do (a file it grants goes down as a descriptor); the shared map
+// is the host's own here, its input frozen as the runtime freezes it. Prints
+// stunt's line, or for a host-checked row (spin, silent, oversize,
+// half-frame) how the guest ended, and exits 0 when it matched. Needs ae
+// 0.878.0 or later.
+//
+// The worker loads what checks.pl needs before it locks itself down
+// (its second argument, PREIMPORT below): after, it can read nothing.
+
+@source("host_support.c")
+
+import policy
+import std.guest
+import std.sandbox
+import std.os
+import std.list
+import std.string
+
+extern exit(code: int)
+extern aether_sandbox_check_slow(category: string, resource: string) -> int
+extern ghl_map_new() -> long
+extern ghl_map_put(key: string, value: string)
+extern ghl_map_get(key: string) -> string
+extern ghl_map_put_guest(key: string, value: string) -> int
+
+// The argument of a one-argument JSON array call: ["x"] or [7], as text.
+fn json_arg(args: string) -> string {
+    inner = string.trim(string.substring(args, 1, string.length(args) - 1))
+    if string.starts_with(inner, "\"") == 1 && string.length(inner) >= 2 {
+        return string.substring(inner, 1, string.length(inner) - 1)
+    }
+    return inner
+}
+
+// One CALL, answered as the in-process host functions answer the same call.
+fn serve(g: *guest.Guest, perms: sandbox.Grants, e: guest.Event) {
+    name = e.name
+    if name == "read_file" {
+        path = json_arg(e.text)
+        allowed = list.new()
+        sandbox.enforce(perms) callback {
+            if aether_sandbox_check_slow("fs_read", path) == 1 { list.add(allowed, "y") }
+        }
+        if list.size(allowed) == 1 {
+            guest.grant_file(g, path, path)
+        } else {
+            guest.deny(g, path, "fs_read ${path}")
+        }
+        return
+    }
+    if name == "getenv" {
+        vname = json_arg(e.text)
+        box = list.new()
+        sandbox.enforce(perms) callback {
+            if aether_sandbox_check_slow("env", vname) == 0 {
+                list.add(box, "R")
+            } else {
+                list.add(box, "V${os.getenv(vname)}")
+            }
+        }
+        got, _e = list.get_string(box, 0)
+        if got == "R" {
+            guest.fail(g, "refused: env ${vname}")
+        } else if got == "V" {
+            guest.fail(g, "${vname} is unset")
+        } else {
+            guest.answer(g, guest.json_string(string.substring(got, 1, string.length(got))))
+        }
+        return
+    }
+    if name == "greet" {
+        guest.answer(g, guest.json_string("hello, ${json_arg(e.text)}"))
+        return
+    }
+    if name == "add" {
+        inner = string.substring(e.text, 1, string.length(e.text) - 1)
+        comma = string.index_of(inner, ",")
+        if comma > 0 {
+            x, xe = string.to_int(string.trim(string.substring(inner, 0, comma)))
+            y, ye = string.to_int(string.trim(string.substring(inner, comma + 1, string.length(inner))))
+            if xe == "" && ye == "" {
+                guest.answer(g, "${x + y}")
+                return
+            }
+        }
+        guest.fail(g, "add takes two ints")
+        return
+    }
+    if name == "aether_map_get" {
+        v = ghl_map_get(json_arg(e.text))
+        if v == "" { guest.answer(g, "null") } else { guest.answer(g, guest.json_string(v)) }
+        return
+    }
+    if name == "aether_map_put" {
+        inner = string.substring(e.text, 1, string.length(e.text) - 1)
+        comma = string.index_of(inner, ",")
+        key = json_arg("[${string.substring(inner, 0, comma)}]")
+        value = json_arg("[${string.substring(inner, comma + 1, string.length(inner))}]")
+        if ghl_map_put_guest(key, value) == 1 { guest.answer(g, "true") } else { guest.answer(g, "false") }
+        return
+    }
+    guest.fail(g, "no host function ${name}")
+}
+
+// The modules checks.pl uses, loaded by the worker before its lockdown
+// (JSON::PP and Time::HiRes, which the worker uses, always are).
+const PREIMPORT = "Errno,Socket,Fcntl,POSIX,DynaLoader"
+
+// The script a host-checked row runs in the child.
+fn host_checked_script(check: string) -> string {
+    // The worker's SIGALRM handler polls every 50 ms: spin answers the
+    // deadline's CANCEL.
+    if check == "spin" { return "my $x = 0; while (1) { $x++ }\n" }
+    // A script that ignores the timer's signal never answers: the host must
+    // kill it.
+    if check == "silent" { return "$SIG{ALRM} = 'IGNORE'; my $x = 0; while (1) { $x++ }\n" }
+    // One 1 MiB print is one SAY frame, past the host's max_frame.
+    if check == "oversize" { return "print 'x' x 1048576;" }
+    // The worker's socket to the host is in its environment (std.ipc's
+    // AETHER_IPC_FD), and syswrite reaches it: a frame's 4-byte header
+    // saying 64 bytes, 10 of them, then nothing.
+    if check == "half-frame" { return "$SIG{ALRM} = 'IGNORE'; open(my $o, '>&=', $ENV{AETHER_IPC_FD}) or die \"fdopen: $!\"; syswrite($o, pack('N', 64) . 'CALL greet'); sleep 30;\n" }
+    return ""
+}
+
+fn run_child(spec: string, check: string, expect: string) {
+    worker = os.getenv("PERL_WORKER")
+    if worker == "" {
+        println("host: PERL_WORKER is not set (the path of perl-worker)")
+        exit(2)
+    }
+    perms = policy.grants(spec)
+    // Perl reads its modules from disk, and spawn_socket's Landlock floor
+    // lets the loader read libraries but nothing else, so every policy is
+    // the stunt test's plus a read grant on perl's library directories
+    // (GHL_PERL_LIB, from tests/perl_env.sh), as any host of perl-worker
+    // must give it, and a read of /dev/null, which perl_parse opens as the
+    // "script" of the -e the bridge starts the interpreter with. No row
+    // reads there.
+    stdlib = os.getenv("GHL_PERL_LIB")
+    if stdlib == "" {
+        println("host: GHL_PERL_LIB is not set (perl's library directories)")
+        exit(2)
+    }
+    dirs = string.split(stdlib, ",")
+    nd = string.array_size(dirs)
+    di = 0
+    while di < nd {
+        sandbox.grant_fs_read(perms, "${string.array_get(dirs, di)}/*")
+        di = di + 1
+    }
+    string.array_free(dirs)
+    sandbox.grant_fs_read(perms, "/dev/null")
+    args = list.new()
+    list.add(args, os.getenv("AETHER_PERL_SONAME"))
+    list.add(args, PREIMPORT)
+    g, err = guest.launch(perms, worker, args, "perl-worker", "")
+    if err != "" {
+        println("host: guest.launch: ${err}")
+        exit(1)
+    }
+    ghl_map_new()
+    ghl_map_put("input", "stunt-in")
+    for name in ["read_file", "getenv", "greet", "aether_map_get"] {
+        guest.mount(&g, name, 1, 1)
+    }
+    guest.mount(&g, "add", 2, 2)
+    guest.mount(&g, "aether_map_put", 2, 2)
+
+    host_checked = 0
+    script = ""
+    if expect == "host" {
+        host_checked = 1
+        script = host_checked_script(check)
+        g.deadline_ms = 1000
+        g.grace_ms = 1000
+    } else {
+        script = "${policy.facts()}${policy.checks_source()}\nprint check_line(\"${check}\", \"${expect}\");"
+    }
+    guest.start(&g, script)
+    line = ""
+    last = guest.Event { kind: "", name: "", text: "", code: 0, tags: "" }
+    going = 1
+    while going == 1 {
+        e = guest.next(&g)
+        if e.kind == "SAY" {
+            line = e.text
+        } else if e.kind == "CALL" {
+            serve(&g, perms, e)
+        } else if e.kind == "LOG" {
+        } else {
+            last = e
+            going = 0
+        }
+    }
+    guest.close(&g)
+
+    if host_checked == 1 {
+        verdict_line = "${check}: ${last.kind} (${guest.printable(last.text)})"
+        ok = 0
+        if check == "spin" && last.kind == "ERROR" && string.contains(last.text, "cancelled by host") == 1 { ok = 1 }
+        if check == "silent" && last.kind == "KILLED" && string.contains(last.text, "no answer to CANCEL") == 1 { ok = 1 }
+        if check == "oversize" && last.kind == "KILLED" && string.contains(last.text, "frame refused") == 1 { ok = 1 }
+        if check == "half-frame" && last.kind == "KILLED" && string.contains(last.text, "timed out inside a frame") == 1 { ok = 1 }
+        if ok == 1 {
+            println("${verdict_line} - host-checked: PASS")
+            exit(0)
+        }
+        println("${verdict_line} - host-checked: FAIL")
+        exit(1)
+    }
+    if last.kind != "DONE" || line == "" {
+        println("${check}: the worker ended ${last.kind} (${guest.printable(last.text)}), last said \"${guest.printable(line)}\" - expected ${expect}: FAIL")
+        exit(1)
+    }
+    println(line)
+    exit(policy.verdict(line))
+}
+
+main() {
+    if os.args_count() != 4 {
+        println("usage: child_host <policy> <check> <expectation>")
+        exit(2)
+    }
+    run_child(os.args_get(1), os.args_get(2), os.args_get(3))
+}

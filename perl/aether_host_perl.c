@@ -389,6 +389,7 @@ static const char PRELUDE[] =
     "sub _ae_pack { join '', map { my $s = defined $_ ? \"$_\" : ''; utf8::encode($s); length($s) . ':' . $s } @_ }\n"
     "sub _ae_unpack { my $s = shift; my @o; while (length $s) { $s =~ s/^(\\d+):// or last; push @o, substr($s, 0, $1, ''); } @o }\n"
     "sub _ae_call {\n"
+    "    local $main::_ae_busy = 1;\n"
     "    $main::_aether_req = _ae_pack(@_);\n"
     "    my $r = $main::_aether_call;\n"
     "    my $k = substr($r, 0, 1); my $p = substr($r, 1);\n"
@@ -472,16 +473,24 @@ void aether_perl_finalize(void) {
 //   ERRSV          → Perl_get_sv(my_perl, "@", 0)  (returns $@ SV)
 //   SvTRUE(sv)     → Perl_sv_true(my_perl, sv)
 //   SvPV_nolen(sv) → Perl_sv_2pv_flags(my_perl, sv, NULL, SV_GMAGIC)
+static char g_last_error[1024];
+
 static int run_perl_code(const char* code) {
     (void)g_pl.Perl_eval_pv(my_perl, code, 0 /* croak_on_error=FALSE */);
     SV* errsv = g_pl.Perl_get_sv(my_perl, "@", 0);
     if (errsv && g_pl.Perl_sv_true(my_perl, errsv)) {
         char* msg = g_pl.Perl_sv_2pv_flags(my_perl, errsv, NULL, SV_GMAGIC);
         fprintf(stderr, "[perl] %s\n", msg ? msg : "(no message)");
+        snprintf(g_last_error, sizeof(g_last_error), "%s", msg ? msg : "(no message)");
         return -1;
     }
     return 0;
 }
+
+// The message ($@) of the last run that failed, with its "at ... line N"
+// and trailing newline; "" before any failed. Not cleared by a later run
+// that succeeds.
+const char* aether_perl_last_error(void) { return g_last_error; }
 
 int aether_perl_run(const char* code) {
     if (!code) return -1;
@@ -631,6 +640,7 @@ int aether_perl_run_sandboxed_with_map(void* perms, const char* code,
   return aether_perl_init();
 }
 int aether_perl_register(const char* name, void* fn) { (void)name; (void)fn; return aether_perl_init(); }
+const char* aether_perl_last_error(void) { return ""; }
 int aether_perl_arg_count(void* ctx) { (void)ctx; return 0; }
 const char* aether_perl_arg_str(void* ctx, int i) { (void)ctx; (void)i; return ""; }
 int64_t aether_perl_arg_int(void* ctx, int i) { (void)ctx; (void)i; return 0; }
