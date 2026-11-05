@@ -3,8 +3,8 @@ name: CI
 # ae comes from aeb's get.sh at the versions ci/versions.env pins (binary
 # releases). The in-process jobs run on AE_PIN; the contained-child jobs need
 # std.guest, so AE_CHILD_PIN. The *-spawn jobs run on AE_SPAWN_PIN, the first
-# ae whose preload holds os.execute / os.system, so both sides of that line are
-# checked. Each job runs one language (GUEST_LANG), and
+# ae whose preload holds os.execute / os.system (and Perl's system and
+# backticks), so both sides of that line are checked. Each job runs one language (GUEST_LANG), and
 # each run also checks the language's README "Stunt parity" table for the
 # columns it can run (tests/parity.sh).
 
@@ -155,3 +155,72 @@ jobs:
       - run: ae version
       - name: Homebrew's python@3.13
         run: GUEST_LANG=python PYTHON="$(brew --prefix python@3.13)/bin/python3.13" sh tests/run.sh
+
+  # Perl: the runtime library only (libperl5.38t64 on Ubuntu 24.04, which the
+  # perl package depends on); no libperl-dev, which the bridge does not need
+  # to build. tests/perl_env.sh asks PERL for its library.
+  linux-perl:
+    name: Linux (in-process, Perl 5.38)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Perl
+        run: sudo apt-get update && sudo apt-get install -y perl libperl5.38t64
+      - name: ae (AE_PIN)
+        run: |
+          . ci/versions.env
+          curl -fsSL "https://raw.githubusercontent.com/aether-lang-dev/aeb/$AEB_REF/get.sh" \
+            | AE_PIN="$AE_PIN" AEB_REF="$AEB_REF" sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - run: ae version
+      - name: Specs and containment rows
+        run: GUEST_LANG=perl PERL=/usr/bin/perl sh tests/run.sh
+
+  linux-perl-child:
+    name: Linux (in-process and contained child, Perl 5.38)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Perl
+        run: sudo apt-get update && sudo apt-get install -y perl libperl5.38t64
+      - name: ae (AE_CHILD_PIN)
+        run: |
+          . ci/versions.env
+          curl -fsSL "https://raw.githubusercontent.com/aether-lang-dev/aeb/$AEB_REF/get.sh" \
+            | AE_PIN="$AE_CHILD_PIN" AEB_REF="$AEB_REF" sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - run: ae version
+      - name: Specs and containment rows, the child required
+        run: GUEST_LANG=perl PERL=/usr/bin/perl GHL_REQUIRE_CHILD=1 sh tests/run.sh
+
+  linux-perl-spawn:
+    name: Linux (in-process and contained child, Perl 5.38, ae AE_SPAWN_PIN)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Perl
+        run: sudo apt-get update && sudo apt-get install -y perl libperl5.38t64
+      - name: ae (AE_SPAWN_PIN)
+        run: |
+          . ci/versions.env
+          curl -fsSL "https://raw.githubusercontent.com/aether-lang-dev/aeb/$AEB_REF/get.sh" \
+            | AE_PIN="$AE_SPAWN_PIN" AEB_REF="$AEB_REF" sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - run: ae version
+      - name: Specs and containment rows, the child required
+        run: GUEST_LANG=perl PERL=/usr/bin/perl GHL_REQUIRE_CHILD=1 sh tests/run.sh
+
+  macos-perl:
+    name: macOS (in-process, Perl 5.34, the system's)
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: ae (AE_PIN)
+        run: |
+          . ci/versions.env
+          curl -fsSL "https://raw.githubusercontent.com/aether-lang-dev/aeb/$AEB_REF/get.sh" \
+            | AE_PIN="$AE_PIN" AEB_REF="$AEB_REF" sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - run: ae version
+      - name: The system's perl
+        run: GUEST_LANG=perl PERL=/usr/bin/perl sh tests/run.sh
