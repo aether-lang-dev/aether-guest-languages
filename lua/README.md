@@ -30,7 +30,7 @@ CachyOS x86_64, kernel 7.3 with Landlock (Lua 5.5.1 and 5.4.9), and in CI.
 | `open-granted-file` (`io.open`) | per policy | **not held** | refused under every policy: the file comes through `read_file` |
 | `write-granted-file` (`io.open(.., "w")`) | per policy | **not held** | refused under every policy |
 | `getenv-home` (`os.getenv`) | per policy | **not held** | refused under every policy: the worker has no environment; `getenv` is a host function |
-| `exec-bin-sh` (`os.execute`) | **escapes**: `/bin/sh` runs with no exec grant | **not held** | per policy (seccomp) |
+| `exec-bin-sh` (`os.execute`) | per policy, from ae 0.884.0; before it **escapes**: `/bin/sh` runs with no exec grant | **not held** | refused under every policy, from ae 0.884.0: the worker's lockdown has no exec grant; before it, per policy (seccomp) |
 | `dlopen-libm` (`package.loadlib`) | loads | loads | loads |
 | `dlopen-libc-by-name`, `dlopen-libc-by-path` | (child-only row) | (child-only row) | refused under every policy, `native=*` included |
 | `binding-read-etc-passwd`, `binding-read-granted-file`, `binding-getenv-home` (host functions) | per policy | per policy | per policy; a granted file goes down as a descriptor |
@@ -50,21 +50,27 @@ CachyOS x86_64, kernel 7.3 with Landlock (Lua 5.5.1 and 5.4.9), and in CI.
 What the table says:
 
 - **In-process is the easy default and is not containment on its own.**
-  On Linux the preload holds Lua's file and environment calls, but not
-  `os.execute` (or `io.popen`, which starts its shell the same way): glibc's
+  On Linux the preload holds Lua's file and environment calls, and from
+  ae 0.884.0 `os.execute` and `io.popen` too: they need the fork grant and
+  exec of `/bin/sh` (aether #3580). Before 0.884.0 they escaped it: glibc's
   `system()` starts `/bin/sh` with `posix_spawn`, whose `clone` and `execve`
   happen inside libc, where the preload's `fork` and `execve` wrappers never
-  see them. On macOS nothing holds them at all. The host functions
+  saw them. On macOS nothing holds them at all. The host functions
   (`binding-*`), which check the grants themselves, hold everywhere.
 - **The contained child holds every row it runs**, on Linux, and is
   stricter than the policy: the worker locks itself down with no grants
   before the script starts, so a script reaches a granted file only through
   the host (`read_file`, answered with a descriptor) and never gets a handle
-  on libc. Process start is the one row that follows the policy (seccomp
-  lets `execve` through only with an exec grant).
+  on libc. From ae 0.884.0 that includes process start: `os.execute` is
+  refused under every policy, because the worker's own lockdown has no exec
+  grant and the preload now holds `system()` to it. Before 0.884.0 process
+  start was the one row that followed the policy (seccomp lets `execve`
+  through only with an exec grant).
 - The tests hold these cells, including the gaps: an **escapes** or **not
   held** row runs expecting the call to succeed, so the day the preload
-  holds `os.execute` that test fails and this table is brought up to date.
+  holds it that test fails and this table is brought up to date. The
+  `exec-bin-sh` row is checked on either side of ae 0.884.0
+  (`AE_SPAWN_PIN` in `ci/versions.env`), from the ae the tests run on.
 
 ## Using it
 
