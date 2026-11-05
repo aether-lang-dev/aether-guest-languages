@@ -1,0 +1,309 @@
+// Specs for the ruby bridge, co-located with it and written in Aether against
+// std.spec, driving it through `import ruby` (the path a real user takes, so
+// module.ae's declarations are covered as well as the C).
+//
+// The first five are aether's test_host_ruby.ae (contrib/host/ruby), moved
+// unchanged but for the import and the describe name. The rest cover what was
+// added here (PROVENANCE.md): host functions and typed values, the shared map
+// (aether's tests/sandbox/test_shared_map_all.sh case for Ruby, and the two
+// ways it was only half working), the environment a sandboxed run sees and
+// gets back, the other-thread refusal, and finalize.
+//
+// SKIPPING: the bridge dlopens libruby at run time, so a box without Ruby
+// cannot run these; that is a provisioning gap, not a defect, so they skip
+// (std.spec's it_when) rather than fail. The probe is ruby.init_host() itself.
+//
+// STDOUT: the bridge makes $stdout unbuffered, but these assert on return
+// codes and on state observed back through Ruby, never on the bridge's
+// stdout.
+
+@source("test_support.c")
+
+import ruby
+import std.spec
+import std.sandbox
+import std.os
+import std.string
+
+extern ghl_t_map_new() -> long
+extern ghl_t_map_put(token: long, key: string, value: string)
+extern ghl_t_map_get(token: long, key: string) -> string
+extern ghl_t_map_free(token: long)
+extern ghl_t_other_thread_refused() -> int
+
+@c_callback
+cb_add(ctx: ptr) -> int {
+    ruby.push_int(ctx, ruby.arg_int(ctx, 1) + ruby.arg_int(ctx, 2))
+    return 1
+}
+
+@c_callback
+cb_greet(ctx: ptr) -> int {
+    ruby.push_str(ctx, "hello, ${ruby.arg_str(ctx, 1)}")
+    return 1
+}
+
+// What types it was given, one letter each.
+@c_callback
+cb_kinds(ctx: ptr) -> int {
+    out = ""
+    n = ruby.arg_count(ctx)
+    i = 1
+    while i <= n {
+        t = ruby.arg_type(ctx, i)
+        if t == ruby.RB_TNIL { out = "${out}n" }
+        else if t == ruby.RB_TBOOL { out = "${out}b" }
+        else if t == ruby.RB_TINT { out = "${out}i" }
+        else if t == ruby.RB_TSTR { out = "${out}s" }
+        else if t == ruby.RB_TFLOAT { out = "${out}f" }
+        else { out = "${out}?" }
+        i = i + 1
+    }
+    ruby.push_str(ctx, out)
+    return 1
+}
+
+@c_callback
+cb_half(ctx: ptr) -> int {
+    ruby.push_double(ctx, ruby.arg_double(ctx, 1) / 2.0)
+    return 1
+}
+
+@c_callback
+cb_is_true(ctx: ptr) -> int {
+    ruby.push_bool(ctx, ruby.arg_bool(ctx, 1))
+    return 1
+}
+
+@c_callback
+cb_nothing(ctx: ptr) -> int {
+    return 0
+}
+
+// Raises, with a defer that must still run: raise_error returns to the
+// method, which raises only after this function has returned.
+@c_callback
+cb_raise_with_cleanup(ctx: ptr) -> int {
+    defer os.setenv("AE_RB_CB_CLEANUP", "ran")
+    return ruby.raise_error(ctx, "raised after cleanup")
+}
+
+// Evaluates Ruby in the middle of the script's call to it.
+@c_callback
+cb_nested(ctx: ptr) -> int {
+    n = ruby.arg_int(ctx, 1)
+    inner = "?"
+    if ruby.eval("add(40, 2)") == 0 { inner = ruby.result_str() }
+    ruby.push_str(ctx, "${n}:${inner}")
+    return 1
+}
+
+main() {
+    fw = spec.init()
+
+    // The dependency probe. Non-zero means libruby could not be dlopened.
+    have_ruby = 0
+    if ruby.init_host() == 0 { have_ruby = 1 }
+    reason = "libruby not loadable (set AETHER_RUBY_SONAME)"
+
+    spec.describe(fw, "ruby") {
+        spec.it_when(have_ruby, "evaluates a script and reports success", reason) callback {
+            spec.assert_eq(ruby.run("$aether_probe = 1"), 0,
+                "a valid script returns 0")
+        }
+
+        // A bridge that dlopens libruby and resolves its symbols but never
+        // evaluates would satisfy the return-code check above. This one can
+        // only pass if the interpreter really ran: Ruby computes a value, and
+        // a second eval asserts on it Ruby-side, raising when the arithmetic
+        // did not happen.
+        spec.it_when(have_ruby, "really executes — Ruby-side state persists", reason) callback {
+            spec.assert_eq(ruby.run("$aether_sum = (2 + 3) * 7"), 0,
+                "computation evaluates")
+            spec.assert_eq(ruby.run("raise 'wrong' unless $aether_sum == 35"), 0,
+                "Ruby sees 35 — the interpreter genuinely ran")
+        }
+
+        // A bridge that swallows script errors is worse than one that cannot
+        // run at all: the caller believes the script worked.
+        spec.it_when(have_ruby, "propagates a raised exception as failure", reason) callback {
+            spec.assert_not_eq(ruby.run("raise 'deliberate'"), 0,
+                "a raising script must NOT report success")
+        }
+
+        // A syntax error is a different path through rb_eval_string_protect
+        // than a raise, and must also be reported.
+        spec.it_when(have_ruby, "reports a syntax error as failure", reason) callback {
+            spec.assert_not_eq(ruby.run("def ("), 0,
+                "unparseable code must NOT report success")
+        }
+
+        // A host that defensively calls init before each eval must not pay
+        // for it or crash: while the VM is live, init is a no-op.
+        spec.it_when(have_ruby, "init is idempotent while the VM is live", reason) callback {
+            spec.assert_eq(ruby.init_host(), 0, "second init returns 0")
+            spec.assert_eq(ruby.run("$aether_probe = 2"), 0,
+                "the VM still evaluates afterwards")
+        }
+
+        // The failure that must stay a failure after the first one: the
+        // bridge reads nil from the interpreter, so clearing errinfo after a
+        // raise has to leave the next eval clean (aether #1618: on Ruby 3.4
+        // a baked-in nil crashed the second eval).
+        spec.it_when(have_ruby, "a failed eval leaves the next one clean", reason) callback {
+            spec.assert_not_eq(ruby.run("raise 'first'"), 0, "the first fails")
+            spec.assert_eq(ruby.run("raise 'unexpected pending error' if $!"), 0, "no error left pending")
+            spec.assert_eq(ruby.run("$aether_after = 1"), 0, "the next evaluates")
+        }
+
+        spec.it_when(have_ruby, "puts reaches stdout without finalizing", reason) callback {
+            // $stdout is unbuffered: this reads back what Ruby wrote to its
+            // own stdout's sync flag, since the bytes themselves go to ours.
+            spec.assert_eq(ruby.run("raise 'buffered' unless $stdout.sync"), 0, "$stdout.sync is set")
+        }
+    }
+
+    spec.describe(fw, "ruby host functions and typed values") {
+        spec.it_when(have_ruby, "a registered function is a Ruby method with typed arguments and result", reason) callback {
+            spec.assert_eq(ruby.register("add", cb_add), 0, "add registers")
+            spec.assert_eq(ruby.register("greet", cb_greet), 0, "greet registers")
+            spec.assert_eq(ruby.eval("add(2, 3) * 7"), 0, "calls add")
+            spec.assert_str_eq(ruby.result_str(), "35", "the integer came back")
+            spec.assert_eq(ruby.eval("greet('héllo')"), 0, "calls greet")
+            spec.assert_str_eq(ruby.result_str(), "hello, héllo", "a UTF-8 string both ways")
+            spec.assert_eq(ruby.eval("greet('x').encoding.name"), 0, "asks the encoding")
+            spec.assert_str_eq(ruby.result_str(), "UTF-8", "results are UTF-8")
+        }
+
+        spec.it_when(have_ruby, "argument types are told apart; nil and bool are not integers", reason) callback {
+            ruby.register("kinds", cb_kinds)
+            spec.assert_eq(ruby.eval("kinds(nil, true, false, 1, 'a', 2.5, :sym, [1], 2**70)"), 0, "calls kinds")
+            spec.assert_str_eq(ruby.result_str(), "nbbisf??i", "nil, bools, integer, string, float, symbol, array, bignum")
+        }
+
+        spec.it_when(have_ruby, "floats, bools and nil come back as themselves", reason) callback {
+            ruby.register("half", cb_half)
+            ruby.register("is_true", cb_is_true)
+            ruby.register("nothing", cb_nothing)
+            spec.assert_eq(ruby.eval("half(5)"), 0, "half of an integer")
+            spec.assert_str_eq(ruby.result_str(), "2.5", "a float")
+            spec.assert_eq(ruby.eval("[is_true(true), is_true(false), is_true(1), nothing.nil?].inspect"), 0, "bools")
+            spec.assert_str_eq(ruby.result_str(), "[true, false, false, true]", "only true is true; return 0 is nil")
+        }
+
+        spec.it_when(have_ruby, "an error raised by the callback is a RuntimeError, after its defers ran", reason) callback {
+            ruby.register("raise_with_cleanup", cb_raise_with_cleanup)
+            spec.assert_eq(ruby.eval("begin; raise_with_cleanup; rescue => e; \"#{e.class}: #{e.message}\"; end"), 0, "rescued")
+            spec.assert_str_eq(ruby.result_str(), "RuntimeError: raised after cleanup", "the message")
+            spec.assert_str_eq(os.getenv("AE_RB_CB_CLEANUP"), "ran", "the callback's defer ran")
+        }
+
+        spec.it_when(have_ruby, "an eval inside a callback is a nested call of its own", reason) callback {
+            ruby.register("nested", cb_nested)
+            spec.assert_eq(ruby.eval("nested(7) + '/' + add(1, 1).to_s"), 0, "nested")
+            spec.assert_str_eq(ruby.result_str(), "7:42/2", "the inner eval ran, and the outer call went on")
+        }
+
+        spec.it_when(have_ruby, "an exception is the result, as Class: message", reason) callback {
+            spec.assert_eq(ruby.eval("Integer('x')"), -1, "fails")
+            spec.assert_str_eq(ruby.result_str(), "ArgumentError: invalid value for Integer(): \"x\"", "class and message")
+            spec.assert_eq(ruby.register("not a name", cb_add), -1, "a bad method name is refused")
+            spec.assert_eq(ruby.eval("add(1)"), 0, "a missing argument reads as 0")
+            spec.assert_str_eq(ruby.result_str(), "1", "1 + 0")
+        }
+
+        // The GC scans the C stack: a host function's results are VALUEs held
+        // only there until they are returned. Many calls, with the collector
+        // forced between them.
+        spec.it_when(have_ruby, "survives the collector between many host calls", reason) callback {
+            code = "s = 0; 3000.times { |i| g = greet(i.to_s); s += g.length + add(i, 1); GC.start if i % 250 == 0 }; s"
+            spec.assert_eq(ruby.eval(code), 0, "runs")
+            // sum over i of len('hello, ' + i) + i + 1
+            spec.assert_str_eq(ruby.result_str(), "${expected_sum()}", "every answer arrived intact")
+            spec.assert_eq(ruby.eval("GC.stress = true; r = (1..30).map { |i| greet(i.to_s) }; GC.stress = false; r.last"), 0, "under GC.stress")
+            spec.assert_str_eq(ruby.result_str(), "hello, 30", "intact")
+        }
+    }
+
+    spec.describe(fw, "ruby sandboxed runs") {
+        // Ruby's ENV is libc's environment (not a copy taken at start): a
+        // sandboxed run sees the variables its grants name, and the program
+        // gets its whole environment back afterwards.
+        spec.it_when(have_ruby, "the environment is hidden from the run and restored after it", reason) callback {
+            os.setenv("AE_RB_GRANTED", "g")
+            os.setenv("AE_RB_HIDDEN", "h")
+            perms = sandbox.new("env") { grant_env("AE_RB_GRANTED") }
+            code = "$aether_seen = [ENV['AE_RB_GRANTED'], ENV['AE_RB_HIDDEN']].inspect"
+            spec.assert_eq(ruby.run_sandboxed(perms, code), 0, "runs")
+            spec.assert_eq(ruby.eval("$aether_seen"), 0, "reads back")
+            spec.assert_str_eq(ruby.result_str(), "[\"g\", nil]", "the granted variable only")
+            spec.assert_str_eq(os.getenv("AE_RB_HIDDEN"), "h", "the program's own environment is intact")
+            spec.assert_eq(ruby.eval("ENV['AE_RB_HIDDEN']"), 0, "and so is Ruby's, outside the run")
+            spec.assert_str_eq(ruby.result_str(), "h", "restored")
+        }
+
+        spec.it_when(have_ruby, "a grant with a quote in it cannot inject Ruby", reason) callback {
+            perms = sandbox.new("quote") { grant_env("X'; $aether_injected = 1; '") }
+            spec.assert_eq(ruby.run_sandboxed(perms, "nil"), 0, "runs")
+            spec.assert_eq(ruby.run("raise 'injected' if $aether_injected"), 0, "nothing was injected")
+        }
+
+        spec.it_when(have_ruby, "a run that raises fails and the environment is still restored", reason) callback {
+            os.setenv("AE_RB_HIDDEN2", "h2")
+            perms = sandbox.new("none") { }
+            spec.assert_not_eq(ruby.run_sandboxed(perms, "raise 'in the sandbox'"), 0, "fails")
+            spec.assert_str_eq(os.getenv("AE_RB_HIDDEN2"), "h2", "restored")
+        }
+
+        spec.it_when(have_ruby, "another thread is refused, not crashed", reason) callback {
+            spec.assert_eq(ghl_t_other_thread_refused(), 0, "init and run both return -1 there")
+        }
+    }
+
+    spec.describe(fw, "ruby shared map") {
+        // aether's tests/sandbox/test_shared_map_all.sh, Ruby case: reads see
+        // the inputs, a key that is not there is nil, a new key is written to
+        // the host's map, and an input the host gave cannot be overwritten.
+        spec.it_when(have_ruby, "reads inputs, writes outputs to the host's map, cannot overwrite an input", reason) callback {
+            token = ghl_t_map_new()
+            ghl_t_map_put(token, "name", "Eve")
+            ghl_t_map_put(token, "level", "5")
+            perms = sandbox.new("map") { grant_env("*") }
+            code = "n = aether_map_get('name'); l = aether_map_get('level'); s = aether_map_get('secret')\naether_map_put('rank', 'senior')\naether_map_put('name', 'TAMPERED')\naether_map_put('seen', \"name=#{n},level=#{l},secret=#{s || 'nil'}\")"
+            spec.assert_eq(ruby.run_sandboxed_with_map(perms, code, token), 0, "runs")
+            spec.assert_str_eq(ghl_t_map_get(token, "seen"), "name=Eve,level=5,secret=nil", "reads")
+            spec.assert_str_eq(ghl_t_map_get(token, "rank"), "senior", "the write reached the host's map")
+            spec.assert_str_eq(ghl_t_map_get(token, "name"), "Eve", "the frozen input is untampered")
+            ghl_t_map_free(token)
+        }
+
+        spec.it_when(have_ruby, "no map is visible after the run", reason) callback {
+            spec.assert_eq(ruby.run("raise 'map token survived' unless aether_map_get('name').nil?"), 0, "nil outside a run")
+        }
+    }
+
+    _rc = spec.run_summary(fw)
+
+    // Finalize ONCE, after the suite. Ruby cannot be set up again in this
+    // process, and the bridge now says so (-1) where aether's copy returned 0
+    // and crashed on the next eval.
+    if have_ruby == 1 {
+        ruby.finalize_host()
+        if ruby.init_host() != -1 || ruby.run("1") != -1 {
+            println("  [FAIL] ruby came back after finalize")
+            _rc = 1
+        }
+    }
+    return _rc
+}
+
+// sum over i in 0..2999 of length("hello, " + i) + i + 1
+expected_sum() -> int {
+    total = 0
+    i = 0
+    while i < 3000 {
+        total = total + string.length("hello, ${i}") + i + 1
+        i = i + 1
+    }
+    return total
+}

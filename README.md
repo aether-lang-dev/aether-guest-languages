@@ -11,6 +11,7 @@ for you. Every way stays supported; they differ in how much they contain
 [duktape/README.md](duktape/README.md#four-ways-to-run-javascript-from-aether)
 [tcl/README.md](tcl/README.md#four-ways-to-run-tcl-from-aether)
 [perl/README.md](perl/README.md#four-ways-to-run-perl-from-aether)
+[ruby/README.md](ruby/README.md#four-ways-to-run-ruby-from-aether)
 show all four, with examples):
 
 1. **Embed.** The interpreter is loaded into the Aether program and called
@@ -54,6 +55,7 @@ the tests.
 | JavaScript, Duktape 2.x (ES5.1) | `import duktape` (`import js`, the alias) | `duktape/worker` (std.guest) | [duktape/README.md](duktape/README.md#containment-table) |
 | Tcl 8.5, 8.6 (9.0 in principle) | `import tcl` | `tcl/worker` (std.guest) | [tcl/README.md](tcl/README.md#containment-table) |
 | Perl 5 (threaded), 5.34 to 5.44 tested | `import perl` | `perl/worker` (std.guest) | [perl/README.md](perl/README.md#containment-table) |
+| CRuby 2.6 to 3.4 (checked) | `import ruby` | `ruby/worker` (std.guest) | [ruby/README.md](ruby/README.md#containment-table) |
 
 ## Layout
 
@@ -61,6 +63,7 @@ the tests.
 aether.toml            the package: exports lua/, python/, duktape/ and js/ (modules = "lua, python, duktape, js")
 aether.toml            the package: exports lua/, python/ and tcl/ (modules = "lua, python, tcl")
 aether.toml            the package: exports lua/, python/ and perl/ (modules = "lua, python, perl")
+aether.toml            the package: exports lua/, python/ and ruby/ (modules = "lua, python, ruby")
 ci/versions.env        toolchain pins (AE_PIN, AE_CHILD_PIN, AE_SPAWN_PIN, AEB_REF, AETHER_STUNT_REF)
 lua/
   module.ae            import lua: the bridge's API
@@ -109,6 +112,14 @@ perl/
   worker/              perl-worker: Perl in a contained child (std.guest)
   containment/         the containment hosts and checks.pl, stunt's rows in Perl;
                        lang.sh; test_imports.sh, loading modules under a sandbox
+ruby/
+  module.ae            import ruby: the bridge's API
+  aether_host_ruby.c   the bridge, compiled into the importing program (@source)
+  ruby_abi.h           the Ruby types the bridge uses (no Ruby dev package needed)
+  test_host_ruby.ae    the bridge's spec (test_support.c: its C helpers)
+  worker/              ruby-worker: CRuby in a contained child (std.guest)
+  containment/         the containment hosts and checks.rb, stunt's rows in Ruby;
+                       lang.sh; test_requires.sh, requiring under a sandbox
   PROVENANCE.md        where the bridge came from, and what the move changed
 tests/
   run.sh               everything, every language (GUEST_LANG=<lang> for one)
@@ -119,6 +130,7 @@ tests/
   lua_env.sh, python_env.sh, duktape_env.sh  find the runtime library on this machine
   lua_env.sh, python_env.sh, tcl_env.sh  find the runtime library on this machine
   lua_env.sh, python_env.sh, perl_env.sh  find the runtime library on this machine
+  lua_env.sh, python_env.sh, ruby_env.sh  find the runtime library on this machine
 ```
 
 ## Using a language from this repository
@@ -145,6 +157,7 @@ Then `import lua` resolves to `lua/module.ae`, `import python` to
 to `js/module.ae`, its alias):
 `python/module.ae` and `import tcl` to `tcl/module.ae`:
 `python/module.ae` and `import perl` to `perl/module.ae`:
+`python/module.ae` and `import ruby` to `ruby/module.ae`:
 `ae build`, `ae run` and `ae lib-path` put the package on the module search
 path, and the bridge's C is compiled into your program from the `@source`
 line in `module.ae`, with nothing to build beforehand.
@@ -164,6 +177,8 @@ and `duktape/module.ae`.
 and `tcl/module.ae`.
 same, since the checkout's root holds `lua/module.ae`, `python/module.ae` and
 `perl/module.ae`.
+same, since the checkout's root holds `lua/module.ae`,
+`python/module.ae` and `ruby/module.ae`.
 
 At run time the bridge `dlopen`s the language's library: for Lua, set
 `AETHER_LUA_SONAME` (for example `liblua5.4.so.0`, or
@@ -182,6 +197,9 @@ macOS's own Tcl). No language's dev package is needed to build.
 `AETHER_PERL_SONAME` (for example `/usr/lib/x86_64-linux-gnu/libperl.so.5.38`)
 unless it has `libperl.so`. None of the languages' dev packages is needed to
 build.
+`libpython3.12.so.1.0`) unless it has `libpython3.so`; for Ruby,
+`AETHER_RUBY_SONAME` (for example `/usr/lib/libruby.so.3.4.12`) unless it has
+`libruby.so`. None of the languages' dev packages is needed to build.
 
 ## Toolchain
 
@@ -214,6 +232,7 @@ sh tests/run.sh containment        # the rows only
 GUEST_LANG=python sh tests/run.sh  # one language
 GUEST_LANG=duktape sh tests/run.sh
 GUEST_LANG=tcl TCL_VERSION=8.6 sh tests/run.sh
+RUBY=/opt/homebrew/opt/ruby/bin/ruby GUEST_LANG=ruby sh tests/run.sh
 LUA_VERSION=5.4 GUEST_LANG=lua sh tests/run.sh
 PYTHON=/usr/bin/python3.12 GUEST_LANG=python sh tests/run.sh
 GUEST_LANG=perl sh tests/run.sh    # PERL=/path/to/perl to pick the perl
@@ -249,6 +268,11 @@ Homebrew's lua (5.5) and lua@5.4, with its python@3.13 and with the system's
 perl (5.34), on `AE_PIN`. Perl on Linux uses Ubuntu's perl and libperl5.38t64.
 
 ## Moving from `contrib.host.lua`, `contrib.host.python` or `contrib.host.perl`
+Homebrew's lua (5.5) and lua@5.4, with its python@3.13 and with its ruby, on
+`AE_PIN`. Ruby's Linux jobs use Ubuntu's ruby and libruby3.2, on `AE_PIN`, on
+`AE_CHILD_PIN` and on `AE_SPAWN_PIN`.
+
+## Moving from `contrib.host.lua`, `contrib.host.python` or `contrib.host.ruby`
 
 The Lua bridge was copied from aether at `d3732a0ed` (lua/PROVENANCE.md).
 Its functions and names are unchanged, so moving is the import line and the
@@ -320,6 +344,24 @@ failed `perl_parse` (macOS's perl crashed on the first sub), could not load
 XS modules, wrote a shared-map output the host never saw, spliced the map's
 values into Perl source and unset the host's own environment variables for
 good; host functions (`perl.register`) and `perl.last_error()` are new.
+The Ruby bridge was copied from aether at `2609ec841`
+(ruby/PROVENANCE.md), and moves the same way, the import line and the
+dependency:
+
+```diff
+-import contrib.host.ruby
++import ruby
+```
+
+What changes: no `make contrib MODULES=ruby` step and no Ruby dev package at
+build time; `ruby.finalize_host()` is terminal and says so (a later
+`init_host` returns -1 where aether's returned 0 and crashed on the next
+eval); a sandboxed run puts the process's environment back when it ends
+(aether's deleted the ungranted variables for good); `aether_map_put` in
+`run_sandboxed_with_map` writes to the host's map; `puts` output is no longer
+lost at exit; and Ruby 3.3 and later get their built-in methods (aether's
+copy raised `NoMethodError` for `Integer#times` and the like). RubyGems is not
+loaded by default (ruby/README.md, "Lifecycle").
 
 The plan for aether's copies: they stay in `contrib/host/` for a transition
 period, with their READMEs pointing here; fixes land here first. They are

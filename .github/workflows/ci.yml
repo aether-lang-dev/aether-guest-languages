@@ -366,3 +366,74 @@ jobs:
       - run: ae version
       - name: The system's perl
         run: GUEST_LANG=perl PERL=/usr/bin/perl sh tests/run.sh
+
+  # Ruby: the runtime library only (libruby3.2 on Ubuntu 24.04, and the ruby
+  # binary tests/ruby_env.sh asks for RbConfig); no ruby-dev, which the bridge
+  # does not need to build.
+  linux-ruby:
+    name: Linux (in-process, Ruby 3.2)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Ruby
+        run: sudo apt-get update && sudo apt-get install -y ruby libruby3.2
+      - name: ae (AE_PIN)
+        run: |
+          . ci/versions.env
+          curl -fsSL "https://raw.githubusercontent.com/aether-lang-dev/aeb/$AEB_REF/get.sh" \
+            | AE_PIN="$AE_PIN" AEB_REF="$AEB_REF" sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - run: ae version
+      - name: Specs and containment rows
+        run: GUEST_LANG=ruby RUBY=/usr/bin/ruby sh tests/run.sh
+
+  linux-ruby-child:
+    name: Linux (in-process and contained child, Ruby 3.2)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Ruby
+        run: sudo apt-get update && sudo apt-get install -y ruby libruby3.2
+      - name: ae (AE_CHILD_PIN)
+        run: |
+          . ci/versions.env
+          curl -fsSL "https://raw.githubusercontent.com/aether-lang-dev/aeb/$AEB_REF/get.sh" \
+            | AE_PIN="$AE_CHILD_PIN" AEB_REF="$AEB_REF" sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - run: ae version
+      - name: Specs and containment rows, the child required
+        run: GUEST_LANG=ruby RUBY=/usr/bin/ruby GHL_REQUIRE_CHILD=1 sh tests/run.sh
+
+  linux-ruby-spawn:
+    name: Linux (in-process and contained child, Ruby 3.2, ae AE_SPAWN_PIN)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Ruby
+        run: sudo apt-get update && sudo apt-get install -y ruby libruby3.2
+      - name: ae (AE_SPAWN_PIN)
+        run: |
+          . ci/versions.env
+          curl -fsSL "https://raw.githubusercontent.com/aether-lang-dev/aeb/$AEB_REF/get.sh" \
+            | AE_PIN="$AE_SPAWN_PIN" AEB_REF="$AEB_REF" sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - run: ae version
+      - name: Specs and containment rows, the child required
+        run: GUEST_LANG=ruby RUBY=/usr/bin/ruby GHL_REQUIRE_CHILD=1 sh tests/run.sh
+
+  macos-ruby:
+    name: macOS (in-process, Homebrew's Ruby)
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Ruby
+        run: brew install ruby
+      - name: ae (AE_PIN)
+        run: |
+          . ci/versions.env
+          curl -fsSL "https://raw.githubusercontent.com/aether-lang-dev/aeb/$AEB_REF/get.sh" \
+            | AE_PIN="$AE_PIN" AEB_REF="$AEB_REF" sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - run: ae version
+      - name: Homebrew's ruby
+        run: GUEST_LANG=ruby RUBY="$(brew --prefix ruby)/bin/ruby" sh tests/run.sh

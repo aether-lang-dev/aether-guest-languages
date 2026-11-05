@@ -1,0 +1,107 @@
+// ruby: embedded CRuby, moved from aether's contrib.host.ruby
+// (PROVENANCE.md).
+//
+// The bridge's C is compiled into the program that imports this module
+// (@source below); libruby itself is loaded with dlopen at the first call:
+// AETHER_RUBY_SONAME, else libruby.so. No Ruby dev package is needed to build
+// (ruby_abi.h).
+//
+// Usage:
+//   import ruby
+//
+//   ruby.run("puts 'hello'")
+//
+//   worker = sandbox.new("worker") {
+//       grant_env("HOME")
+//       grant_fs_read("/etc/*")
+//   }
+//   ruby.run_sandboxed(worker, "puts ENV['HOME']")
+//
+// Host functions (new here; python's shape, without a VM handle: Ruby has
+// one interpreter per process):
+//   @c_callback
+//   add(ctx: ptr) -> int {
+//       ruby.push_int(ctx, ruby.arg_int(ctx, 1) + ruby.arg_int(ctx, 2))
+//       return 1
+//   }
+//   ruby.register("add", add)
+//   ruby.eval("add(2, 3) * 7")
+//   println(ruby.result_str())     // "35"
+//
+// Ruby is set up once per process, on one thread, and cannot be set up again
+// after ruby.finalize_host(): see README.md, "Lifecycle".
+@source("aether_host_ruby.c")
+
+import std.sandbox   // sandbox.Grants, the grant list the run_sandboxed calls take
+
+
+exports (
+    ruby_run_sandboxed, ruby_run_sandboxed_with_map,
+    ruby_run, ruby_init_host, ruby_finalize_host,
+    // host functions and typed values
+    ruby_register, ruby_eval, ruby_result_str, ruby_set_instruction_limit,
+    ruby_arg_count, ruby_arg_type, ruby_arg_str, ruby_arg_int, ruby_arg_double, ruby_arg_bool,
+    ruby_push_int, ruby_push_str, ruby_push_bool, ruby_push_nil, ruby_push_double,
+    ruby_raise_error,
+    // typed-value tags (returned by ruby_arg_type; the numbers are lua's,
+    // python's and duktape's)
+    RB_TNIL, RB_TBOOL, RB_TINT, RB_TSTR, RB_TOTHER, RB_TFLOAT
+)
+
+const RB_TNIL   = 0
+const RB_TBOOL  = 1
+const RB_TINT   = 2
+const RB_TSTR   = 3
+const RB_TOTHER = 6
+const RB_TFLOAT = 8
+
+// --- fire-and-forget ---------------------------------------------------------
+// Run Ruby code within a sandbox (the grants are a level of the thread's for
+// the call, and the variables of ENV they do not name are hidden from it).
+// Returns: 0 on success, -1 on error
+extern ruby_run_sandboxed(perms: sandbox.Grants, code: string) -> int
+// The same with the host's shared map: aether_map_get(key) and
+// aether_map_put(key, value) in the script.
+extern ruby_run_sandboxed_with_map(perms: sandbox.Grants, code: string, map_token: long) -> int
+
+// Run Ruby code without a sandbox (full access). 0, or -1 on an exception
+// (printed to stderr as "[ruby] <message>").
+extern ruby_run(code: string) -> int
+
+// Start the interpreter (done by the first run). 0, or -1 when libruby
+// cannot be loaded or Ruby was finalized or set up on another thread.
+extern ruby_init_host() -> int
+
+// End the interpreter: runs at_exit handlers and flushes. Terminal: Ruby
+// cannot be started again in this process.
+extern ruby_finalize_host()
+
+// --- host functions and typed values -----------------------------------------
+// Registers an Aether `@c_callback (ctx: ptr) -> int` as a Ruby method of
+// that name (letters, digits, underscore). 0, or -1.
+extern ruby_register(name: string, host_fn: ptr) -> int
+// Evaluates code and keeps its result: the value's to_s, or on an exception
+// "<Class>: <message>". 0, or -1 on an exception. Prints nothing.
+extern ruby_eval(code: string) -> int
+extern ruby_result_str() -> string
+// Bounds each outermost ruby.eval to `budget` line and call events; 0 disarms.
+// Returns "" when set. Ruby code only: see README.md, "The instruction limit".
+extern ruby_set_instruction_limit(budget: long) -> string
+
+// Inside a callback: the arguments, 1-based. ctx is the call.
+extern ruby_arg_count(ctx: ptr) -> int
+extern ruby_arg_type(ctx: ptr, i: int) -> int
+extern ruby_arg_str(ctx: ptr, i: int) -> string
+extern ruby_arg_int(ctx: ptr, i: int) -> long
+extern ruby_arg_double(ctx: ptr, i: int) -> float
+extern ruby_arg_bool(ctx: ptr, i: int) -> int
+
+// Inside a callback: the return value (the last push wins; return 1 to
+// return it, 0 for nil).
+extern ruby_push_int(ctx: ptr, v: long)
+extern ruby_push_str(ctx: ptr, v: string)
+extern ruby_push_bool(ctx: ptr, v: int)
+extern ruby_push_nil(ctx: ptr)
+extern ruby_push_double(ctx: ptr, v: float)
+// `return ruby.raise_error(ctx, msg)`: the script sees RuntimeError(msg).
+extern ruby_raise_error(ctx: ptr, msg: string) -> int

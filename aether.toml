@@ -6,4 +6,4 @@
 # "Using a language from this repository".
 [package]
 name = "aether-guest-languages"
-modules = "lua, python, duktape, js, tcl, perl"
+modules = "lua, python, duktape, js, tcl, perl, ruby"
