@@ -58,6 +58,11 @@ preload_fails() { return 1; }
 # And rows the language cannot express in-process only (the contained child
 # runs them): left_out is for both.
 left_out_inproc() { return 1; }
+# And rows the contained child lets through where the policy refuses them
+# (child_escapes in lang.sh: none by default): a hole in the child's
+# containment for that language, run expecting `succeed` so the day it is
+# closed the test goes red and the table is brought up to date.
+child_escapes() { return 1; }
 . "$ROOT/$LANG_NAME/containment/lang.sh"
 lang_runtime || skip_all "$LANG_NO_RUNTIME"
 
@@ -161,8 +166,12 @@ else
     build "$LANG_NAME/containment/child_host.ae" "$CHILD_HOST"
     build "$LANG_NAME/worker/worker.ae" "$WORKER"
     eval "export $LANG_WORKER_ENV=\"\$WORKER\""
-    (cd "$WORK" && "$CHILD_HOST" - callback-greet succeed) > "$TMP/probe.txt" 2>&1
-    if grep -q "callback-greet: succeeded" "$TMP/probe.txt"; then
+    # The row that shows a child can run at all: a host function's answer by
+    # default (callback-greet); a language with no host functions names
+    # another that succeeds with no grants (lang.sh's LANG_PROBE).
+    probe="${LANG_PROBE:-callback-greet}"
+    (cd "$WORK" && "$CHILD_HOST" - "$probe" succeed) > "$TMP/probe.txt" 2>&1
+    if grep -q "$probe: succeeded" "$TMP/probe.txt"; then
         CHILD=1
         [ "$PLAT" = linux ] || die "a child started on $PLAT, where spawn_socket should refuse" "$TMP/probe.txt"
     elif [ "$PLAT" = macos ] && grep -q "cannot contain a child on macOS, so nothing was started" "$TMP/probe.txt"; then
@@ -289,6 +298,12 @@ stunt_inproc() {
 }
 
 stunt_child() {
+    if [ "$2" = refused ] && why="$(child_escapes "$1")"; then
+        run_one "ESCAPES" child succeed "$1"
+        printf '             (%s)\n' "$why"
+        NOT_HELD=$((NOT_HELD + 1))
+        return
+    fi
     if [ "$2" = succeed ] && why="$(child_stricter "$1")"; then
         run_one "STRICTER" child refused "$1"
         printf '             (%s)\n' "$why"
@@ -300,5 +315,5 @@ stunt_child() {
 }
 
 done_checks() {
-    echo "  [PASS] $NAME: $RAN as expected, $NOT_HELD not held in-process, $STRICTER stricter in the child, $LEFT left out"
+    echo "  [PASS] $NAME: $RAN as expected, $NOT_HELD not held (in-process, or escaping the child), $STRICTER stricter in the child, $LEFT left out"
 }

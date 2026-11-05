@@ -1,0 +1,68 @@
+// The bridge against a real Go c-shared library: examples/greet.go, built by
+// tests/tinygo_env.sh with `go build -buildmode=c-shared` and named by
+// $TINYGO_LIB. Moved from aether's tests/integration/host_tinygo
+// (uses_tinygo.ae, test_host_tinygo.sh; PROVENANCE.md), with the extra
+// shapes below: the borrowed and the owned string call, an int64, a double
+// and a missing symbol.
+//
+// Without Go (no $TINYGO_LIB) it prints "skipped" and exits 0; on GitHub
+// Actions tests/run.sh turns that into a failure.
+
+import tinygo
+import std.os
+import std.string
+
+extern exit(code: int)
+
+fn check(cond: bool, msg: string) {
+    if !cond {
+        println("FAIL: ${msg}")
+        exit(1)
+    }
+}
+
+main() {
+    lib_path = os.getenv("TINYGO_LIB")
+    if string.length(lib_path) == 0 {
+        println("skipped: no Go toolchain found (set GO), so no c-shared library to load")
+        return
+    }
+
+    handle, err = tinygo.load(lib_path)
+    check(handle != null, "load: ${err}")
+
+    answer = tinygo.call_int_void(handle, "Answer")
+    println("Answer = ${answer}")
+    check(answer == 42, "Answer is ${answer}")
+
+    sum = tinygo.call_int_int_int(handle, "Add", 2, 40)
+    println("Add(2, 40) = ${sum}")
+    check(sum == 42, "Add(2, 40) is ${sum}")
+
+    neg = tinygo.call_int_int(handle, "Negate", 7)
+    println("Negate(7) = ${neg}")
+    check(neg == -7, "Negate(7) is ${neg}")
+
+    // Greet returns a real cgo C.CString: the owned call frees it with this
+    // program's free(), which is what #2569's wrappers rely on.
+    msg = tinygo.call_str_str_owned(handle, "Greet", "world")
+    println(msg)
+    check(msg == "hello, world", "Greet gave '${msg}'")
+
+    again = tinygo.call_s_s_owned(handle, "Greet", "aether")
+    check(again == "hello, aether", "call_s_s_owned gave '${again}'")
+
+    // A symbol the library does not export: the call answers 0, and
+    // last_error says which symbol.
+    absent = tinygo.call_int_void(handle, "NoSuchExport")
+    check(absent == 0, "an unresolved symbol answered ${absent}")
+    check(string.contains(tinygo.last_error(), "NoSuchExport") == 1, "last_error: '${tinygo.last_error()}'")
+
+    // A path that is not a library: no handle, and the loader's reason.
+    bad, berr = tinygo.load("/nonexistent/libnope.so")
+    check(bad == null, "a missing library loaded")
+    check(string.length(berr) > 0, "a missing library gave no reason")
+
+    tinygo.unload(handle)
+    println("tinygo ok")
+}

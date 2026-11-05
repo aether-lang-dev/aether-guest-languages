@@ -500,3 +500,75 @@ jobs:
       - run: ae version
       - name: Homebrew's ruby
         run: GUEST_LANG=ruby RUBY="$(brew --prefix ruby)/bin/ruby" sh tests/run.sh
+
+  # Go: the toolchain only, to build the c-shared libraries the tests load
+  # (golang-go on Ubuntu 24.04, which brings gcc along for cgo; the macOS runner
+  # has Go and clang). The bridge needs no Go to build or run, only the
+  # library does. TinyGo is not used: its c-shared is wasm-only (tinygo/README.md).
+  linux-tinygo:
+    name: Linux (in-process, Go)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Go (cgo needs a C compiler, which the runner has)
+        run: sudo apt-get update && sudo apt-get install -y golang-go && go version
+      - name: ae (AE_PIN)
+        run: |
+          . ci/versions.env
+          curl -fsSL "https://raw.githubusercontent.com/aether-lang-dev/aeb/$AEB_REF/get.sh" \
+            | AE_PIN="$AE_PIN" AEB_REF="$AEB_REF" sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - run: ae version
+      - name: Specs and containment rows
+        run: GUEST_LANG=tinygo sh tests/run.sh
+
+  linux-tinygo-child:
+    name: Linux (in-process and contained child, Go)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Go (cgo needs a C compiler, which the runner has)
+        run: sudo apt-get update && sudo apt-get install -y golang-go && go version
+      - name: ae (AE_CHILD_PIN)
+        run: |
+          . ci/versions.env
+          curl -fsSL "https://raw.githubusercontent.com/aether-lang-dev/aeb/$AEB_REF/get.sh" \
+            | AE_PIN="$AE_CHILD_PIN" AEB_REF="$AEB_REF" sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - run: ae version
+      - name: Specs and containment rows, the child required
+        run: GUEST_LANG=tinygo GHL_REQUIRE_CHILD=1 sh tests/run.sh
+
+  linux-tinygo-spawn:
+    name: Linux (in-process and contained child, Go, ae AE_SPAWN_PIN)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Go (cgo needs a C compiler, which the runner has)
+        run: sudo apt-get update && sudo apt-get install -y golang-go && go version
+      - name: ae (AE_SPAWN_PIN)
+        run: |
+          . ci/versions.env
+          curl -fsSL "https://raw.githubusercontent.com/aether-lang-dev/aeb/$AEB_REF/get.sh" \
+            | AE_PIN="$AE_SPAWN_PIN" AEB_REF="$AEB_REF" sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - run: ae version
+      - name: Specs and containment rows, the child required
+        run: GUEST_LANG=tinygo GHL_REQUIRE_CHILD=1 sh tests/run.sh
+
+  macos-tinygo:
+    name: macOS (in-process, Go)
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Go (on the runner)
+        run: go version
+      - name: ae (AE_PIN)
+        run: |
+          . ci/versions.env
+          curl -fsSL "https://raw.githubusercontent.com/aether-lang-dev/aeb/$AEB_REF/get.sh" \
+            | AE_PIN="$AE_PIN" AEB_REF="$AEB_REF" sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - run: ae version
+      - name: Specs and containment rows
+        run: GUEST_LANG=tinygo sh tests/run.sh

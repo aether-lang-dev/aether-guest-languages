@@ -1,0 +1,107 @@
+// The host the containment tests drive (tests/test_stunt_*.sh). Usage:
+//
+//   host inproc <policy> <check> <expectation>
+//
+// Runs one row of stunt's catalogue (aether contrib/host/stunt), written in
+// Go (checks.go beside this, built into the c-shared library $TINYGO_CHECKS_LIB),
+// in this process, under the policy's grants, and prints stunt's line for it:
+//
+//   <check>: <outcome> (<detail>) - expected <expectation>: PASS|FAIL
+//
+// exiting 0 when it matched. The library is loaded with tinygo.load before any
+// sandbox is in force, as a host loads what it lends to a guest; the row is a
+// call of the library's exported check_<row> by symbol
+// (tinygo.call_s_s_s_owned) inside sandbox.enforce(<grants>).
+//
+// The bridge itself has no sandboxed entry point (module.ae): the block is
+// the host's. What the block holds is the Aether side only; what the Go code
+// does reaches the system through Go's runtime, which on Linux makes system
+// calls itself, so run under libaether_sandbox.so (LD_PRELOAD) only the rows
+// done through cgo are held, and without it (macOS) none. README.md, "Four
+// ways". No host function is carried: the bridge has none (the binding-*,
+// callback-* and map-* rows are left out, lang.sh).
+//
+// <policy> is "-" for no grants, or kind=pattern,... with kinds fs_read,
+// fs_write, exec, env, tcp (host:port), native, fork. "<outer>|<inner>" runs
+// the check inside sandbox.enforce(<outer>) and then sandbox.enforce(<inner>),
+// two levels, as the other bridges' own level nests in a block's. The policy
+// grammar is in policy/module.ae; the contained child's host is child_host.ae.
+
+import tinygo
+import policy
+import std.sandbox
+import std.os
+import std.list
+import std.string
+
+extern exit(code: int)
+extern aether_sandbox_depth() -> int
+
+// One row: call the exported check by symbol, inside the grants, and answer
+// its line.
+fn call_check(h: ptr, g: sandbox.Grants, sym: string, facts: string, expect: string) -> string {
+    box = list.new()
+    sandbox.enforce(g) callback {
+        list.add(box, tinygo.call_s_s_s_owned(h, sym, facts, expect))
+    }
+    out, _e = list.get_string(box, 0)
+    return out
+}
+
+fn run_inproc(spec: string, check: string, expect: string) {
+    lib = os.getenv("TINYGO_CHECKS_LIB")
+    if lib == "" {
+        println("host: TINYGO_CHECKS_LIB is not set (the path of the library built from checks.go)")
+        exit(2)
+    }
+    h, err = tinygo.load(lib)
+    if h == null {
+        println("host: cannot load ${lib}: ${err}")
+        exit(1)
+    }
+    sym = policy.symbol(check)
+    facts = policy.facts()
+    before = aether_sandbox_depth()
+    line = ""
+    bar = string.index_of(spec, "|")
+    if bar < 0 {
+        line = call_check(h, policy.grants(spec), sym, facts, expect)
+    } else {
+        outer = policy.grants(string.substring(spec, 0, bar))
+        inner = policy.grants(string.substring(spec, bar + 1, string.length(spec)))
+        box = list.new()
+        sandbox.enforce(outer) callback {
+            if aether_sandbox_depth() != before + 1 {
+                println("host: the enforce block is not one level deep")
+                exit(1)
+            }
+            list.add(box, call_check(h, inner, sym, facts, expect))
+        }
+        line, _e = list.get_string(box, 0)
+    }
+    after = aether_sandbox_depth()
+    if after != before {
+        println("host: ${check}: left ${after - before} level(s) in force")
+        exit(1)
+    }
+    if line == "" {
+        println("${check}: no export ${sym} in ${lib} (${tinygo.last_error()}) - expected ${expect}: FAIL")
+        exit(1)
+    }
+    println(line)
+    exit(policy.verdict(line))
+}
+
+main() {
+    if os.args_count() != 5 {
+        println("usage: host inproc <policy> <check> <expectation>")
+        exit(2)
+    }
+    mode = os.args_get(1)
+    if mode == "inproc" {
+        run_inproc(os.args_get(2), os.args_get(3), os.args_get(4))
+    } else {
+        println("host: unknown mode ${mode}")
+        exit(2)
+    }
+}

@@ -1,0 +1,30 @@
+// Ways 2 and 3: the same library, called inside a sandbox block that grants
+// HOME and nothing else; run it under LD_PRELOAD (way 3) or not (way 2).
+//
+//   CGO_ENABLED=1 go build -buildmode=c-shared -o libprobe.so tinygo/examples/probe.go
+//   TINYGO_LIB=./libprobe.so ae run tinygo/examples/way2_sandbox.ae
+//   LD_PRELOAD="$(ae cflags --libs | tr ' ' '\n' | sed -n 's/^-L//p' | head -1)/libaether_sandbox.so" \
+//       TINYGO_LIB=./libprobe.so ./way2_sandbox
+import tinygo
+import std.sandbox
+import std.os
+
+main() {
+    handle, err = tinygo.load(os.getenv("TINYGO_LIB"))
+    if handle == null {
+        println("load failed: ${err}")
+        return
+    }
+    libc_name = "libc.so.6"
+    if os.getenv("TINYGO_LIBC") != "" { libc_name = os.getenv("TINYGO_LIBC") }
+    reader = sandbox.new("reader") { grant_env("HOME") }
+    sandbox.enforce(reader) callback {
+        println("os.Getenv(USER)            ${tinygo.call_s_s_owned(handle, "GetenvGo", "USER")}")
+        println("libc getenv(USER) (cgo)    ${tinygo.call_s_s_owned(handle, "GetenvLibc", "USER")}")
+        println("libc getenv(HOME) (cgo)    ${tinygo.call_s_s_owned(handle, "GetenvLibc", "HOME")}")
+        println("os.ReadFile(/etc/passwd)   ${tinygo.call_s_s_owned(handle, "OpenFile", "/etc/passwd")}")
+        println("os/exec /bin/sh            ${tinygo.call_s_v_owned(handle, "RunShell")}")
+        println("net.Dial 192.0.2.1:443     ${tinygo.call_s_v_owned(handle, "Connect")}")
+        println("dlopen libc (cgo)          ${tinygo.call_s_s_owned(handle, "DlopenLibc", libc_name)}")
+    }
+}

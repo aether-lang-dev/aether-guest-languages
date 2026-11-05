@@ -1,0 +1,135 @@
+// tinygo-worker: a Go c-shared library in a contained child, the guest's
+// side of std.guest.
+//
+// A host starts this with guest.launch (sandbox.spawn_socket: Landlock and
+// seccomp on Linux; refused on macOS and Windows, where nothing starts) and
+// sends it a script. The worker loads the library, which starts the Go
+// runtime, before it locks itself down, and then runs the script inside
+// std.guest.child's lockdown. The script is lines, a verb and its arguments:
+//
+//   call SYMBOL [ARG1[<TAB>ARG2]]
+//       calls the library's exported `char* SYMBOL(char*, char*)` on a
+//       thread of its own and says (SAY) the string it returns; the worker's
+//       main thread looks for the host's CANCEL every few milliseconds, and
+//       ends the process at one with ERROR "cancelled by host: ..."
+//   call_here SYMBOL [ARG1[<TAB>ARG2]]
+//       the same call on the worker's main thread, which cannot hear a CANCEL
+//       until it returns: a Go function that never returns is then killed by
+//       the host after its grace period
+//   the end: DONE 0, or ERROR for a symbol that does not resolve
+//
+// A Go function returns C.CString(...), which the worker frees. A function
+// with no arguments is called all the same: the two string arguments are
+// ignored by the C calling convention.
+//
+// Usage (by a host): tinygo-worker <path of the c-shared library>
+//
+// There are no host functions: the bridge has none, so a Go function cannot
+// ask the host for anything, and the script is nothing but calls of the
+// library. What the library may do after the lockdown is the policy's
+// kernel layer and the lockdown's; README.md, "In a contained child".
+
+import tinygo
+import std.guest.child
+import std.sandbox
+import std.os
+import std.string
+
+extern exit(code: int)
+extern ghl_keep(p: ptr)
+extern ghl_kept() -> ptr
+extern ghl_sleep_ms(ms: int)
+extern ghl_call_start(grants: ptr, handle: ptr, sym: string, a: string, b: string) -> ptr
+extern ghl_call_done(slot: ptr) -> int
+extern ghl_call_result(slot: ptr) -> string
+
+@source("worker_support.c")
+
+fn host() -> *child.Host {
+    return ghl_kept() as *child.Host
+}
+
+// One call on a thread of its own, polled for the host's CANCEL. "" and
+// ok = 0 when the host cancelled (the error has been sent); the result
+// otherwise.
+fn call_polled(h: *child.Host, nothing: sandbox.Grants, lib: ptr, sym: string, a: string, b: string) -> (string, int) {
+    slot = ghl_call_start(nothing as ptr, lib, sym, a, b)
+    if slot == null {
+        child.error(h, "tinygo-worker: cannot start a thread for ${sym}")
+        return "", 0
+    }
+    while ghl_call_done(slot) == 0 {
+        why = child.poll(h)
+        if why != "" {
+            child.error(h, "cancelled by host: ${why}")
+            return "", 0
+        }
+        ghl_sleep_ms(5)
+    }
+    return ghl_call_result(slot), 1
+}
+
+// Runs the script; 1 when it ran to its end, 0 when it ended the run itself.
+fn run_script(h: *child.Host, nothing: sandbox.Grants, lib: ptr, source: string) -> int {
+    lines = string.split(source, "\n")
+    n = string.array_size(lines)
+    i = 0
+    while i < n {
+        line = string.trim(string.array_get(lines, i))
+        i = i + 1
+        if line == "" { continue }
+        verb, rest = child.split_verb(line)
+        sym, args = child.split_verb(rest)
+        a = args
+        b = ""
+        tab = string.index_of(args, "\t")
+        if tab >= 0 {
+            a = string.substring(args, 0, tab)
+            b = string.substring(args, tab + 1, string.length(args))
+        }
+        if verb == "call" {
+            text, ok = call_polled(h, nothing, lib, sym, a, b)
+            if ok == 0 { return 0 }
+            child.say(h, text)
+        } else if verb == "call_here" {
+            child.say(h, tinygo.call_s_s_s_owned(lib, sym, a, b))
+        } else {
+            child.error(h, "tinygo-worker: unknown verb ${verb}")
+            return 0
+        }
+    }
+    return 1
+}
+
+main() {
+    h, err = child.open("tinygo-worker")
+    if err != "" {
+        println(err)
+        exit(2)
+    }
+    if child.read_script(h) != "" { exit(1) }
+    if os.args_count() < 2 {
+        child.error(h, "tinygo-worker: usage: tinygo-worker <c-shared library>")
+        exit(1)
+    }
+    // The library is loaded, and the Go runtime started with it (its threads
+    // and its copy of the environment), here, before the lockdown: afterwards
+    // the worker opens nothing. guest.launch gives the worker no environment,
+    // so the host names the library as the first argument.
+    lib, lerr = tinygo.load(os.args_get(1))
+    if lib == null {
+        child.error(h, "tinygo-worker: cannot load ${os.args_get(1)}: ${lerr}")
+        exit(1)
+    }
+    ghl_keep(h as ptr)
+    // The level std.guest.child's lockdown puts on the main thread, for the
+    // thread of a cancellable call to take too: grant levels are per thread.
+    nothing = sandbox.new("tinygo-worker") {
+    }
+    child.run(h) callback {
+        if run_script(h, nothing, lib, h.source) == 1 {
+            child.done(h, 0)
+        }
+    }
+    exit(0)
+}
