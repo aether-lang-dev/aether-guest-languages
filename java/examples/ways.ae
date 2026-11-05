@@ -1,0 +1,28 @@
+// Ways 1 to 3 of README.md: a Java program started as a child.
+//
+//   sh java/build.sh build/java
+//   export JAVA_BIN=$JAVA_HOME/bin/java AETHER_JAVA_FLAGS="--enable-native-access=ALL-UNNAMED --enable-preview"   # --enable-preview on JDK 21 only
+//   export AETHER_JAVA_AGENT=build/java/aether-sandbox.jar
+//   ae build java/examples/ways.ae --lib . -o build/java-ways && build/java-ways build/java/classes
+
+import java
+import std.sandbox
+import std.os
+
+main() {
+    classes = os.args_get(1)
+
+    // 1. A plain child: no containment.
+    println("java.run: ${java.run(classes, "ghl.examples.Hello")}")
+
+    // 2 and 3. The same under a grant list. On Linux the child is started
+    // with libaether_sandbox.so preloaded and the grants in
+    // AETHER_SANDBOX_SHM; on macOS there is no such library, so this returns
+    // -1 and starts nothing.
+    reader = sandbox.new("reader") {
+        grant_env("HOME")
+        grant_fs_read("${os.getenv("JAVA_HOME")}/*")
+        grant_fs_read("${classes}/*")
+    }
+    println("java.run_sandboxed: ${java.run_sandboxed(reader, classes, "ghl.examples.Hello")}")
+}
