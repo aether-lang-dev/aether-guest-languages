@@ -1,0 +1,46 @@
+// The js alias (js/module.ae) reaches the same bridge as duktape: run, the
+// two-way VM with a host callback, a typed result, the tags.
+//
+// Skips when libduktape cannot be loaded (on GitHub Actions a skip is a
+// failure).
+
+import js
+import std.spec
+
+@c_callback
+cb_add(vm: ptr) -> int {
+    js.push_int(vm, js.arg_int(vm, 1) + js.arg_int(vm, 2))
+    return 1
+}
+
+main() {
+    fw = spec.init()
+
+    have_duktape = 0
+    if js.init() == 0 { have_duktape = 1 }
+    reason = "libduktape not loadable (set AETHER_DUKTAPE_SONAME)"
+
+    spec.describe(fw, "js (alias of duktape)") {
+        spec.it_when(have_duktape, "runs a script, and a failing one is a failure", reason) callback {
+            spec.assert_eq(js.run("aether_js = 1 + 1"), 0, "a valid script returns 0")
+            spec.assert_eq(js.run("if (aether_js !== 2) throw new Error('state lost');"), 0, "state persists")
+            spec.assert_not_eq(js.run("throw new Error('deliberate');"), 0, "a throw is a failure")
+        }
+
+        spec.it_when(have_duktape, "the two-way VM: a host callback and a typed result", reason) callback {
+            vm = js.vm_new()
+            spec.assert_not_null(vm, "vm_new created VM")
+            js.vm_register(vm, "app.add", cb_add)
+            spec.assert_eq(js.vm_eval(vm, "app.add(2, 3)"), 0, "eval ok")
+            spec.assert_eq(js.vm_result_type(vm), js.JS_TINT, "an int")
+            spec.assert_eq(js.vm_result_int(vm), 5, "5")
+            js.vm_pop_result(vm)
+            js.vm_free(vm)
+        }
+    }
+
+    _rc = spec.run_summary(fw)
+
+    if have_duktape == 1 { js.finalize() }
+    return _rc
+}

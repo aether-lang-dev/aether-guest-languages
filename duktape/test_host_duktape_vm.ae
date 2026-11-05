@@ -1,0 +1,160 @@
+// The two-way tier of the duktape bridge and the bindings it gives a script,
+// through import duktape: aether's host_duktape_bidirectional C harness as
+// an Aether spec (persistent VM, dotted registration, typed args and
+// results, try/catch of a callback's error, non-ASCII round trip, the
+// execution-limit message), and what that harness did not cover: the
+// callback-side readers (arg_count, arg_type), push_double, and the
+// bindings run_sandboxed gives a script (env, readFile, fileExists,
+// writeFile, exec), which check the sandbox's grants themselves.
+//
+// Skips when libduktape cannot be loaded (on GitHub Actions a skip is a
+// failure). Asserts on return codes and on state read back from JavaScript,
+// never on the interpreter's stdout, which is not reliably flushed when an
+// Aether program exits.
+
+import duktape
+import std.spec
+import std.sandbox
+import std.string
+import std.os
+import std.fs
+import std.list
+
+@c_callback
+cb_describe_args(vm: ptr) -> int {
+    // "<count>:<type of each argument>", types as the DUK_T* tags.
+    n = duktape.arg_count(vm)
+    out = "${n}:"
+    i = 1
+    while i <= n {
+        out = "${out}${duktape.arg_type(vm, i)}"
+        i = i + 1
+    }
+    duktape.push_str(vm, out)
+    return 1
+}
+
+@c_callback
+cb_pi(vm: ptr) -> int {
+    duktape.push_double(vm, 3.14159)
+    return 1
+}
+
+// Pushes nothing and returns 0: the call's result is undefined.
+@c_callback
+cb_nothing(vm: ptr) -> int {
+    return 0
+}
+
+// The output of one run_sandboxed script is a JavaScript global the next
+// run reads back; run returns non-zero when the check throws.
+fn expect_js(code: string) -> int {
+    return duktape.run(code)
+}
+
+main() {
+    fw = spec.init()
+
+    have_duktape = 0
+    if duktape.init() == 0 { have_duktape = 1 }
+    reason = "libduktape not loadable (set AETHER_DUKTAPE_SONAME)"
+
+    spec.describe(fw, "duktape: the two-way tier") {
+        spec.it_when(have_duktape, "a callback reads its arguments' count and types", reason) callback {
+            vm = duktape.vm_new()
+            duktape.vm_register(vm, "host.describe", cb_describe_args)
+            rc = duktape.vm_eval(vm, "host.describe(1, 'a', true, null, {}, undefined)")
+            spec.assert_eq(rc, 0, "eval ok")
+            // number int(2), string(3), boolean(1), null nil(0), object table(4), undefined nil(0)
+            spec.assert_str_eq(duktape.vm_result_str(vm), "6:231040", "count and tags")
+            duktape.vm_pop_result(vm)
+            duktape.vm_free(vm)
+        }
+
+        spec.it_when(have_duktape, "a callback pushes a double, or nothing", reason) callback {
+            vm = duktape.vm_new()
+            duktape.vm_register(vm, "host.pi", cb_pi)
+            duktape.vm_register(vm, "host.nothing", cb_nothing)
+            duktape.vm_eval(vm, "host.pi() > 3.14 && host.pi() < 3.15")
+            spec.assert_eq(duktape.vm_result_bool(vm), 1, "the double reads back")
+            duktape.vm_pop_result(vm)
+            duktape.vm_eval(vm, "typeof host.nothing()")
+            spec.assert_str_eq(duktape.vm_result_str(vm), "undefined", "returning 0 is undefined")
+            duktape.vm_pop_result(vm)
+            duktape.vm_free(vm)
+        }
+
+        spec.it_when(have_duktape, "a syntax error is an error result", reason) callback {
+            vm = duktape.vm_new()
+            spec.assert_not_eq(duktape.vm_eval(vm, "function ("), 0, "does not parse")
+            spec.assert_eq(duktape.vm_result_type(vm), duktape.DUK_TERR, "an error result")
+            duktape.vm_pop_result(vm)
+            // The VM is still usable.
+            spec.assert_eq(duktape.vm_eval(vm, "1 + 1"), 0, "a later eval runs")
+            spec.assert_eq(duktape.vm_result_int(vm), 2, "and answers")
+            duktape.vm_pop_result(vm)
+            duktape.vm_free(vm)
+        }
+
+        spec.it_when(have_duktape, "an execution limit is reported unavailable, not silently ignored", reason) callback {
+            vm = duktape.vm_new()
+            msg = duktape.vm_set_instruction_limit(vm, 1000, 10)
+            spec.assert_true(string.contains(msg, "execution limit unavailable"), "the message says so")
+            duktape.vm_free(vm)
+        }
+    }
+
+    spec.describe(fw, "duktape: the bindings a script is given") {
+        spec.it_when(have_duktape, "run gives print, env, readFile, fileExists, writeFile, exec", reason) callback {
+            spec.assert_eq(expect_js("var names = [print, env, readFile, fileExists, writeFile, exec]; for (var i = 0; i < names.length; i++) if (typeof names[i] !== 'function') throw new Error('missing ' + i);"), 0,
+                "all six are functions")
+        }
+
+        spec.it_when(have_duktape, "env is checked against the grants", reason) callback {
+            _s = os.setenv("AE_DUK_SPEC_VAR", "granted-value")
+            g = sandbox.new("env") { grant_env("AE_DUK_SPEC_VAR") }
+            spec.assert_eq(duktape.run_sandboxed(g, "got = env('AE_DUK_SPEC_VAR'); other = env('HOME');"), 0, "runs")
+            spec.assert_eq(expect_js("if (got !== 'granted-value') throw new Error('got ' + got);"), 0,
+                "a granted variable is read")
+            spec.assert_eq(expect_js("if (other !== undefined) throw new Error('HOME was ' + other);"), 0,
+                "one not granted is undefined")
+            nogrants = sandbox.new("none") { }
+            spec.assert_eq(duktape.run_sandboxed(nogrants, "got = env('AE_DUK_SPEC_VAR');"), 0, "runs")
+            spec.assert_eq(expect_js("if (got !== undefined) throw new Error('got ' + got);"), 0,
+                "with no grants nothing is read")
+        }
+
+        spec.it_when(have_duktape, "readFile, fileExists and writeFile are checked against the grants", reason) callback {
+            path = "/tmp/ae-duktape-spec-written.txt"
+            _d = fs.delete(path)
+            nogrants = sandbox.new("none") { }
+            spec.assert_eq(duktape.run_sandboxed(nogrants, "wrote = writeFile('/tmp/ae-duktape-spec-written.txt', 'hello');"), 0, "runs")
+            spec.assert_eq(expect_js("if (wrote !== false) throw new Error('wrote ' + wrote);"), 0,
+                "writeFile with no grant answers false")
+            spec.assert_eq(fs.exists(path), 0, "and the file was not made")
+
+            rw = sandbox.new("rw") {
+                grant_fs_write("/tmp/ae-duktape-spec-written.txt")
+                grant_fs_read("/tmp/ae-duktape-spec-written.txt")
+            }
+            spec.assert_eq(duktape.run_sandboxed(rw, "wrote = writeFile('/tmp/ae-duktape-spec-written.txt', 'hello'); text = readFile('/tmp/ae-duktape-spec-written.txt'); there = fileExists('/tmp/ae-duktape-spec-written.txt'); etc = readFile('/etc/passwd'); etc_there = fileExists('/etc/passwd');"), 0, "runs")
+            spec.assert_eq(expect_js("if (wrote !== true || text !== 'hello' || there !== true) throw new Error([wrote, text, there].join());"), 0,
+                "a granted file is written, read and seen")
+            spec.assert_eq(expect_js("if (etc !== undefined || etc_there !== false) throw new Error([etc, etc_there].join());"), 0,
+                "one not granted is neither read nor seen")
+            _d2 = fs.delete(path)
+        }
+
+        spec.it_when(have_duktape, "exec is checked against the grants", reason) callback {
+            nogrants = sandbox.new("none") { }
+            spec.assert_eq(duktape.run_sandboxed(nogrants, "rc = exec('exit 0');"), 0, "runs")
+            spec.assert_eq(expect_js("if (rc !== -1) throw new Error('rc ' + rc);"), 0,
+                "with no grant exec answers -1")
+        }
+    }
+
+    _rc = spec.run_summary(fw)
+
+    if have_duktape == 1 { duktape.finalize() }
+    return _rc
+}

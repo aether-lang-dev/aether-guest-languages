@@ -1,0 +1,127 @@
+// js: back-compat alias for duktape, moved with it from aether's
+// contrib.host.js (PROVENANCE.md). New code should `import duktape`: the
+// engine name is the honest one, and lets other JavaScript engines sit beside
+// it later under their own names.
+//
+// A thin re-export: every js_* function calls the duktape_* function of the
+// same name, so `import js` and `import duktape` give the same bridge (and
+// `js` imports `duktape`, so its C is compiled in once). Do not use both
+// names for state that must be shared by hand: they are one VM and one set
+// of globals, not two.
+//
+//   import js
+//   js.run("print('hello from js: ' + Duktape.version);")
+import duktape
+import std.sandbox   // sandbox.Grants, the grant list the run_sandboxed calls take
+
+
+exports (
+    js_run_sandboxed, js_run_sandboxed_with_map,
+    js_run, js_init, js_finalize,
+    // #904 bidirectional API
+    js_vm_new, js_vm_free, js_vm_register,
+    js_vm_set_global_str, js_vm_set_global_int, js_vm_set_global_strlist,
+    js_vm_eval, js_vm_result_type, js_vm_result_int, js_vm_result_str,
+    js_vm_result_bool, js_vm_pop_result, js_vm_set_instruction_limit,
+    js_arg_count, js_arg_type, js_arg_str, js_arg_int, js_arg_bool,
+    js_push_int, js_push_str, js_push_bool, js_push_nil, js_push_double,
+    js_raise_error,
+    // typed-value tags
+    JS_TNIL, JS_TBOOL, JS_TINT, JS_TSTR, JS_TTABLE, JS_TERR, JS_TOTHER
+)
+
+const JS_TNIL   = 0
+const JS_TBOOL  = 1
+const JS_TINT   = 2
+const JS_TSTR   = 3
+const JS_TTABLE = 4
+const JS_TERR   = 5
+const JS_TOTHER = 6
+
+js_run_sandboxed(perms: sandbox.Grants, code: string) -> int {
+    return duktape.run_sandboxed(perms, code)
+}
+js_run_sandboxed_with_map(perms: sandbox.Grants, code: string, map_token: long) -> int {
+    return duktape.run_sandboxed_with_map(perms, code, map_token)
+}
+js_run(code: string) -> int {
+    return duktape.run(code)
+}
+js_init() -> int {
+    return duktape.init()
+}
+js_finalize() {
+    duktape.finalize()
+}
+js_vm_new() -> ptr {
+    return duktape.vm_new()
+}
+js_vm_free(vm: ptr) {
+    duktape.vm_free(vm)
+}
+js_vm_register(vm: ptr, name: string, host_fn: ptr) -> int {
+    return duktape.vm_register(vm, name, host_fn)
+}
+js_vm_set_global_str(vm: ptr, name: string, value: string) {
+    duktape.vm_set_global_str(vm, name, value)
+}
+js_vm_set_global_int(vm: ptr, name: string, value: long) {
+    duktape.vm_set_global_int(vm, name, value)
+}
+js_vm_set_global_strlist(vm: ptr, name: string, items: ptr) {
+    duktape.vm_set_global_strlist(vm, name, items)
+}
+js_vm_eval(vm: ptr, code: string) -> int {
+    return duktape.vm_eval(vm, code)
+}
+js_vm_result_type(vm: ptr) -> int {
+    return duktape.vm_result_type(vm)
+}
+js_vm_result_int(vm: ptr) -> long {
+    return duktape.vm_result_int(vm)
+}
+js_vm_result_str(vm: ptr) -> string {
+    return duktape.vm_result_str(vm)
+}
+js_vm_result_bool(vm: ptr) -> int {
+    return duktape.vm_result_bool(vm)
+}
+js_vm_pop_result(vm: ptr) {
+    duktape.vm_pop_result(vm)
+}
+js_vm_set_instruction_limit(vm: ptr, budget: long, every: int) -> string {
+    return duktape.vm_set_instruction_limit(vm, budget, every)
+}
+js_arg_count(vm: ptr) -> int {
+    return duktape.arg_count(vm)
+}
+js_arg_type(vm: ptr, i: int) -> int {
+    return duktape.arg_type(vm, i)
+}
+js_arg_str(vm: ptr, i: int) -> string {
+    return duktape.arg_str(vm, i)
+}
+js_arg_int(vm: ptr, i: int) -> long {
+    return duktape.arg_int(vm, i)
+}
+js_arg_bool(vm: ptr, i: int) -> int {
+    return duktape.arg_bool(vm, i)
+}
+js_push_int(vm: ptr, v: long) {
+    duktape.push_int(vm, v)
+}
+js_push_str(vm: ptr, v: string) {
+    duktape.push_str(vm, v)
+}
+js_push_bool(vm: ptr, v: int) {
+    duktape.push_bool(vm, v)
+}
+js_push_nil(vm: ptr) {
+    duktape.push_nil(vm)
+}
+js_push_double(vm: ptr, v: float) {
+    duktape.push_double(vm, v)
+}
+js_raise_error(vm: ptr, msg: string) -> int {
+    return duktape.raise_error(vm, msg)
+}
