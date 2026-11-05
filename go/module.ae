@@ -1,0 +1,80 @@
+// go: Go as a separate subprocess, moved from aether's contrib.host.go
+// (PROVENANCE.md).
+//
+// The bridge's C is compiled into the program that imports this module
+// (@source below). The functions and their names are aether's.
+//
+// What follows is aether's header, with the notes of this move after it.
+//
+// Unlike Python/Ruby/Tcl which embed an interpreter in the Aether
+// process, Go has its own runtime and scheduler that can't share a
+// process with another runtime. Following the contrib/host/aether
+// pattern: the Go host module runs Go code as a separate subprocess
+// under LD_PRELOAD sandbox interception. Grants apply to libc calls
+// the Go binary makes (open, connect, execve, getenv) exactly the
+// same way they apply to any other process.
+//
+// Two usage modes:
+//
+//   1. Run a Go source file:
+//      go.run_script_sandboxed(perms, "/path/to/script.go")
+//      — shells out to `go run <file>`. The `go` toolchain itself
+//        runs under LD_PRELOAD too, so its own libc calls are also
+//        sandbox-checked (needs fs_read grants for $GOPATH, $HOME).
+//
+//   2. Run a pre-built Go binary:
+//      go.run_sandboxed(perms, "/path/to/built_binary")
+//      — simpler grant surface (only the final binary's calls get
+//        checked). Build with `go build -o binary script.go`
+//        beforehand.
+//
+// Usage:
+//   import go
+//
+//   worker = sandbox.new("worker") {
+//       grant_env("HOME")
+//       grant_fs_read("/usr/local/go/*")
+//       grant_fs_read("/tmp/*")
+//       grant_exec("/usr/local/go/bin/go")
+//   }
+//   go.run_script_sandboxed(worker, "/tmp/hello.go")
+// Notes of the move (README.md has the whole story):
+//
+//   - go.run and go.run_script start the child with no containment.
+//   - go.run_sandboxed and the others with `sandbox.Grants` start it with
+//     libaether_sandbox.so preloaded and the grants in AETHER_SANDBOX_SHM.
+//     Linux only: macOS has no such library, so these return -1 and start
+//     nothing there. A Go binary built without cgo is static, and a
+//     static binary ignores LD_PRELOAD; and even a cgo one makes its file,
+//     socket and process system calls itself, not through libc. The
+//     preload therefore holds only what Go reaches through C (cgo).
+//   - The bridge gives the child no arguments: pass what it needs through
+//     the environment or the shared map (the _with_map calls).
+//   - For Go contained by the kernel, see worker/ and README.md, "4.
+//     Contained child".
+@source("aether_host_go.c")
+
+import std.sandbox   // sandbox.Grants, the grant list the run_sandboxed calls take
+
+
+exports (
+    go_run_sandboxed, go_run_script_sandboxed,
+    go_run, go_run_script,
+    go_run_sandboxed_with_map, go_run_script_sandboxed_with_map
+)
+
+// Run a pre-built Go binary under the sandbox. Returns child exit code.
+extern go_run_sandboxed(perms: sandbox.Grants, binary_path: string) -> int
+
+// Run a Go source file via `go run`. The bridge shells out to `go`,
+// so the toolchain itself operates under the sandbox — grant list
+// must include fs_read for $GOROOT / $GOPATH and exec for `go`.
+extern go_run_script_sandboxed(perms: sandbox.Grants, script_path: string) -> int
+
+// Run without sandbox (full access).
+extern go_run(binary_path: string) -> int
+extern go_run_script(script_path: string) -> int
+
+// Shared-map variants for typed input/output exchange.
+extern go_run_sandboxed_with_map(perms: sandbox.Grants, binary_path: string, map_token: long) -> int
+extern go_run_script_sandboxed_with_map(perms: sandbox.Grants, script_path: string, map_token: long) -> int
