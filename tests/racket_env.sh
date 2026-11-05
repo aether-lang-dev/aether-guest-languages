@@ -87,7 +87,13 @@ racket_soname() {
                 ${CC:-cc} -shared -Wl,-Bsymbolic -o "$out" \
                     -Wl,--whole-archive "$lib" -Wl,--no-whole-archive \
                     -lm -ldl -lpthread -l:libz.so.1 -l:liblz4.so.1 -l:libtinfo.so.6 \
-                    > "$here/../build/libracketcs.log" 2>&1 || { rm -f "$out"; return 1; }
+                    > "$here/../build/libracketcs.log" 2>&1 || {
+                    rm -f "$out"
+                    # Debian's and Ubuntu's x86_64 archive is not position-independent
+                    # (R_X86_64_PC32 against stderr), so this fails there; arm64's links.
+                    echo "racket_env.sh: no shared library could be made from $lib (build/libracketcs.log; a Racket built with CFLAGS=-fPIC would do):" >&2
+                    tail -3 "$here/../build/libracketcs.log" >&2
+                    return 1; }
             fi
             export AETHER_RACKET_SONAME="$out"
             export AETHER_RACKET_BOOT_DIR="$boot"

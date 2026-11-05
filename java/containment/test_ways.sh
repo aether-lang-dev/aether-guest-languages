@@ -92,7 +92,9 @@ if [ "$PLAT" = linux ] && command -v cc > /dev/null 2>&1; then
     traced exec-bin-sh succeed "posix_spawn .*jspawnhelper"
     traced fork succeed "fork"
     traced dlopen-libm succeed "dlopen $GHL_LIBM"
-    traced dlopen-libc-by-path succeed "dlopen $GHL_LIBC_PATH"
+    # System.load canonicalises its path first (File.getCanonicalPath), so where
+    # /lib is a symlink to usr/lib (Debian, Ubuntu) libc sees the resolved path.
+    traced dlopen-libc-by-path succeed "dlopen $(readlink -f "$GHL_LIBC_PATH")"
     traced syscall-fn-openat succeed "syscall openat"
     # The lookup matters: Linker.defaultLookup() finds libc's own getenv, past
     # an interposer; the dlsym(RTLD_DEFAULT) Native does finds the interposer's.

@@ -43,11 +43,16 @@ run:
 | Ubuntu 24.04 arm64, in a podman container (Linux 7.1, Landlock present, gcc 13) | 8.10 CS, `apt install racket`; `libracketcs.so` made from `/usr/lib/libracketcs.a` | 0.889.0 | the specs (racket; no rhombus: 8.10 has none), the containment rows in-process under the preload (column 3), the examples, the contained child (it starts, boots Racket, and dies: [4](#4-a-contained-child-does-not-work)) |
 
 Not run: any ae older than 0.889.0 (the pins in `../ci/versions.env` are the
-repository's; Racket is verified against none but 0.889.0), x86_64 Linux
-(CI's runners; the library is made from whatever `libracketcs.a` the runner's
-package has), FreeBSD, Windows, Racket BC, and any Racket other than the two
-above. Whether the Ubuntu x86_64 archive links into a shared library the way
-the arm64 one does is the thing CI settles.
+repository's; Racket is verified against none but 0.889.0), FreeBSD, Windows,
+Racket BC, and any Racket other than the two above. **x86_64 Linux cannot use
+the distribution's archive:** Ubuntu 24.04's x86_64 `libracketcs.a` is not
+position-independent (`ld: relocation R_X86_64_PC32 against symbol stderr can
+not be used when making a shared object; recompile with -fPIC`, from
+`prim5.o`), so no shared library can be made from it, and `tests/racket_env.sh`
+says so and the specs skip. The arm64 archive links (its code is
+position-independent as a matter of the architecture's code model). On x86_64
+a Racket CS built from source with `CFLAGS=-fPIC` is the way; nothing here has
+tried it. CI runs the Linux Racket jobs on arm64 runners for this reason.
 
 ## Finding Racket
 
@@ -98,7 +103,9 @@ export AETHER_RACKET_SONAME=$PWD/libracketcs.so
 (Built this way on Ubuntu 24.04 arm64 with Racket 8.10: it boots, evaluates,
 and the specs and rows pass. Without `-Bsymbolic` the link fails with
 "relocation R_AARCH64_ADR_PREL_PG_HI21 against symbol `S_lookup_c_entry`
-which may bind externally can not be used when making a shared object".)
+which may bind externally can not be used when making a shared object". On
+x86_64 the same command fails for good, the archive not being
+position-independent: see "Not run" above.)
 Racket's official Linux installers ship no `libracketcs.a` at all (their boot
 images are inside the executable), so on Linux this means the distribution's
 Racket.
