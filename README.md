@@ -4,23 +4,29 @@ Other languages run from [Aether](https://github.com/aether-lang-dev/aether)
 programs: the bridges that were `contrib/host/<lang>` in aether's tree, and
 more, each held to the same named checks.
 
-A language here can run two ways, and the repository does not choose for
-you:
+A language here can be run four ways, and the repository does not choose
+for you. Every way stays supported; they differ in how much they contain
+([lua/README.md](lua/README.md#four-ways-to-run-lua-from-aether) shows all
+four for Lua, with examples):
 
-- **In-process.** The interpreter is loaded into the Aether program and
-  called directly (`import lua`, then `lua.run(...)` or the two-way VM). It
-  is the easy default: one binary, direct calls both ways. A sandboxed run
-  pushes a grant list; std's calls and the host functions you give the
-  guest are checked against it, and the interpreter's own libc calls are
-  checked only under `libaether_sandbox.so` in `LD_PRELOAD`, which exists
-  on Linux only. It is not containment on its own: see each language's
-  table for what it does and does not hold.
-- **Contained child.** The interpreter runs in a worker process that a host
-  starts with `std.guest`'s `guest.launch` (`sandbox.spawn_socket`:
-  Landlock and seccomp from the grant list, plus the preload). The worker
-  locks itself down before the script's first step, and every effect the
-  script has crosses a socket the host answers. It needs Linux with
-  Landlock; on macOS and Windows `guest.launch` starts nothing and says why.
+1. **Embed.** The interpreter is loaded into the Aether program and called
+   directly (`import lua`, then `lua.run(...)`, the script often a heredoc,
+   or the two-way VM). The easy default: one binary, direct calls both
+   ways, no containment.
+2. **Embed inside a sandbox block.** The same, under a grant list
+   (`lua.run_sandboxed(perms, ...)`): std's calls and the host functions
+   you give the guest are checked against it. The interpreter's own libc
+   calls are not.
+3. **Embed under `LD_PRELOAD`.** Way 2 with `libaether_sandbox.so`
+   preloaded (Linux), which holds the interpreter's own libc calls to the
+   grants too. A library interposer, not a kernel boundary.
+4. **Contained child.** The interpreter runs in a worker process that a
+   host starts with `std.guest`'s `guest.launch` (`sandbox.spawn_socket`:
+   Landlock and seccomp from the grant list, plus the preload). The worker
+   locks itself down before the script's first step, and every effect the
+   script has crosses a socket (`std.ipc` frames) the host answers. It
+   needs Linux with Landlock; on macOS and Windows `guest.launch` starts
+   nothing and says why.
 
 Each language's README carries a **containment table**: for every row of
 stunt's catalogue (aether `contrib/host/stunt`, the test double for a

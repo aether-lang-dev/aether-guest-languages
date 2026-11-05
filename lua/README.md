@@ -1,17 +1,137 @@
 # lua: embedded Lua
 
-`import lua` lets an Aether program run Lua in its own process, or in a
-contained child. It is the bridge that was aether's `contrib.host.lua`,
-moved here ([PROVENANCE.md](PROVENANCE.md)): the same functions under the
-same names, `lua.run`, `lua.run_sandboxed`, `lua.vm_new` and the rest.
+`import lua` lets an Aether program run Lua. It is the bridge that was
+aether's `contrib.host.lua`, moved here ([PROVENANCE.md](PROVENANCE.md)):
+the same functions under the same names, `lua.run`, `lua.run_sandboxed`,
+`lua.vm_new` and the rest.
 
-| | In-process (`import lua`) | Contained child (`lua-worker`, `std.guest`) |
+## Four ways to run Lua from Aether
+
+From least to most contained. The first three run Lua inside your
+program, and the fourth runs it in a separate, locked-down process. All
+four stay supported: pick by how far you trust the script, not by which is
+newest.
+
+| | 1. Embed | 2. Embed in a sandbox block | 3. Embed + `LD_PRELOAD` | 4. Contained child |
+|---|---|---|---|---|
+| Where Lua runs | your process | your process | your process | its own process (`lua/worker`) |
+| Your host functions | not checked | checked against the grants | checked against the grants | checked against the grants; each call is a message the host answers |
+| Lua's own `io` / `os` calls | not checked | **not checked** | checked against the grants (Linux) | refused, beyond what the host hands over |
+| Platforms | everywhere liblua loads | same | Linux | Linux with Landlock; macOS refuses to start it |
+| Needs | ae 0.875.0 | ae 0.875.0 | ae 0.875.0; `os.execute` held from 0.884.0 | ae 0.878.0 (`std.guest`) |
+
+### 1. Embed: Lua in your process, no containment
+
+```aether
+import lua
+
+main() {
+    script = <<LUA
+        local t = { "a", 'b', [[c]] }
+        for i, v in ipairs(t) do print(i, v) end
+        print(string.format("%q", 'quote"d'))
+    LUA
+    if lua.run(script) != 0 { println("lua failed") }
+}
+```
+
+A heredoc (`<<LUA ... LUA`, aether's language reference, "Heredoc strings")
+carries the script verbatim: no `${}` interpolation and no escape
+processing, so Lua's quotes, `[[long strings]]` and backslashes need no
+escaping, and the indentation the lines share is stripped. The closing
+marker sits on a line of its own. A plain string works too:
+`lua.run("print('hi')")`.
+
+For a script that calls back into the host, keeps state between runs or
+returns a typed value, use a persistent VM: `lua.vm_new`, `vm_register`
+for host callbacks, `vm_eval`, `vm_result_*`
+([Bidirectional embedding](#bidirectional-embedding-a-redis-class-host-904)
+below). That is still this first way: in-process and uncontained.
+
+### 2. Embed inside a sandbox block
+
+```aether
+import lua
+import std.sandbox
+
+main() {
+    reader = sandbox.new("reader") { grant_env("HOME") }
+    if lua.run_sandboxed(reader, "print(os.getenv('HOME'))") != 0 { println("lua failed") }
+}
+```
+
+`run_sandboxed` pushes the block's grants as a level for the length of the
+call. Aether's own std calls and every host function the script reaches are
+checked against them, on every platform. Lua's own `io`, `os` and
+`package.loadlib` go straight to libc, so on their own they are **not**
+checked: this program prints `$HOME`, and the same script could read
+`/etc/passwd` or run a shell just as well. Use this way for scripts you
+trust, where the grants describe what the host lends them.
+
+### 3. The same, under `LD_PRELOAD`
+
+Run the program from way 2 with aether's sandbox preload, which sits
+between Lua and libc and holds Lua's own calls to the same grants
+(Linux):
+
+```sh
+LD_PRELOAD="$(ae cflags --libs | tr ' ' '\n' | sed -n 's/^-L//p' | head -1)/libaether_sandbox.so" ./myprog
+```
+
+The same script, granted only `HOME`, run on CachyOS under ae 0.885.0,
+first without the preload and then with it:
+
+| Lua does | without | with `LD_PRELOAD` |
 |---|---|---|
-| Where Lua runs | in the Aether program | in a separate process, `lua/worker` |
-| What holds Lua's own `io`/`os` calls | `libaether_sandbox.so` in `LD_PRELOAD`, Linux only | Landlock and seccomp from the policy, plus the worker's own lockdown with no grants |
-| macOS, Windows | runs; nothing holds Lua's `io`/`os` calls | `guest.launch` refuses and starts nothing |
-| Host functions | `vm_register` callbacks, called directly | `guest.mount`; each call is a frame the host answers |
-| Needs | ae 0.875.0 | ae 0.878.0 (std.guest), Linux with Landlock |
+| `os.getenv("HOME")` | `/home/paul` | `/home/paul` (granted) |
+| `os.getenv("USER")` | `paul` | `nil` |
+| `io.open("/etc/passwd")` | opens it | refused |
+| `os.execute("true")` | runs `/bin/sh` | refused: `Operation not permitted` |
+
+It is a library interposer, not a kernel boundary: a raw system call made
+without libc is not seen, and macOS has no equivalent. `os.execute` and
+`io.popen` are held from ae 0.884.0 (aether #3580); before that they
+escaped it. The containment table below has every row.
+
+### 4. A contained child, over `std.guest`
+
+```aether
+import std.guest
+import std.sandbox
+import std.list
+
+main() {
+    perms = sandbox.new("lua") {}
+    args = list.new()
+    list.add(args, "liblua5.4.so.0")
+    g, err = guest.launch(perms, "build/lua-worker", args, "lua", "")
+    if err != "" { println("not started: ${err}") return }   // macOS: refused
+    guest.mount(&g, "greet", 1, 1)
+    guest.start(&g, "print(greet('lua'))")
+    while true {
+        e = guest.next(&g)
+        if e.kind == "SAY" {
+            println(guest.printable(e.text))
+        } else if e.kind == "CALL" {
+            guest.answer(&g, guest.json_string("hello"))
+        } else {
+            break
+        }
+    }
+}
+```
+
+Lua runs in `lua/worker`, a separate process `guest.launch` starts under
+Landlock and seccomp from the policy, with the preload, and talking to the
+host only over a socket (`std.ipc` frames). The worker loads liblua and
+then locks itself down with no grants before the script starts, so the
+script reaches a file only when the host hands it a descriptor, and an
+environment variable only through a host function. The host can cancel a
+script at a deadline and kills a worker that stops answering. On macOS,
+where nothing can contain the child, `guest.launch` refuses and starts
+nothing. Build the worker once with
+`ae build lua/worker/worker.ae -o lua-worker`; details under
+[In a contained child](#in-a-contained-child) below.
 
 ## Containment table
 
@@ -20,7 +140,9 @@ What a Lua script gets when it tries each row of stunt's catalogue (aether
 ([containment/checks.lua](containment/checks.lua)), under the policies of
 aether's `tests/integration/contrib_host_stunt` (`../tests/test_stunt_*.sh`).
 "Per policy" means granted where the policy grants it and refused where it
-does not, as stunt expects. Every cell is a test outcome
+does not, as stunt expects. The columns are the ways above: "in-process,
+Linux (preload)" is way 3, "in-process, macOS" is way 2 where there is no
+preload, and "contained child" is way 4. Every cell is a test outcome
 (`../tests/run.sh`): checked on macOS arm64 (Lua 5.5.1 and 5.4.9) and on
 CachyOS x86_64, kernel 7.3 with Landlock (Lua 5.5.1 and 5.4.9), and in CI.
 
@@ -72,15 +194,7 @@ What the table says:
   `exec-bin-sh` row is checked on either side of ae 0.884.0
   (`AE_SPAWN_PIN` in `ci/versions.env`), from the ae the tests run on.
 
-## Using it
-
-```aether
-import lua
-
-main() {
-    lua.run("print('hello from lua')")
-}
-```
+## Loading liblua
 
 The bridge's C (`aether_host_lua.c`) is compiled into the program that
 imports `lua` (`@source` in `module.ae`); there is no archive to build
@@ -98,60 +212,15 @@ Where the bridge looks for liblua, in order:
 There is no list of versions to try: the program that starts yours owns
 that choice. `../tests/lua_env.sh` is one way to make it.
 
-### Sandboxed, in-process
+## In a contained child
 
-```aether
-import lua
-import std.sandbox
-
-main() {
-    worker = sandbox.new("worker") { grant_env("HOME") }
-    lua.run_sandboxed(worker, "print(os.getenv('HOME'))")
-}
-```
-
-`run_sandboxed` pushes the grants as a level for the length of the call;
-std's own calls and any host function you give the VM are checked against
-them everywhere, and Lua's own `io`/`os` calls only when the program runs
-with `LD_PRELOAD=<ae's lib dir>/libaether_sandbox.so` (Linux). Read the
-table above before relying on it.
-
-### In a contained child
-
-`lua/worker/worker.ae` is a std.guest worker: build it once
-(`ae build lua/worker/worker.ae -o lua-worker`) and start it from a host
-with `guest.launch`. The worker takes the liblua soname as its one
-argument, since it is given no environment; it loads liblua before it
-locks itself down. In the script, `print` is `SAY`, and each function the
-host mounts is a Lua global of the same name whose call is a `CALL` the
-host answers (a granted file comes back as `{granted = true, text = ...}`).
+`lua/worker/worker.ae` is a std.guest worker. It takes the liblua soname
+as its one argument, since it is given no environment, and loads liblua
+before it locks itself down. In the script, `print` is `SAY`, and each
+function the host mounts is a Lua global of the same name whose call is a
+`CALL` the host answers (a granted file comes back as
+`{granted = true, text = ...}`).
 [containment/child_host.ae](containment/child_host.ae) is a complete host.
-
-```aether
-import std.guest
-import std.sandbox
-import std.list
-
-main() {
-    perms = sandbox.new("lua") {}
-    args = list.new()
-    list.add(args, "liblua5.4.so.0")
-    g, err = guest.launch(perms, "build/lua-worker", args, "lua", "")
-    if err != "" { println("not started: ${err}") return }   // macOS: refused
-    guest.mount(&g, "greet", 1, 1)
-    guest.start(&g, "print(greet('lua'))")
-    while true {
-        e = guest.next(&g)
-        if e.kind == "SAY" {
-            println(guest.printable(e.text))
-        } else if e.kind == "CALL" {
-            guest.answer(&g, guest.json_string("hello"))
-        } else {
-            break
-        }
-    }
-}
-```
 
 ## Bidirectional embedding: a Redis-class host (#904)
 
