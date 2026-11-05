@@ -13,9 +13,10 @@ for you. Every way stays supported; they differ in how much they contain
 [tcl/README.md](tcl/README.md#four-ways-to-run-tcl-from-aether),
 [perl/README.md](perl/README.md#four-ways-to-run-perl-from-aether),
 [ruby/README.md](ruby/README.md#four-ways-to-run-ruby-from-aether),
-[tinygo/README.md](tinygo/README.md#four-ways-to-run-go-from-aether) and
-[go/README.md](go/README.md#four-ways-to-run-go-from-aether)
-each show all four, with examples; Go as a child process is never in your process, so its
+[tinygo/README.md](tinygo/README.md#four-ways-to-run-go-from-aether),
+[go/README.md](go/README.md#four-ways-to-run-go-from-aether) and
+[racket/README.md](racket/README.md#four-ways-to-run-racket-from-aether)
+each show all four, with examples (Racket's fourth does not work, and its README says why); Go as a child process is never in your process, so its
 first three ways are a child process with less and more around it):
 
 1. **Embed.** The interpreter is loaded into the Aether program and called
@@ -63,11 +64,12 @@ the tests.
 | CRuby 2.6 to 3.4 (checked) | `import ruby` | `ruby/worker` (std.guest) | [ruby/README.md](ruby/README.md#containment-table) |
 | Go 1.21 or later, as a c-shared library (compiled; `go build -buildmode=c-shared`) | `import tinygo` | `tinygo/worker` (std.guest) | [tinygo/README.md](tinygo/README.md#containment-table) |
 | Go 1.18 or later (checked 1.22, 1.27), as a child process | `import go` (starts a program; no in-process way) | `go/worker` (std.guest, Go) | [go/README.md](go/README.md#containment-table) |
+| Racket CS 8.10 and 9.3 (checked), Rhombus on the same VM | `import racket`, `import rhombus` | none: Chez Scheme cannot run under the contained child's preload (`racket/worker` is written and fails) | [racket/README.md](racket/README.md#containment-table) |
 
 ## Layout
 
 ```
-aether.toml            the package: exports every language directory (modules = "lua, python, duktape, js, tcl, perl, ruby, quickjs, tinygo, go")
+aether.toml            the package: exports every language directory (modules = "lua, python, duktape, js, tcl, perl, ruby, quickjs, tinygo, go, racket, rhombus")
 ci/versions.env        toolchain pins (AE_PIN, AE_CHILD_PIN, AE_SPAWN_PIN, AEB_REF, AETHER_STUNT_REF)
 lua/
   module.ae            import lua: the bridge's API
@@ -157,13 +159,27 @@ go/
                        lang.sh; test_ways.sh, what the four ways are for a child process
   examples/            the programs in README.md's four ways
   PROVENANCE.md        where the bridge came from, and what the move changed
+racket/
+  module.ae            import racket: the bridge's API
+  aether_host_racket.c the bridge, compiled into the importing program (@source)
+  racket_abi.h         the Chez Scheme / Racket CS types and macros the bridge uses (no Racket headers needed)
+  test_host_racket.ae  the bridge's spec
+  examples/            the programs in README.md's four ways (way 4 compiles, and cannot run)
+  worker/              racket-worker: written, and cannot run (Chez needs anonymous executable memory)
+  containment/         the containment hosts and checks.rkt, stunt's rows in Racket;
+                       lang.sh; spin and env-cached are left out, with why
+  PROVENANCE.md        where the bridge came from, and what the move changed
+rhombus/
+  module.ae            import rhombus: Rhombus on racket's VM (the bridge's rhombus_* points)
+  test_host_rhombus.ae the spec (only where the Racket has the rhombus collection)
 tests/
   run.sh               everything, every language (GUEST_LANG=<lang> for one)
   stunt_lib.sh         holds a language to stunt's catalogue, by name
   test_stunt_*.sh      one per policy: aether's contrib_host_stunt lists
   test_catalogue.sh    every catalogue row is named here or left out
   parity.sh            renders and checks a README's Stunt parity table
-  <lang>_env.sh        find the language's runtime library on this machine (lua, python,
+  <lang>_env.sh        find the language's runtime library on this machine (racket's also makes
+                       build/libracketcs.so from libracketcs.a on Linux) (lua, python,
                        duktape, tcl, perl, ruby; quickjs: checks ae ships its engine)
                        duktape, tcl, perl, ruby), or for tinygo the go toolchain, which
                        builds the c-shared libraries the tests load
@@ -222,7 +238,13 @@ environment variable names an exact soname or path when that is not enough:
 Homebrew's `/opt/homebrew/lib/libduktape.so`), `AETHER_TCL_SONAME`
 (`libtcl8.6.so.0`), `AETHER_PERL_SONAME` (for example
 `/usr/lib/x86_64-linux-gnu/libperl.so.5.38`) and `AETHER_RUBY_SONAME`
-(for example `/usr/lib/libruby.so.3.4.12`). `tests/<lang>_env.sh` is one way
+(for example `/usr/lib/libruby.so.3.4.12`), and `AETHER_RACKET_SONAME`
+(`Racket.framework/Versions/9.3_CS/Racket` on macOS; on Linux a
+`libracketcs.so` you make from the distribution's `libracketcs.a`, which
+Racket CS does not ship as a shared library) with `AETHER_RACKET_BOOT_DIR`,
+`AETHER_RACKET_COLLECTS` and `AETHER_RACKET_CONFIG` for the boot images and
+the module library, all found beside the library when not given
+(racket/README.md, "Finding Racket"). `tests/<lang>_env.sh` is one way
 to find each. No language's dev package is needed to build. QuickJS is
 compiled in from aether's `contrib.quickjs`, so there is nothing to find.
 The two Go bridges are the exceptions to the pattern: `tinygo.load` takes
@@ -268,6 +290,7 @@ PYTHON=/usr/bin/python3.12 GUEST_LANG=python sh tests/run.sh
 GUEST_LANG=perl sh tests/run.sh    # PERL=/path/to/perl to pick the perl
 GUEST_LANG=tinygo sh tests/run.sh  # GO=/path/to/go to pick the go
 GUEST_LANG=go sh tests/run.sh      # GO=/path/to/go to pick the go command
+GUEST_LANG=racket sh tests/run.sh  # RACKET_HOME=/path/to/racket to pick the installation
 sh tests/run.sh --write-parity     # rewrite the parity tables' columns this host ran
 ```
 
@@ -294,7 +317,10 @@ liblua5.4-dev (Lua), libpython3.12, libduktape207, tcl8.6, perl and
 libperl5.38t64, ruby and libruby3.2, golang-go (Go 1.22; gcc is the
 runner's); macOS uses Homebrew's lua (5.5) and lua@5.4, python@3.13,
 duktape, tcl-tk and ruby, the system perl (5.34), and the runner's Go
-(`brew install go` if it has none).
+(`brew install go` if it has none). Racket: Ubuntu's `racket` package (8.10, which
+brings `libracketcs.a`; the jobs make `libracketcs.so` from it) and, on macOS,
+`brew install --cask racket` (9.3) with `raco pkg install rhombus`; the
+contained child is never required for it, since it cannot run.
 
 ## Moving from `contrib.host.<lang>`
 
@@ -434,6 +460,31 @@ said: Go makes its own system calls, so on Linux only what a program reaches
 through cgo is held, and a static binary is not held at all. `go.run_sandboxed`
 still starts nothing on macOS. The containment that holds Go's own calls is
 the contained child (go/README.md, "4"), new here.
+
+The Racket and Rhombus bridges were copied from aether at `origin/main` of
+2026-11-05 (racket/PROVENANCE.md), and move the same way, the import line and
+the dependency:
+
+```diff
+-import contrib.host.racket
++import racket
+-import contrib.host.rhombus
++import rhombus
+```
+
+What changes: no `make contrib` step, and no Racket build tree. Aether's copy
+needed the headers and `libracketcs.a` of a built Racket CS at build time and
+linked it statically (so it could not be imported from a release install);
+this one `dlopen`s Racket's library (`Racket.framework` on macOS; on Linux a
+`libracketcs.so` made from the distribution's `libracketcs.a`, README
+"Finding Racket"), finds its boot images and collects beside it, and needs
+none of the headers (`racket_abi.h`). `run` now prints and returns -1 on an
+error (aether's discarded the output and returned 0), `run_sandboxed` pushes
+its grants as a level (aether's ignored them), and there are host functions
+(`racket.register`). What does not change, and is the thing to know: the
+contained child does not work for Racket (Chez Scheme maps anonymous
+executable memory, which the preload refuses a contained child), and nothing
+stops a run that does not end (racket/README.md, "Stopping a run").
 
 The plan for aether's copies: they stay in `contrib/host/` for a transition
 period, with their READMEs pointing here; fixes land here first. They are
