@@ -2,7 +2,9 @@ name: CI
 
 # ae comes from aeb's get.sh at the versions ci/versions.env pins (binary
 # releases). The in-process jobs run on AE_PIN; the contained-child jobs need
-# std.guest, so AE_CHILD_PIN. Each job runs one language (GUEST_LANG), and
+# std.guest, so AE_CHILD_PIN. The *-spawn jobs run on AE_SPAWN_PIN, the first
+# ae whose preload holds os.execute / os.system, so both sides of that line are
+# checked. Each job runs one language (GUEST_LANG), and
 # each run also checks the language's README "Stunt parity" table for the
 # columns it can run (tests/parity.sh).
 
@@ -42,6 +44,23 @@ jobs:
           . ci/versions.env
           curl -fsSL "https://raw.githubusercontent.com/aether-lang-dev/aeb/$AEB_REF/get.sh" \
             | AE_PIN="$AE_CHILD_PIN" AEB_REF="$AEB_REF" sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - run: ae version
+      - name: Specs and containment rows, the child required
+        run: GUEST_LANG=lua GHL_REQUIRE_CHILD=1 sh tests/run.sh
+
+  linux-spawn:
+    name: Linux (in-process and contained child, Lua 5.4, ae AE_SPAWN_PIN)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Lua
+        run: sudo apt-get update && sudo apt-get install -y liblua5.4-dev
+      - name: ae (AE_SPAWN_PIN)
+        run: |
+          . ci/versions.env
+          curl -fsSL "https://raw.githubusercontent.com/aether-lang-dev/aeb/$AEB_REF/get.sh" \
+            | AE_PIN="$AE_SPAWN_PIN" AEB_REF="$AEB_REF" sh
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - run: ae version
       - name: Specs and containment rows, the child required
@@ -98,6 +117,23 @@ jobs:
           . ci/versions.env
           curl -fsSL "https://raw.githubusercontent.com/aether-lang-dev/aeb/$AEB_REF/get.sh" \
             | AE_PIN="$AE_CHILD_PIN" AEB_REF="$AEB_REF" sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - run: ae version
+      - name: Specs and containment rows, the child required
+        run: GUEST_LANG=python PYTHON=/usr/bin/python3 GHL_REQUIRE_CHILD=1 sh tests/run.sh
+
+  linux-python-spawn:
+    name: Linux (in-process and contained child, Python 3.12, ae AE_SPAWN_PIN)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Python
+        run: sudo apt-get update && sudo apt-get install -y python3 libpython3.12t64
+      - name: ae (AE_SPAWN_PIN)
+        run: |
+          . ci/versions.env
+          curl -fsSL "https://raw.githubusercontent.com/aether-lang-dev/aeb/$AEB_REF/get.sh" \
+            | AE_PIN="$AE_SPAWN_PIN" AEB_REF="$AEB_REF" sh
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - run: ae version
       - name: Specs and containment rows, the child required
