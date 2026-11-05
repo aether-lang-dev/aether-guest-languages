@@ -46,6 +46,8 @@ for lang in $langs; do
         lang_runtime || echo "  [SKIP] no $LANG_TITLE runtime found: the specs will skip"
         echo "$LANG_TITLE runtime: $(eval echo "\${$LANG_RUNTIME_ENV:-none}")"
         mkdir -p "$ROOT/build"
+        # A language whose specs need its side built first (Java) says how.
+        if type lang_spec_env > /dev/null 2>&1; then lang_spec_env || fails=$((fails + 1)); fi
         for spec in $LANG_SPECS; do
             bin="$ROOT/build/$(basename "$spec" .ae)"
             if ! (cd "$ROOT" && ae build "$spec" -o "$bin") > "$ROOT/build/spec.log" 2>&1; then
