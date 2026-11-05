@@ -128,6 +128,18 @@ fn add_jvm(g: sandbox.Grants, classes: string) {
     sandbox.grant_fs_read(g, "${classes}/*")
     sandbox.grant_fs_read(g, "/proc/*")
     sandbox.grant_fs_read(g, "/sys/*")
+    // Where a distribution's links lead (conf, the trust store): tests/java_env.sh.
+    extra = os.getenv("GHL_JAVA_READ")
+    if extra != "" {
+        parts = string.split(extra, ":")
+        n = string.array_size(parts)
+        i = 0
+        while i < n {
+            if string.length(string.array_get(parts, i)) > 0 { sandbox.grant_fs_read(g, "${string.array_get(parts, i)}/*") }
+            i = i + 1
+        }
+        string.array_free(parts)
+    }
 }
 
 // The JVM's command line after its name: the flags (AETHER_JAVA_FLAGS, split

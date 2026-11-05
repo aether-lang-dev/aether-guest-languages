@@ -36,6 +36,10 @@ public final class Checks {
             env("GHL_LIBM"), env("GHL_LIBC_NAME"), env("GHL_LIBC_PATH"));
         String line = Rows.line(row, expect, new Rows.Env(facts, null));
         System.out.println(line);
-        System.exit(line.endsWith(": PASS") ? 0 : 1);
+        System.out.flush();
+        // halt, not exit: a JVM running under the sandbox preload (when one
+        // lets it start) crashes in System.exit's wait for its threads, whose
+        // futex call goes through libc's syscall(), which the preload refuses.
+        Runtime.getRuntime().halt(line.endsWith(": PASS") ? 0 : 1);
     }
 }

@@ -50,7 +50,25 @@ $(dirname "$(dirname "$(readlink -f "$(command -v javac)" 2>/dev/null || command
     JAVA_MAJOR="$("$JAVA_HOME/bin/javac" -version 2>&1 | sed -n 's/^javac \([0-9]*\).*/\1/p')"
     JAVA_FLAGS="--enable-native-access=ALL-UNNAMED"
     [ "$JAVA_MAJOR" -lt 22 ] && JAVA_FLAGS="$JAVA_FLAGS --enable-preview"
-    export JAVA_HOME JAVA_BIN JAVA_MAJOR JAVA_FLAGS
+    # Distributions link the JDK's configuration and trust store to /etc
+    # (conf -> /etc/java-21-openjdk, lib/security/cacerts -> /etc/ssl/certs/java):
+    # a JVM that starts a network connection or a TLS one reads the targets, and a
+    # grant is for the file as the kernel opens it. Colon-separated.
+    GHL_JAVA_READ=""
+    for l in "$JAVA_HOME/conf" "$JAVA_HOME/lib/security"; do
+        if [ -e "$l" ]; then
+            t="$(readlink -f "$l" 2>/dev/null)"
+            [ -n "$t" ] && [ "$t" != "$l" ] && GHL_JAVA_READ="$GHL_JAVA_READ:$t"
+        fi
+    done
+    for l in "$JAVA_HOME/lib/security/cacerts"; do
+        if [ -L "$l" ]; then
+            t="$(dirname "$(readlink -f "$l" 2>/dev/null)")"
+            [ -n "$t" ] && GHL_JAVA_READ="$GHL_JAVA_READ:$t"
+        fi
+    done
+    GHL_JAVA_READ="${GHL_JAVA_READ#:}"
+    export JAVA_HOME JAVA_BIN JAVA_MAJOR JAVA_FLAGS GHL_JAVA_READ
     return 0
 }
 

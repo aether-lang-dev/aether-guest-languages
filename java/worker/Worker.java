@@ -48,7 +48,8 @@ public final class Worker {
         if (h.readScript() == null) System.exit(1);
         String err = runScript(h);
         if (!err.isEmpty()) h.error(err); else h.done(0);
-        System.exit(0);
+        // halt, not exit (see containment/Checks.java).
+        Runtime.getRuntime().halt(0);
     }
 
     private static String cmdName(String s) {
