@@ -177,6 +177,9 @@ static int load_liblua(void) {
     void* h = try_dlopen(env_soname);
     if (!h) h = try_dlopen("liblua.so");
     if (!h) {
+        // dlerror() clears the error it reports: read it once. Called twice,
+        // the second call gave NULL, printed with %s.
+        const char* why = dlerror();
         fprintf(stderr,
             "aether host_lua: cannot dlopen liblua "
             "(tried $AETHER_LUA_SONAME=%s, liblua.so).\n"
@@ -184,7 +187,7 @@ static int load_liblua(void) {
             "AETHER_LUA_SONAME to the exact soname "
             "(e.g. liblua5.4.so.0).\n  dlerror: %s\n",
             env_soname ? env_soname : "(unset)",
-            dlerror() ? dlerror() : "(none)");
+            why ? why : "(none)");
         return -1;
     }
 

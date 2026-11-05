@@ -264,6 +264,9 @@ static int load_libpython(void) {
     void* h = try_dlopen(env_soname);
     if (!h) h = try_dlopen("libpython3.so");
     if (!h) {
+        // dlerror() clears the error it reports: read it once. Called twice,
+        // the second call gave NULL, printed with %s.
+        const char* why = dlerror();
         fprintf(stderr,
             "aether host_python: cannot dlopen libpython "
             "(tried $AETHER_PYTHON_SONAME=%s, libpython3.so).\n"
@@ -274,7 +277,7 @@ static int load_libpython(void) {
             "print(sysconfig.get_config_var(\"INSTSONAME\"))')\n"
             "  dlerror: %s\n",
             env_soname ? env_soname : "(unset)",
-            dlerror() ? dlerror() : "(none)");
+            why ? why : "(none)");
         return -1;
     }
 
