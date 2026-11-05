@@ -1,0 +1,43 @@
+// The fourth way, as far as it goes: racket/worker starts and boots Racket,
+// then dies on the first evaluation after its lockdown ("allocation failed
+// for code"), because Chez Scheme maps anonymous executable memory and the
+// preload every contained child runs under refuses it (racket/README.md,
+// "4. Contained child"). This program is the host side, the same as
+// python's: it compiles, and shows what the host sees.
+import std.guest
+import std.sandbox
+import std.list
+
+main() {
+    perms = sandbox.new("racket") {
+        // Racket reads its library, boot images and collects to start
+        grant_fs_read("/usr/lib/racket")
+        grant_fs_read("/usr/lib/racket/*")
+        grant_fs_read("/usr/share/racket")
+        grant_fs_read("/usr/share/racket/*")
+        grant_fs_read("/etc/racket")
+        grant_fs_read("/etc/racket/*")
+        grant_fs_read("/opt/racket-lib")
+        grant_fs_read("/opt/racket-lib/*")
+    }
+    args = list.new()
+    list.add(args, "/opt/racket-lib/libracketcs.so")   // AETHER_RACKET_SONAME
+    list.add(args, "/usr/lib/racket")                  // the boot images
+    list.add(args, "/usr/share/racket/collects")
+    list.add(args, "/etc/racket")
+    g, err = guest.launch(perms, "build/racket-worker", args, "racket", "")
+    if err != "" { println("not started: ${err}") return }   // macOS: refused
+    guest.mount(&g, "greet", 1, 1)
+    guest.start(&g, "(displayln (host-greet \"racket\"))")
+    while true {
+        e = guest.next(&g)
+        if e.kind == "SAY" {
+            println(guest.printable(e.text))
+        } else if e.kind == "CALL" {
+            guest.answer(&g, guest.json_string("hello"))
+        } else {
+            println("${e.kind} ${guest.printable(e.text)}")
+            break
+        }
+    }
+}

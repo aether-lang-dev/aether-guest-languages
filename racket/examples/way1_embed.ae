@@ -1,0 +1,18 @@
+import racket
+
+main() {
+    script = <<RKT
+        (define (fib n) (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2)))))
+        (printf "fib(10) = ~a\n" (fib 10))
+        (displayln (list "it's" #t 'sym))
+    RKT
+    if racket.run(script) != 0 { println("racket failed: ${racket.last_error()}") }
+
+    // evaluate returns what the code printed; the VM keeps its definitions.
+    out = racket.evaluate("(display (* 6 7))")
+    println("evaluate gave ${out}")
+
+    // a string k-v map shared with the code, which sees it as aether-host-kv
+    racket.set("who", "Racket")
+    println(racket.evaluate("(display (string-append \"hello, \" (hash-ref aether-host-kv \"who\")))"))
+}
