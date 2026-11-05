@@ -75,6 +75,7 @@ FILENAME == ARGV[1] {   # the tests
 }
 FILENAME == ARGV[2] {   # the results
     t = "test_" $1; c = $2; side = $3
+    if (c !~ /^[234]$/) { other[c] = 1; next }   # a column the table has not (3f)
     ran[c] = side; seen[t, c] = 1
     if ($5 != "PASS") {
         item = $4 " " kindtext($5)
@@ -110,6 +111,12 @@ END {
             d = diff[t, c]; gsub(/\n/, ", ", d)
             cur[t, c] = d == "" ? "matches" : "differs: " d
         }
+    }
+    nran = 0; for (c in ran) nran++
+    if (nran == 0) {
+        o = ""; for (c in other) o = o (o == "" ? "" : ", ") c
+        printf "  [SKIP] parity: no column of the table runs on this host (ran: %s)\n", o
+        exit 0
     }
     if (what == "check") {
         if (!begin || !end) { print "  [FAIL] parity: no Stunt parity section in the README; sh tests/run.sh --write-parity"; exit 1 }

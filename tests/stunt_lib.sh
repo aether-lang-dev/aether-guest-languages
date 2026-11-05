@@ -52,6 +52,9 @@ case "$(uname -s 2>/dev/null)" in
     *) PLAT=other ;;
 esac
 command -v ae > /dev/null 2>&1 || die "ae is not on PATH"
+# A language's lang.sh may name rows where the preload itself fails (an
+# error where the policy says succeed or refused); by default there are none.
+preload_fails() { return 1; }
 . "$ROOT/$LANG_NAME/containment/lang.sh"
 lang_runtime || skip_all "$LANG_NO_RUNTIME"
 
@@ -186,7 +189,13 @@ policy() { POLICY="$1"; }
 # block with no preload, 3 the same under LD_PRELOAD, 4 the contained child.
 PARITY="$BUILD/parity-$LANG_NAME.tsv"
 if ver_ge "$ae_ver" "$AE_SPAWN_PIN"; then SIDE=from; else SIDE=before; fi
-inproc_column() { if [ -n "$PRELOAD" ]; then echo 3; else echo 2; fi; }
+# FreeBSD's preload is not Linux's: its runs are recorded apart (3f), and
+# the table, whose column 3 is Linux's, does not take them.
+inproc_column() {
+    if [ -z "$PRELOAD" ]; then echo 2
+    elif [ "$PLAT" = freebsd ]; then echo 3f
+    else echo 3; fi
+}
 record() {   # record <mode> <check> <kind>
     case "$1" in inproc) col="$(inproc_column)" ;; *) col=4 ;; esac
     printf '%s\t%s\t%s\t%s\t%s\n' "${STUNT_TEST:-stunt}" "$col" "$SIDE" "$2" "$3" >> "$PARITY"
@@ -244,6 +253,12 @@ stunt() {
 }
 
 stunt_inproc() {
+    if [ -n "$PRELOAD" ] && why="$(preload_fails "$1")"; then
+        run_one "PRELOAD FAILS" inproc error "$1"
+        printf '             (%s)\n' "$why"
+        NOT_HELD=$((NOT_HELD + 1))
+        return
+    fi
     if [ "$2" = refused ] && libc_row "$1"; then
         if [ -z "$PRELOAD" ]; then
             run_one "NOT HELD" inproc succeed "$1"

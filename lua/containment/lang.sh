@@ -24,6 +24,8 @@ lang_version() {
 LANG_CHECKS_ENV=LUA_CHECKS
 LANG_CHECKS_FILE=checks.lua
 LANG_WORKER_ENV=LUA_WORKER
+# Lua's own tests beside the stunt ones: none.
+LANG_EXTRA_TESTS=""
 
 # Rows Lua cannot express, by name. Each prints LEFT OUT and why.
 left_out() {

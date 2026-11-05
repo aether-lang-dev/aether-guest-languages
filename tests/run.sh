@@ -64,7 +64,7 @@ for lang in $langs; do
         mkdir -p "$ROOT/build"
         : > "$ROOT/build/parity-$lang.tsv"
         lang_runtime && host_text "$LANG_TITLE $(lang_version 2>/dev/null)" > "$ROOT/build/parity-$lang.host"
-        for t in "$SCRIPT_DIR"/test_catalogue.sh "$SCRIPT_DIR"/test_stunt_*.sh; do
+        for t in "$SCRIPT_DIR"/test_catalogue.sh "$SCRIPT_DIR"/test_stunt_*.sh $LANG_EXTRA_TESTS; do
             echo "== $(basename "$t")"
             sh "$t" || fails=$((fails + 1))
         done
