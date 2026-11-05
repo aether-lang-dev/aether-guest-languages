@@ -43,9 +43,18 @@ tcl_soname() {
                 done
             fi
             # Last resort: ask a tclsh which library it is.
-            so="$(echo 'puts libtcl$tcl_version.so' | tclsh 2>/dev/null)"
+            so="$(echo 'puts libtcl$tcl_version.so' | "$(tcl_shell)" 2>/dev/null)"
             [ -n "$so" ] && { export AETHER_TCL_SONAME="$so"; return 0; } ;;
     esac
+    return 1
+}
+
+# A tclsh on PATH: Debian and Ubuntu's tcl8.6 package has only tclsh8.6 (the
+# unversioned name comes with the tcl metapackage).
+tcl_shell() {
+    for c in tclsh tclsh8.6 tclsh9.0 tclsh8.5; do
+        p="$(command -v "$c" 2>/dev/null)" && { echo "$p"; return 0; }
+    done
     return 1
 }
 
@@ -57,7 +66,7 @@ tcl_version() {
     case "$f" in
         /opt/homebrew/opt/tcl-tk/*|/usr/local/opt/tcl-tk/*|*/tcl-tk*/lib/*) sh_bin="$(dirname "$(dirname "$f")")/bin/tclsh" ;;
         /usr/lib/libtcl.dylib) sh_bin=/usr/bin/tclsh ;;
-        *) sh_bin="$(command -v tclsh 2>/dev/null)" ;;
+        *) sh_bin="$(tcl_shell)" ;;
     esac
     # Homebrew names its shell tclsh9.0 / tclsh8.6 beside the library.
     if [ ! -x "$sh_bin" ]; then
@@ -71,4 +80,22 @@ tcl_version() {
         [ -n "$v" ] && { echo "$v"; return 0; }
     fi
     basename "$f"
+}
+
+# The directories Tcl reads when an interpreter is made (Tcl_Init sources
+# init.tcl from tcl_library), comma-separated, as GHL_TCL_LIBRARY: what a
+# contained child must be granted to read for the worker to start at all
+# (tcl/README.md, "In a contained child"). Asked of the tclsh that belongs to
+# the library, as tcl_version does.
+tcl_library() {
+    [ -n "${GHL_TCL_LIBRARY:-}" ] && return 0
+    f="$AETHER_TCL_SONAME"
+    sh_bin="$(tcl_shell)"
+    case "$f" in
+        /opt/homebrew/opt/tcl-tk/*|/usr/local/opt/tcl-tk/*) sh_bin="$(dirname "$(dirname "$f")")/bin/tclsh" ;;
+    esac
+    [ -x "$sh_bin" ] || return 1
+    GHL_TCL_LIBRARY="$(echo 'puts $tcl_library' | "$sh_bin" 2>/dev/null)"
+    [ -n "$GHL_TCL_LIBRARY" ] || return 1
+    export GHL_TCL_LIBRARY
 }
