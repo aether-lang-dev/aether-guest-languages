@@ -12,11 +12,10 @@ for you. Every way stays supported; they differ in how much they contain
 [quickjs/README.md](quickjs/README.md#four-ways-to-run-javascript-from-aether),
 [tcl/README.md](tcl/README.md#four-ways-to-run-tcl-from-aether),
 [perl/README.md](perl/README.md#four-ways-to-run-perl-from-aether),
-[ruby/README.md](ruby/README.md#four-ways-to-run-ruby-from-aether) and
-[tinygo/README.md](tinygo/README.md#four-ways-to-run-go-from-aether)
-each show all four, with examples):
+[ruby/README.md](ruby/README.md#four-ways-to-run-ruby-from-aether),
+[tinygo/README.md](tinygo/README.md#four-ways-to-run-go-from-aether) and
 [go/README.md](go/README.md#four-ways-to-run-go-from-aether)
-each show all four, with examples; Go is never in your process, so its
+each show all four, with examples; Go as a child process is never in your process, so its
 first three ways are a child process with less and more around it):
 
 1. **Embed.** The interpreter is loaded into the Aether program and called
@@ -68,9 +67,7 @@ the tests.
 ## Layout
 
 ```
-aether.toml            the package: exports every language directory (modules = "lua, python, duktape, js, quickjs, tcl, perl, ruby")
-aether.toml            the package: exports every language directory (modules = "lua, python, duktape, js, tcl, perl, ruby, tinygo")
-aether.toml            the package: exports every language directory (modules = "lua, python, duktape, js, tcl, perl, ruby, go")
+aether.toml            the package: exports every language directory (modules = "lua, python, duktape, js, tcl, perl, ruby, quickjs, tinygo, go")
 ci/versions.env        toolchain pins (AE_PIN, AE_CHILD_PIN, AE_SPAWN_PIN, AEB_REF, AETHER_STUNT_REF)
 lua/
   module.ae            import lua: the bridge's API
@@ -226,14 +223,13 @@ Homebrew's `/opt/homebrew/lib/libduktape.so`), `AETHER_TCL_SONAME`
 (`libtcl8.6.so.0`), `AETHER_PERL_SONAME` (for example
 `/usr/lib/x86_64-linux-gnu/libperl.so.5.38`) and `AETHER_RUBY_SONAME`
 (for example `/usr/lib/libruby.so.3.4.12`). `tests/<lang>_env.sh` is one way
-to find each. No language's dev package is needed to build. Go is the
-exception to the pattern: there is no interpreter to find. `tinygo.load`
-takes the path of a library you built with `go build -buildmode=c-shared`
-(README: [tinygo/README.md](tinygo/README.md)); the bridge needs no Go
-toolchain, only the library's author does.
-to find each. No language's dev package is needed to build. Go loads no
-library: `GO_BIN` names the `go` command for `go.run_script`, and a built
-Go binary needs nothing.
+to find each. No language's dev package is needed to build. QuickJS is
+compiled in from aether's `contrib.quickjs`, so there is nothing to find.
+The two Go bridges are the exceptions to the pattern: `tinygo.load` takes
+the path of a library you built with `go build -buildmode=c-shared` (the
+bridge needs no Go toolchain, only the library's author does), and `go`
+loads no library at all: `GO_BIN` names the `go` command for
+`go.run_script`, and a built Go binary needs nothing.
 
 ## Toolchain
 
