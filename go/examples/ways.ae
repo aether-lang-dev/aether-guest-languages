@@ -1,0 +1,24 @@
+// Ways 1 to 3 of README.md: a Go program started as a child.
+//
+//   go build -o build/go-hello ./go/examples/hello
+//   ae build go/examples/ways.ae --lib . -o build/go-ways && build/go-ways build/go-hello
+
+import go
+import std.sandbox
+import std.os
+
+main() {
+    prog = os.args_get(1)
+
+    // 1. A plain child: no containment.
+    println("go.run: ${go.run(prog)}")
+
+    // 2 and 3. The same under a grant list. On Linux the child is started
+    // with libaether_sandbox.so preloaded and the grants in
+    // AETHER_SANDBOX_SHM; on macOS there is no such library, so this returns
+    // -1 and starts nothing.
+    reader = sandbox.new("reader") {
+        grant_env("HOME")
+    }
+    println("go.run_sandboxed: ${go.run_sandboxed(reader, prog)}")
+}

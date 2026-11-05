@@ -25,7 +25,9 @@
 # find the runtime, where the checks and the worker are, and the rows that
 # differ from stunt's expectation, by name and with why: left out (the
 # language cannot express it, in both modes or in-process only), escapes or
-# not held in-process, stricter in the child.
+# not held in-process, stricter in the child, or escaping the child's wall
+# (child_escapes). A language whose checks and worker are programs of their
+# own (Go) builds them in a lang_build hook.
 #
 # Every outcome is also appended to build/parity-<lang>.tsv, from which
 # tests/parity.sh renders and checks the README's "Stunt parity" table.
@@ -55,6 +57,10 @@ command -v ae > /dev/null 2>&1 || die "ae is not on PATH"
 # A language's lang.sh may name rows where the preload itself fails (an
 # error where the policy says succeed or refused); by default there are none.
 preload_fails() { return 1; }
+# And rows a contained child lets through where stunt expects a refusal: by
+# default none (a language whose worker locks itself down, as std.guest.child
+# does, is held by that; one that cannot, like Go, has only the spawn's wall).
+child_escapes() { return 1; }
 # And rows the language cannot express in-process only (the contained child
 # runs them): left_out is for both.
 left_out_inproc() { return 1; }
@@ -124,6 +130,10 @@ build() {   # build <source .ae> <binary>
 HOST="$BUILD/$LANG_NAME-host"
 build "$LANG_NAME/containment/host.ae" "$HOST"
 eval "export $LANG_CHECKS_ENV=\"\$HOST_SRC/\$LANG_CHECKS_FILE\""
+# A language whose checks and worker are programs of its own (Go) builds them
+# here: lang_build exports the checks' variable and sets LANG_WORKER_BUILT.
+LANG_WORKER_BUILT=""
+type lang_build > /dev/null 2>&1 && lang_build
 case "$PLAT" in
     macos) export GHL_LIBM=/usr/lib/libm.dylib GHL_LIBC_NAME=libSystem.B.dylib GHL_LIBC_PATH=/usr/lib/libSystem.B.dylib ;;
     freebsd) export GHL_LIBM=libm.so.5 GHL_LIBC_NAME=libc.so.7 ;;
@@ -164,7 +174,7 @@ else
     CHILD_HOST="$BUILD/$LANG_NAME-child-host"
     WORKER="$BUILD/$LANG_NAME-worker"
     build "$LANG_NAME/containment/child_host.ae" "$CHILD_HOST"
-    build "$LANG_NAME/worker/worker.ae" "$WORKER"
+    if [ -n "$LANG_WORKER_BUILT" ]; then WORKER="$LANG_WORKER_BUILT"; else build "$LANG_NAME/worker/worker.ae" "$WORKER"; fi
     eval "export $LANG_WORKER_ENV=\"\$WORKER\""
     # The row that shows a child can run at all: a host function's answer by
     # default (callback-greet); a language with no host functions names

@@ -572,3 +572,75 @@ jobs:
       - run: ae version
       - name: Specs and containment rows
         run: GUEST_LANG=tinygo sh tests/run.sh
+
+  # Go: the go toolchain only (golang-go on Ubuntu 24.04 is Go 1.22; the
+  # modules in go/ say go 1.18). The bridge starts a program rather than
+  # loading a library, so there is no runtime package; cgo needs gcc, which
+  # the runner has. tests/go_env.sh finds go and checks cgo works.
+  linux-go:
+    name: Linux (in-process, Go 1.22)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Go
+        run: sudo apt-get update && sudo apt-get install -y golang-go
+      - name: ae (AE_PIN)
+        run: |
+          . ci/versions.env
+          curl -fsSL "https://raw.githubusercontent.com/aether-lang-dev/aeb/$AEB_REF/get.sh" \
+            | AE_PIN="$AE_PIN" AEB_REF="$AEB_REF" sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - run: ae version
+      - name: Specs and containment rows
+        run: GUEST_LANG=go sh tests/run.sh
+
+  linux-go-child:
+    name: Linux (in-process and contained child, Go 1.22)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Go
+        run: sudo apt-get update && sudo apt-get install -y golang-go
+      - name: ae (AE_CHILD_PIN)
+        run: |
+          . ci/versions.env
+          curl -fsSL "https://raw.githubusercontent.com/aether-lang-dev/aeb/$AEB_REF/get.sh" \
+            | AE_PIN="$AE_CHILD_PIN" AEB_REF="$AEB_REF" sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - run: ae version
+      - name: Specs and containment rows, the child required
+        run: GUEST_LANG=go GHL_REQUIRE_CHILD=1 sh tests/run.sh
+
+  linux-go-spawn:
+    name: Linux (in-process and contained child, Go 1.22, ae AE_SPAWN_PIN)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Go
+        run: sudo apt-get update && sudo apt-get install -y golang-go
+      - name: ae (AE_SPAWN_PIN)
+        run: |
+          . ci/versions.env
+          curl -fsSL "https://raw.githubusercontent.com/aether-lang-dev/aeb/$AEB_REF/get.sh" \
+            | AE_PIN="$AE_SPAWN_PIN" AEB_REF="$AEB_REF" sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - run: ae version
+      - name: Specs and containment rows, the child required
+        run: GUEST_LANG=go GHL_REQUIRE_CHILD=1 sh tests/run.sh
+
+  macos-go:
+    name: macOS (in-process, Go from the runner or Homebrew)
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Go
+        run: command -v go || brew install go
+      - name: ae (AE_PIN)
+        run: |
+          . ci/versions.env
+          curl -fsSL "https://raw.githubusercontent.com/aether-lang-dev/aeb/$AEB_REF/get.sh" \
+            | AE_PIN="$AE_PIN" AEB_REF="$AEB_REF" sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - run: ae version
+      - name: Specs and containment rows
+        run: GUEST_LANG=go sh tests/run.sh

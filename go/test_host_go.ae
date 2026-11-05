@@ -1,0 +1,73 @@
+// The Go bridge's own spec (was untested in aether: contrib/host/go/README.md
+// said so). The bridge starts a program as a child and returns its exit
+// status, so what is asserted is the status, the environment the child gets
+// and what the platform allows:
+//
+//   - go.run and go.run_script start the child with nothing around it
+//   - go.run_sandboxed starts it under libaether_sandbox.so on Linux, with an
+//     empty grant list as well as with grants (aether's copy returned -1 for
+//     an empty list); on macOS, where there is no such library, it starts
+//     nothing and returns -1
+//   - a program that cannot start is -1, never an exit status of 127
+//   - go.run_script runs `go run` ($GO_BIN, else go on PATH); skipped with no
+//     go toolchain. go run's own status is 1 for a program that exits non-zero
+//
+// The sandbox cases use /usr/bin/true and /usr/bin/false, which need nothing; the
+// script case compiles a Go program. tests/run.sh sets GHL_GO_UNCONTAINED=1
+// on macOS (tests/go_env.sh), which is how this spec knows the platform has
+// no preload.
+
+import go
+import std.spec
+import std.fs
+import std.os
+import std.sandbox
+import std.string
+
+main() {
+    fw = spec.init()
+
+    have_go = 0
+    if os.getenv("GO_BIN") != "" { have_go = 1 }
+    no_preload = 0
+    if os.getenv("GHL_GO_UNCONTAINED") == "1" { no_preload = 1 }
+    dir, derr = fs.make_temp_dir("", "ghl-go")
+
+    spec.describe(fw, "go") {
+        spec.it("go.run returns the child exit status") callback {
+            spec.assert_eq(go.run("/usr/bin/true"), 0, "exit 0")
+            spec.assert_eq(go.run("/usr/bin/false"), 1, "exit 1")
+        }
+
+        spec.it("a program that cannot start is -1, not 127") callback {
+            spec.assert_eq(go.run("/nonexistent/ghl-go-program"), -1, "no such program")
+        }
+
+        spec.it("go.run_sandboxed with grants and with empty") callback {
+            some = sandbox.new("some") {
+                grant_fs_read("/etc/*")
+            }
+            empty = sandbox.new("empty") {
+            }
+            want = 0
+            if no_preload == 1 { want = -1 }
+            spec.assert_eq(go.run_sandboxed(some, "/usr/bin/true"), want, "a grant list")
+            spec.assert_eq(go.run_sandboxed(empty, "/usr/bin/true"), want, "an empty grant list")
+            spec.assert_eq(go.run_sandboxed(empty, "/nonexistent/ghl-go-program"), -1, "a program that cannot start")
+        }
+
+        spec.it_when(have_go, "go.run_script runs a Go source file with go run", "no go toolchain (set GO_BIN)") callback {
+            script = "${dir}/exit7.go"
+            fs.write(script, "package main\n\nimport \"os\"\n\nfunc main() { os.Exit(7) }\n")
+            // go run exits 1 for a program that exits with any status, and
+            // says "exit status 7" on stderr: the script's status is go's.
+            spec.assert_eq(go.run_script(script), 1, "go run's status for a program that exits 7")
+            fs.write(script, "package main\n\nfunc main() {}\n")
+            spec.assert_eq(go.run_script(script), 0, "a program that returns")
+        }
+    }
+
+    _rc = spec.run_summary(fw)
+    if derr == "" { fs.remove_tree(dir) }
+    return _rc
+}
