@@ -21,7 +21,13 @@ main() {
     engine.release(q, getenv)
     sandbox.enforce(reader) callback {
         v, e = engine.eval(q, "'HOME=' + env('HOME') + ' USER=' + env('USER')", "demo.js")
-        if e != "" { println("js failed: ${e}") } else { println(engine.to_string(q, v)) engine.release(q, v) }
+        if e != "" {
+            println("js failed: ${e}")
+        } else {
+            text, _te = engine.to_string(q, v)
+            println(text)
+            engine.release(q, v)
+        }
     }
     engine.dispose(q)
 }

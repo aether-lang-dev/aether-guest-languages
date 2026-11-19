@@ -48,7 +48,12 @@ If a release changes those signatures, the specs fail to build or run;
 update the declarations in `aether_host_quickjs.c` and `worker/worker.ae`
 (which uses the engine's Aether API) in the commit that raises `AE_PIN`. A
 bump of the engine's version alone needs nothing here, but the README's
-mention of 0.17.0 should follow it.
+mention of the engine's version (0.18 from ae 0.915.0) should follow it.
+
+Ported to ae 0.923.0 (contrib.quickjs from 0.915.0): `qjs_set_time_limit` is gone, so
+each run sets an absolute deadline (`qjs_set_deadline_ns(q, qjs_now_ns() + 5 s)`,
+`set_deadline_ns` in the containment host), and `qjs_to_string` returns the
+byte count (-1 when the conversion threw) with the text in `qjs_scratch`.
 
 ## What the move changed in `aether_host_quickjs.c`
 

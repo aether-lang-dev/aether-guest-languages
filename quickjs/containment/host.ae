@@ -110,7 +110,8 @@ fn run_engine(g: sandbox.Grants, check: string, expect: string, source: string) 
         println("host: cannot make a QuickJS runtime")
         exit(1)
     }
-    engine.set_time_limit(q, 5000)
+    // One script per runtime: 5 s of JS from now.
+    engine.set_deadline_ns(q, engine.now_ns() + 5000000000)
     register(q)
     box = list.new()
     sandbox.enforce(g) callback {
@@ -118,7 +119,12 @@ fn run_engine(g: sandbox.Grants, check: string, expect: string, source: string) 
         if e != "" {
             list.add(box, "${check}: the script failed (${e}) - expected ${expect}: FAIL")
         } else {
-            list.add(box, engine.to_string(q, v))
+            text, terr = engine.to_string(q, v)
+            if terr != "" {
+                list.add(box, "${check}: the result would not convert (${terr}) - expected ${expect}: FAIL")
+            } else {
+                list.add(box, text)
+            }
             engine.release(q, v)
         }
     }

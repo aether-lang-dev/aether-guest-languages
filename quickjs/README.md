@@ -1,7 +1,7 @@
 # quickjs: embedded JavaScript (QuickJS, ES2023)
 
 `import quickjs` lets an Aether program run JavaScript: [QuickJS](https://github.com/quickjs-ng/quickjs)
-(quickjs-ng 0.17.0), an embeddable ES2023 engine. It is the bridge that was
+(quickjs-ng 0.18, from ae 0.915.0), an embeddable ES2023 engine. It is the bridge that was
 aether's `contrib.host.quickjs`, moved here ([PROVENANCE.md](PROVENANCE.md)):
 the same functions under the same names, `quickjs.run`,
 `quickjs.run_sandboxed` and `quickjs.run_sandboxed_with_map`.
@@ -24,7 +24,7 @@ function you register through aether's engine module
 
 The bridge compiles no QuickJS of its own. `module.ae` imports aether's
 engine module, `contrib.quickjs`, whose C and pinned amalgamation (quickjs-ng
-0.17.0, `amalgamation.lock`) every aether release ships under
+0.18, `amalgamation.lock`) every aether release ships under
 `share/aether/contrib/quickjs/` (since well before this repository's
 `AE_PIN`; checked from 0.778.0 on). So there is **one copy of QuickJS and one
 pin, aether's**: this repository neither vendors the amalgamation nor repeats
@@ -49,7 +49,7 @@ stay supported: pick by how far you trust the script, not by which is newest.
 | Your host functions | not checked | checked against the grants | checked against the grants | checked against the grants; each call is a message the host answers |
 | Time limit | 5 s per run | 5 s per run | 5 s per run | the host's deadline, then a kill |
 | Platforms | everywhere aether runs | same | Linux | Linux with Landlock; macOS refuses to start it |
-| Needs | ae 0.875.0 | ae 0.875.0 | ae 0.875.0 | ae 0.878.0 (`std.guest`) |
+| Needs | ae 0.915.0 | ae 0.915.0 | ae 0.915.0 | ae 0.915.0 (`std.guest` is in 0.878.0; the engine's API needs 0.915.0) |
 
 ### 1. Embed: QuickJS in your process, no containment
 
@@ -121,7 +121,13 @@ main() {
     engine.release(q, getenv)
     sandbox.enforce(reader) callback {
         v, e = engine.eval(q, "'HOME=' + env('HOME') + ' USER=' + env('USER')", "demo.js")
-        if e != "" { println("js failed: ${e}") } else { println(engine.to_string(q, v)) engine.release(q, v) }
+        if e != "" {
+            println("js failed: ${e}")
+        } else {
+            text, _te = engine.to_string(q, v)
+            println(text)
+            engine.release(q, v)
+        }
     }
     engine.dispose(q)
 }

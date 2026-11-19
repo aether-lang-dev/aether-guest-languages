@@ -7,6 +7,7 @@
 // puts on the include path of every C file it compiles into a program.
 #include "aether_sandbox.h"
 #include "aether_shared_map.h"
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -23,9 +24,12 @@
 
 typedef struct { void *fn; void *env; } AeQjsClosure;
 
+#define QUICKJS_BUDGET_NS ((int64_t)5000 * 1000000)
+
 extern void* qjs_new(int memory_kb, int stack_kb);
 extern void qjs_free(void* q);
-extern void qjs_set_time_limit(void* q, int ms);
+extern int64_t qjs_now_ns(void);
+extern void qjs_set_deadline_ns(void* q, int64_t ns);
 extern int qjs_eval(void* q, const char* code, const char* filename, int flags);
 extern const char* qjs_error(void* q);
 extern void qjs_release(void* q, int h);
@@ -40,7 +44,11 @@ extern int qjs_set(void *qp, int obj, const char *name, int val);
 extern int qjs_string(void *qp, const char *s);
 extern int qjs_undefined(void *qp);
 extern int qjs_get_index(void *qp, int obj, int i);
-extern const char *qjs_to_string(void *qp, int h);
+// String(h) as UTF-8 in the runtime's scratch: its byte count, or -1 when
+// the conversion threw (Symbol, throwing or interrupted toString). The bytes
+// are qjs_scratch, valid until the runtime hands out another string.
+extern int qjs_to_string(void *qp, int h);
+extern const void *qjs_scratch(void *qp);
 
 static void qjs_set_global_c(void* q, const char* name, int v) {
     int g = qjs_global(q);
@@ -50,7 +58,8 @@ static void qjs_set_global_c(void* q, const char* name, int v) {
 
 static const char* qjs_arg_string_c(void* q, int args, int i) {
     int h = qjs_get_index(q, args, i);
-    const char* s = qjs_to_string(q, h);
+    int n = qjs_to_string(q, h);
+    const char* s = n >= 0 ? (const char*)qjs_scratch(q) : NULL;
     qjs_release(q, h);
     return s ? s : "";
 }
@@ -94,7 +103,9 @@ int quickjs_run(const char* code) {
     if (!code) return -1;
     void* q = qjs_new(32768, 0);
     if (!q) return -1;
-    qjs_set_time_limit(q, 5000);
+    // One script per runtime: its JS gets 5 s from now (an absolute deadline
+    // on qjs_now_ns's clock; the engine has no per-entry limit any more).
+    qjs_set_deadline_ns(q, qjs_now_ns() + QUICKJS_BUDGET_NS);
     quickjs_install_print(q);
     int h = qjs_eval(q, code, "<eval>", 0);
     if (h < 0) {
@@ -143,7 +154,9 @@ int quickjs_run_sandboxed_with_map(void* perms, const char* code, uint64_t map_t
     if (!code) return -1;
     void* q = qjs_new(32768, 0);
     if (!q) return -1;
-    qjs_set_time_limit(q, 5000);
+    // One script per runtime: its JS gets 5 s from now (an absolute deadline
+    // on qjs_now_ns's clock; the engine has no per-entry limit any more).
+    qjs_set_deadline_ns(q, qjs_now_ns() + QUICKJS_BUDGET_NS);
     quickjs_install_print(q);
 
     aether_shared_map_freeze_inputs_by_token(map_token);
