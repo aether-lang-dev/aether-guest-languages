@@ -302,7 +302,7 @@ as `ci/versions.env` says. One line installs both into `~/.local` (no sudo;
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/aether-lang-dev/aeb/v0.340/get.sh \
-  | AE_PIN=0.931.0 AEB_REF=v0.340 sh
+  | AE_PIN=0.933.0 AEB_REF=v0.340 sh
 ```
 
 That is enough for the bridges and the in-process tests. The contained
