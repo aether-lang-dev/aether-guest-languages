@@ -1,0 +1,16 @@
+str	"hello"
+str-empty	""
+str-nonascii	"héllo ✓ 日本"
+str-nul	"a\u0000b"
+str-60k	@REP:x:60000@
+int	42
+int-neg	-7
+int-max	9223372036854775807
+int-min	-9223372036854775808
+float	1.5
+bool-true	true
+bool-false	false
+null	null
+array	[1,"a",2.5]
+map	{"k":"v","n":1}
+nested	{"a":[1,{"b":"x"}],"c":{"d":2.5}}

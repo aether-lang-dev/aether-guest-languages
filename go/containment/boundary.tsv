@@ -1,0 +1,24 @@
+# The shared boundary tests (tests/boundary.py), in this language: up and down are the script a case becomes, @V@ the value written here, @ID@ the case. A case with no v: line is one this language cannot write. @NL@ is a newline.
+up	call echo [@V@]
+down	call give ["@ID@"]
+nest	call echo ["n"]@NL@call echo ["n"]
+refuse	call refuse ["x"]
+wait	call slow ["x"]
+loop	spin
+big-up	call echo ["@REP:x:100000@"]
+v:str	"hello"
+v:str-empty	""
+v:str-nonascii	"héllo ✓ 日本"
+v:str-nul	"a\u0000b"
+v:str-60k	"@REP:x:60000@"
+v:int	42
+v:int-neg	-7
+v:int-max	9223372036854775807
+v:int-min	-9223372036854775808
+v:float	1.5
+v:bool-true	true
+v:bool-false	false
+v:null	null
+v:array	[1,"a",2.5]
+v:map	{"k":"v","n":1}
+v:nested	{"a":[1,{"b":"x"}],"c":{"d":2.5}}

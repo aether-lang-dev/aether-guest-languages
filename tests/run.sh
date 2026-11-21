@@ -92,10 +92,14 @@ for lang in $langs; do
         mkdir -p "$ROOT/build"
         : > "$ROOT/build/parity-$lang.tsv"
         lang_runtime && host_text "$LANG_TITLE $(lang_version 2>/dev/null)" > "$ROOT/build/parity-$lang.host"
-        for t in "$SCRIPT_DIR"/test_catalogue.sh "$SCRIPT_DIR"/test_stunt_*.sh $LANG_EXTRA_TESTS; do
+        for t in "$SCRIPT_DIR"/test_catalogue.sh "$SCRIPT_DIR"/test_stunt_*.sh "$SCRIPT_DIR"/test_boundary.sh $LANG_EXTRA_TESTS; do
             echo "== $(basename "$t")"
             sh "$t" || fails=$((fails + 1))
         done
+        echo "== boundary table ($lang)"
+        if command -v python3 > /dev/null 2>&1; then
+            if [ "$parity" = write ]; then python3 -I "$SCRIPT_DIR/boundary_table.py" write "$lang"; else python3 -I "$SCRIPT_DIR/boundary_table.py" check "$lang" || fails=$((fails + 1)); fi
+        fi
         echo "== parity ($lang)"
         # A language may say its README table is not for this host's build
         # (lang_parity_ok in its lang.sh: Go without cgo runs fewer rows).

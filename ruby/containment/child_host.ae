@@ -19,6 +19,7 @@
 @source("host_support.c")
 
 import policy
+import boundary
 import std.guest
 import std.sandbox
 import std.os
@@ -185,6 +186,10 @@ fn run_child(spec: string, check: string, expect: string) {
     if err != "" {
         println("host: guest.launch: ${err}")
         exit(1)
+    }
+    // The shared boundary tests (tests/boundary.sh): what crosses, found by running.
+    if check == "boundary" {
+        exit(boundary.run(&g, os.getenv("GHL_BOUNDARY_SCRIPT")))
     }
     ghl_map_new()
     ghl_map_put("input", "stunt-in")

@@ -88,6 +88,108 @@ def containment_cell(lang):
         out.append("%s: %s" % (names[i], t))
     return "; ".join(out)
 
+# --- Boundary, from each language's boundary table (tests/boundary_table.py) --
+sys.path.insert(0, root + "/tests")
+import boundary_table as bt
+
+GROUPS = [("str", ["str", "str-empty", "str-nonascii", "str-nul", "str-60k"], {"str-empty": "empty", "str-nonascii": "non-ASCII", "str-nul": "NUL", "str-60k": "60 KB"}),
+          ("int", ["int", "int-neg"], {"int-neg": "negative"}), ("int64", ["int-max", "int-min"], {}),
+          ("float", ["float"], {}), ("bool", ["bool-true", "bool-false"], {}), ("null", ["null"], {}),
+          ("array", ["array"], {}), ("map", ["map"], {}), ("nested", ["nested"], {})]
+
+def types_dir(res, d):
+    ok, partial, no = [], [], []
+    for name, ids, labels in GROUPS:
+        got = [res.get((i, d)) == "ok" for i in ids]
+        if name == "int64":
+            continue
+        if name == "int":
+            i64 = [res.get((i, d)) == "ok" for i in ("int-max", "int-min")]
+            if all(got) and not all(i64):
+                partial.append("int (not 64-bit)"); continue
+            if not all(got):
+                (partial if any(got) else no).append("int" if not any(got) else "int (some)"); continue
+            ok.append("int"); continue
+        if all(got):
+            ok.append(name)
+        elif any(got):
+            miss = [labels.get(i, i) for i, g in zip(ids, got) if not g]
+            partial.append("%s (not %s)" % (name, ", ".join(miss)))
+        else:
+            no.append(name)
+    return ok + partial, no
+
+def types_cell(res):
+    up, upno = types_dir(res, "up"); dn, dnno = types_dir(res, "down")
+    def one(l, no):
+        s = ", ".join(l) if l else "none"
+        return s + ("; not " + ", ".join(no) if no and l else "")
+    if (up, upno) == (dn, dnno):
+        return "both ways: " + one(up, upno)
+    return "guest to host: %s<br>host to guest, passed back: %s" % (one(up, upno), one(dn, dnno))
+
+def duplex_cell(res):
+    if not any(v == "ok" for k, v in res.items() if k[0] in ("str", "int")):
+        return "no host calls cross"
+    nest = "calls nest in an expression" if res.get(("nest", "-")) == "ok" else "nested calls: " + res.get(("nest", "-"), "n/a")
+    loop, wait = res.get(("loop", "-"), "n/a"), res.get(("wait", "-"), "n/a")
+    if loop == "heard in a loop":
+        cancel = "cancel heard in a loop and at a call"
+    elif wait == "heard at the call":
+        cancel = "cancel heard only at a call (a loop is killed after the grace period)"
+    else:
+        cancel = "cancel: loop %s, call %s" % (loop, wait)
+    return "guest starts every exchange, host answers or cancels; %s; %s" % (nest, cancel)
+
+def callbacks_cell(res):
+    if not any(v == "ok" for k, v in res.items() if k[0] in ("str", "int")):
+        return "none: no host function is called"
+    r = res.get(("refuse", "-"), "n/a")
+    return "by name; argument and return types as in types; a `FAIL` answer: " + r
+
+def transport_cell(res, extra):
+    s60 = "a 60 KB str crosses" if res.get(("str-60k", "up")) == "ok" else "a 60 KB str does not cross"
+    return "%s%s; a 100 KB argument: %s; a 100 KB answer: %s" % (extra + "; " if extra else "", s60, res.get(("big-up", "-"), "n/a"), res.get(("big-down", "-"), "n/a"))
+
+TRANSPORT_EXTRA = {"go": "the worker is a Go program: its script is `call NAME [JSON]` lines, values are the JSON text"}
+# Languages with no boundary table: what the tests say instead, checked below.
+STATIC = {
+    "java": ("blocked", "does not start: the preload refuses the JVM's executable memory"),
+    "factor": ("blocked", "does not start: the preload refuses Factor's executable memory"),
+    "racket": ("notrun", "does not start: Chez Scheme cannot run in the child"),
+    "tinygo": (None, None),
+}
+
+def boundary_cells(lang):
+    """(transport, types, duplex, callbacks) or None when the language has no table."""
+    text = open("%s/%s/README.md" % (root, lang)).read()
+    res = bt.parse_readme_table(text)
+    if res is None:
+        return None
+    return (transport_cell(res, TRANSPORT_EXTRA.get(lang, "")), types_cell(res), duplex_cell(res), callbacks_cell(res))
+
+def static_cells(lang):
+    kind, why = STATIC.get(lang, (None, None))
+    if lang == "tinygo":
+        return ("a `std.guest` worker that loads a Go library; the script is lines `call SYMBOL a<TAB>b`",
+                "str only: two strings in, one string out; no JSON", "the script's lines run in order; the host cancels (checked by the `spin` row)",
+                "none: the worker mounts no host function")
+    return (why, why, why, why)
+
+def static_ok(lang):
+    """The claim 'does not start' is a parity-table fact: check it."""
+    kind, why = STATIC.get(lang, (None, None))
+    text = open("%s/%s/README.md" % (root, lang)).read()
+    m = re.search(r"<!-- stunt-parity:begin.*?-->\n(.*?)<!-- stunt-parity:end", text, re.S)
+    rows = [l for l in (m.group(1) if m else "").split("\n") if l.startswith("| `test_stunt_")]
+    c4 = [r.replace("\\|", "\x01").split("|")[5].strip() for r in rows]
+    c4 = [c for c in c4 if not c.startswith("(no row")]
+    if kind == "blocked":
+        return all("does not start" in c for c in c4)
+    if kind == "notrun":
+        return all(c.startswith("not run") or c.startswith("does not run") for c in c4) or all("does not start" in c for c in c4)
+    return True
+
 # --- the README -------------------------------------------------------------
 path = root + "/README.md"
 lines = open(path).read().split("\n")
@@ -119,6 +221,40 @@ for i in range(header + 2, e):
                 bad += 1
             cells[ix] = w
     lines[i] = "| " + " | ".join(cells) + " |"
+# --- the boundary table: the child columns are generated -----------------------
+bb = next((i for i, l in enumerate(lines) if l.startswith("<!-- language-boundary:begin")), None)
+be = next((i for i, l in enumerate(lines) if l.startswith("<!-- language-boundary:end")), None)
+if bb is None or be is None:
+    print("  [FAIL] readme tables: no language-boundary markers in README.md")
+    sys.exit(1)
+bh = next(i for i in range(bb, be) if lines[i].startswith("| Language"))
+bcols = [c.strip() for c in lines[bh].strip("|").split("|")]
+gen = ["Child: transport (generated)", "Child: types (generated)", "Child: duplex (generated)", "Child: callbacks (generated)"]
+gi = [bcols.index(g) for g in gen]
+for i in range(bh + 2, be):
+    if not lines[i].startswith("|"):
+        continue
+    cells = [c.strip() for c in lines[i].strip().strip("|").split("|")]
+    m = re.search(r"\((\w+)/README\.md", cells[-1])
+    if not m:
+        print("  [FAIL] readme tables: boundary row %d has no link to <lang>/README.md" % (i + 1))
+        bad += 1
+        continue
+    lang = m.group(1)
+    want = boundary_cells(lang)
+    if want is None:
+        want = static_cells(lang)
+        if not static_ok(lang):
+            print("  [FAIL] readme tables: %s: the README table says its child does not start, and its parity table says otherwise" % lang)
+            bad += 1
+    for ix, w in zip(gi, want):
+        if cells[ix] != w:
+            if what == "check":
+                print("  [FAIL] readme tables: %s, column %r: the README says %r, the tests say %r" % (lang, bcols[ix], cells[ix], w))
+                bad += 1
+            cells[ix] = w
+    lines[i] = "| " + " | ".join(cells) + " |"
+
 if what == "write":
     open(path, "w").write("\n".join(lines))
     print("  [PASS] readme tables: wrote the generated columns")

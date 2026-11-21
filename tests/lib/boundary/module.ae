@@ -1,0 +1,84 @@
+// boundary: the host half of the shared boundary tests (tests/boundary.sh).
+// Every language's child_host.ae calls boundary.run with the worker it
+// launched and a script written in that language (<lang>/containment/boundary.tsv
+// holds the snippets). The host mounts four functions and prints what crossed,
+// one line each, for tests/boundary_check.py to judge against tests/boundary/cases.tsv:
+//
+//   echo(v)    answers with its argument exactly as received; the line
+//              "WIRE <n> <args as received>" says what the worker put on the wire
+//   give(id)   answers with the JSON in $GHL_BOUNDARY_GIVE (the harness's value
+//              for the case): the host-to-guest direction
+//   refuse(m)  answers FAIL
+//   slow(x)    never answers: the host's deadline cancels it
+//
+// Then "SAY <n> <text>" for what the script printed and one "END <n> <kind> <text>".
+// Nothing here knows a language: what a worker can or cannot do is found out by
+// running, not listed.
+
+exports(run)
+
+import std.guest
+import std.os
+import std.string
+
+extern exit(code: int)
+
+// The one argument of a one-argument JSON array call, as the JSON text.
+fn first_arg(args: string) -> string {
+    return string.trim(string.substring(args, 1, string.length(args) - 1))
+}
+
+// One output line, length-prefixed so that nothing the guest chose can forge
+// or split another: TAG, the text's length in bytes, then the text itself.
+fn emit(tag: string, t: string) {
+    println("${tag} ${string.length(t)} ${t}")
+}
+
+run(g: *guest.Guest, script: string) -> int {
+    // The names are lower case, or upper case for a language that folds them
+    // (Rexx: GHL_BOUNDARY_UPPER=1, from the language's boundary.tsv).
+    if os.getenv("GHL_BOUNDARY_UPPER") == "1" {
+        guest.mount(g, "ECHO", 1, 1)
+        guest.mount(g, "GIVE", 1, 1)
+        guest.mount(g, "REFUSE", 1, 1)
+        guest.mount(g, "SLOW", 1, 1)
+    } else {
+        guest.mount(g, "echo", 1, 1)
+        guest.mount(g, "give", 1, 1)
+        guest.mount(g, "refuse", 1, 1)
+        guest.mount(g, "slow", 1, 1)
+    }
+    g.deadline_ms = 1500
+    g.grace_ms = 1000
+    guest.start(g, script)
+    going = 1
+    while going == 1 {
+        e = guest.next(g)
+        if e.kind == "SAY" {
+            emit("SAY", e.text)
+        } else if e.kind == "CALL" {
+            name = string.to_lower(e.name)
+            if name == "echo" {
+                v = first_arg(e.text)
+                emit("WIRE", e.text)
+                guest.answer(g, v)
+            } else if name == "give" {
+                emit("GIVE", e.text)
+                guest.answer(g, os.getenv("GHL_BOUNDARY_GIVE"))
+            } else if name == "refuse" {
+                emit("REFUSE", e.text)
+                guest.fail(g, "refused by the host")
+            } else if name == "slow" {
+                emit("SLOW", "")
+            } else {
+                guest.fail(g, "no host function ${e.name}")
+            }
+        } else if e.kind == "LOG" {
+        } else {
+            emit("END", "${e.kind} ${e.text}")
+            going = 0
+        }
+    }
+    guest.close(g)
+    return 0
+}

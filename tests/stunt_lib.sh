@@ -130,7 +130,7 @@ modes_of() { awk -v c="$1" 'NR > 1 && $1 == c { print $2 }' "$CATALOGUE"; }
 HOST_SRC="$ROOT/$LANG_NAME/containment"
 stale() {   # stale <binary>: older than any source it is built from
     [ -x "$1" ] || return 0
-    for f in "$HOST_SRC"/*.ae "$HOST_SRC"/*.c "$HOST_SRC"/policy/*.ae "$ROOT/$LANG_NAME"/*.ae \
+    for f in "$ROOT"/tests/lib/*/*.ae "$HOST_SRC"/*.ae "$HOST_SRC"/*.c "$HOST_SRC"/policy/*.ae "$ROOT/$LANG_NAME"/*.ae \
              "$ROOT/$LANG_NAME"/*.c "$ROOT/$LANG_NAME"/*.h "$ROOT/$LANG_NAME"/worker/*; do
         [ -e "$f" ] && [ "$f" -nt "$1" ] && return 0
     done
@@ -141,7 +141,7 @@ stale() {   # stale <binary>: older than any source it is built from
 # added to the hosts' module search path.
 build() {   # build <source .ae> <binary>
     stale "$2" || return 0
-    (cd "$ROOT" && ae build "$1" --lib "$LANG_NAME/containment${LANG_LIB:+:$LANG_LIB}" -o "$2") > "$TMP/build.log" 2>&1 ||
+    (cd "$ROOT" && ae build "$1" --lib "$LANG_NAME/containment:tests/lib${LANG_LIB:+:$LANG_LIB}" -o "$2") > "$TMP/build.log" 2>&1 ||
         die "$1 did not build" "$TMP/build.log"
 }
 HOST="$BUILD/$LANG_NAME-host"
