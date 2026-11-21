@@ -38,3 +38,5 @@ x:flood	for (var i = 0; i < 300; i++) export_fn("f" + i, (function (k) { return 
 x:malformed	export_fn("two words", function () { return 1; });
 x:txn	var pending = [txn_start("deposit"), txn_start("refund")];@NL@var seen = 0;@NL@export_fn("on_txn", function (id) {@NL@  var d = txn_details(id);@NL@  seen++;@NL@  return seen + " " + d.kind + " " + d.amount;@NL@});
 x:pick	export_fn("pick", function (a, b, c) { return b; });
+x:bench-g2h	var p = "x".repeat(@SIZE@);@NL@for (var i = 0; i < @N@; i++) echo(p);
+x:bench-pull	var ev = next_event();@NL@while (ev !== null) ev = next_event(ev);

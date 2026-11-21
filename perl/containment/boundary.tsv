@@ -36,3 +36,5 @@ x:flood	for my $i (0 .. 299) { export "f$i" => sub { $i } }
 x:malformed	export 'two words' => sub { 1 };
 x:txn	my @pending = (txn_start("deposit"), txn_start("refund"));@NL@my $seen = 0;@NL@sub on_txn {@NL@    my ($id) = @_;@NL@    my $d = txn_details($id);@NL@    $seen++;@NL@    return "$seen $d->{kind} $d->{amount}";@NL@}@NL@export 'on_txn';
 x:pick	sub pick { my ($a, $b, $c) = @_; return $b }@NL@export 'pick';
+x:bench-g2h	my $p = "x" x @SIZE@;@NL@echo($p) for 1 .. @N@;
+x:bench-pull	my $ev = next_event();@NL@$ev = next_event($ev) while defined $ev;

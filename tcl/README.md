@@ -301,6 +301,45 @@ The same cases (`tests/boundary.py run-inproc`) against this language's bridge i
 | a 100,000-byte answer (`big-down`) | crossed | | same | |
 <!-- boundary-inproc:end -->
 
+## Exporting functions to the host
+
+A script that exports functions ends with `READY` and serves its exports to the
+host (`guest.invoke`, then `guest.next` until `RETURN` or `RAISE`; `guest.end`
+when the host is done), with the script's state as the script left it. The host
+can reach into a guest three ways, as equals; pick by what the application needs:
+
+- **A direct call with arguments.** The invocation carries its input: any JSON
+  value the language can read, up to the frame limit (the grid below says what
+  crosses).
+- **Notify, then fetch.** A small notification, an id only, and the export phones
+  home through a mounted host function for the details: the smallest message
+  that says "something is ready for you", a practice message buses settled on.
+- **Pull, with no verb.** The script loops on a mounted `next_event()` and
+  dispatches itself; it needs nothing of the verb and works with any worker.
+
+In Tcl: `export procname ?procname ...?`: Tcl names commands, and a proc is defined before it is exported, as `namespace export` names commands. The command runs at global level (`uplevel #0`). `export` is the worker's command, so a host cannot mount one called `export`. Everything is a string in Tcl: a result that reads as a number goes back as a JSON number, anything else as a string.
+
+```tcl
+proc total {items rate} {                 ;# a direct call: total {...} 0.2
+    set s 0
+    foreach i $items { set s [expr {$s + [dict get $i price]}] }
+    expr {$s * (1 + $rate)}
+}
+export total
+
+set seen 0                                ;# notify, then fetch: on_txn 123456
+proc on_txn {id} {
+    set d [txn_details $id]               ;# a mounted host command, mid-invocation
+    incr ::seen
+    return "$::seen [dict get $d kind] [dict get $d amount]"
+}
+export on_txn
+
+while {[set ev [next_event]] ne ""} { handle [dict get $ev name] [dict get $ev args] }   ;# pull
+```
+
+The names are fixed when the script ends; an exception in an export is `RAISE` with the language's own error text and the worker serves on; a `CANCEL` or deadline during an invocation ends the worker, as in a script. The grid below is generated from the tests.
+
 ## What crosses the boundary
 
 The top-level README's first table says it in a line; this is the detail, each

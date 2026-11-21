@@ -313,6 +313,41 @@ The same cases (`tests/boundary.py run-inproc`) against this language's bridge i
 | a 100,000-byte answer (`big-down`) | crossed | | same | |
 <!-- boundary-inproc:end -->
 
+## Exporting functions to the host
+
+A script that exports functions ends with `READY` and serves its exports to the
+host (`guest.invoke`, then `guest.next` until `RETURN` or `RAISE`; `guest.end`
+when the host is done), with the script's state as the script left it. The host
+can reach into a guest three ways, as equals; pick by what the application needs:
+
+- **A direct call with arguments.** The invocation carries its input: any JSON
+  value the language can read, up to the frame limit (the grid below says what
+  crosses).
+- **Notify, then fetch.** A small notification, an id only, and the export phones
+  home through a mounted host function for the details: the smallest message
+  that says "something is ready for you", a practice message buses settled on.
+- **Pull, with no verb.** The script loops on a mounted `next_event()` and
+  dispatches itself; it needs nothing of the verb and works with any worker.
+
+In Ruby: `export def name ... end` (`def` returns the method's name, as `private def` uses it), `export :name`, or `export(:name) { |...| ... }` for a block. `export` is the worker's method, so a host cannot mount one called `export`.
+
+```ruby
+export def total(items, rate)             # a direct call: total([...], 0.2)
+  items.sum { |i| i["price"] } * (1 + rate)
+end
+
+$seen = 0                                 # notify, then fetch: on_txn("123456")
+export def on_txn(id)
+  d = txn_details(id)                     # a mounted host function, mid-invocation
+  $seen += 1
+  "#{$seen} #{d["kind"]} #{d["amount"]}"
+end
+
+while (ev = next_event) do handle(ev["name"], ev["args"]) end   # pull
+```
+
+The names are fixed when the script ends; an exception in an export is `RAISE` with the language's own error text and the worker serves on; a `CANCEL` or deadline during an invocation ends the worker, as in a script. The grid below is generated from the tests.
+
 ## What crosses the boundary
 
 The top-level README's first table says it in a line; this is the detail, each

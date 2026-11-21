@@ -286,6 +286,47 @@ The same cases (`tests/boundary.py run-inproc`) against this language's bridge i
 | a 100,000-byte answer (`big-down`) | crossed | | same | |
 <!-- boundary-inproc:end -->
 
+## Exporting functions to the host
+
+A script that exports functions ends with `READY` and serves its exports to the
+host (`guest.invoke`, then `guest.next` until `RETURN` or `RAISE`; `guest.end`
+when the host is done), with the script's state as the script left it. The host
+can reach into a guest three ways, as equals; pick by what the application needs:
+
+- **A direct call with arguments.** The invocation carries its input: any JSON
+  value the language can read, up to the frame limit (the grid below says what
+  crosses).
+- **Notify, then fetch.** A small notification, an id only, and the export phones
+  home through a mounted host function for the details: the smallest message
+  that says "something is ready for you", a practice message buses settled on.
+- **Pull, with no verb.** The script loops on a mounted `next_event()` and
+  dispatches itself; it needs nothing of the verb and works with any worker.
+
+In Perl: `export 'name', ...;` for subs by name, or `export name => sub {...}` for code: Perl names subs by string, as `Exporter`'s `@EXPORT` does, and the sub is called in scalar context. `export` is the worker's sub, so a host cannot mount one called `export`.
+
+```perl
+sub total {                               # a direct call: total([...], 0.2)
+    my ($items, $rate) = @_;
+    my $s = 0;
+    $s += $_->{price} for @$items;
+    return $s * (1 + $rate);
+}
+export 'total';
+
+my $seen = 0;                             # notify, then fetch: on_txn("123456")
+sub on_txn {
+    my ($id) = @_;
+    my $d = txn_details($id);             # a mounted host function, mid-invocation
+    $seen++;
+    return "$seen $d->{kind} $d->{amount}";
+}
+export 'on_txn';
+
+while (defined(my $ev = next_event())) { handle($ev->{name}, $ev->{args}) }   # pull
+```
+
+The names are fixed when the script ends; an exception in an export is `RAISE` with the language's own error text and the worker serves on; a `CANCEL` or deadline during an invocation ends the worker, as in a script. The grid below is generated from the tests.
+
 ## What crosses the boundary
 
 The top-level README's first table says it in a line; this is the detail, each

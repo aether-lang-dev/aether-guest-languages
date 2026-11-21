@@ -38,3 +38,5 @@ x:flood	for (let i = 0; i < 300; i++) export_fn("f" + i, () => i);
 x:malformed	export_fn("two words", () => 1);
 x:txn	const pending = [txn_start("deposit"), txn_start("refund")];@NL@let seen = 0;@NL@export_fn("on_txn", (id) => {@NL@  const d = txn_details(id);@NL@  seen++;@NL@  return `${seen} ${d.kind} ${d.amount}`;@NL@});
 x:pick	export_fn("pick", (a, b, c) => b);
+x:bench-g2h	const p = "x".repeat(@SIZE@);@NL@for (let i = 0; i < @N@; i++) echo(p);
+x:bench-pull	let ev = next_event();@NL@while (ev !== null) ev = next_event(ev);

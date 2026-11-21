@@ -228,6 +228,44 @@ The same cases (`tests/boundary.py run-inproc`) against this language's bridge i
 | a 100,000-byte answer (`big-down`) | crossed | | same | |
 <!-- boundary-inproc:end -->
 
+## Exporting functions to the host
+
+A script that exports functions ends with `READY` and serves its exports to the
+host (`guest.invoke`, then `guest.next` until `RETURN` or `RAISE`; `guest.end`
+when the host is done), with the script's state as the script left it. The host
+can reach into a guest three ways, as equals; pick by what the application needs:
+
+- **A direct call with arguments.** The invocation carries its input: any JSON
+  value the language can read, up to the frame limit (the grid below says what
+  crosses).
+- **Notify, then fetch.** A small notification, an id only, and the export phones
+  home through a mounted host function for the details: the smallest message
+  that says "something is ready for you", a practice message buses settled on.
+- **Pull, with no verb.** The script loops on a mounted `next_event()` and
+  dispatches itself; it needs nothing of the verb and works with any worker.
+
+In Lua: `export("name", fn)` (or `export("name")` for the global function of that name): Lua has no decorators, and a function is a value, so naming it at the call is the natural spelling. `export` is the worker's name, so a host cannot mount a function called `export`. A mounted function answers `nil, message` on a `FAIL`, so an export that wants the failure to be the host's `RAISE` says `error(err, 0)`.
+
+```lua
+export("total", function(items, rate)   -- a direct call: total({...}, 0.2)
+  local sum = 0
+  for _, i in ipairs(items) do sum = sum + i.price end
+  return sum * (1 + rate)
+end)
+
+local seen = 0                           -- notify, then fetch: on_txn("123456")
+export("on_txn", function(id)
+  local d, err = txn_details(id)         -- a mounted host function, mid-invocation
+  if not d then error(err, 0) end
+  seen = seen + 1
+  return string.format("%d %s %d", seen, d.kind, d.amount)
+end)
+
+for ev in next_event do handle(ev.name, ev.args) end   -- pull: no export at all
+```
+
+The names are fixed when the script ends; an exception in an export is `RAISE` with the language's own error text and the worker serves on; a `CANCEL` or deadline during an invocation ends the worker, as in a script. The grid below is generated from the tests.
+
 ## What crosses the boundary
 
 The top-level README's first table says it in a line; this is the detail, each

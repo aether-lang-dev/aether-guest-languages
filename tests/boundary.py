@@ -259,6 +259,10 @@ def run_plan(host, work, script, plan, give="null", upper=False, timeout=60):
             continue
         ev.append((tag, data[sp2 + 1:sp2 + 1 + n].decode("utf-8", "replace")))
         i = sp2 + 1 + n + 1
+    if b"Sanitizer" in p.stderr:
+        # quickjs/sanitize.sh: a report from the worker (uncontained) or the host fails the case and is shown.
+        sys.stdout.write(p.stderr.decode("utf-8", "replace")[-3000:])
+        ev.append(("END", "SANITIZER report on stderr"))
     if not any(t == "END" for t, _ in ev):
         why = "signal %d" % -p.returncode if p.returncode < 0 else "no END"
         ev.append(("END", "CRASHED %s: %s" % (why, (data + p.stderr)[-150:].decode("utf-8", "replace").strip())))
@@ -454,8 +458,28 @@ def main_invoke(lang, host, work, out):
     special("guest-after-end", "x:back", [I("back", "[1]"), "E", "A\tback\t[1]"], r_after)
     open(out, "w", encoding="utf-8").write("\n".join(res) + "\n")
 
+def main_bench(lang, host, work, n="10000"):
+    """One line per mode and size: microseconds per call, contained."""
+    sn = snippets(lang)
+    up = sn.get("names") == "upper"
+    for size in (16, 60000):
+        row = []
+        for mode, key in (("g2h", "x:bench-g2h"), ("h2g", "x:back"), ("pull", "x:bench-pull")):
+            if key not in sn:
+                row.append("n/a"); continue
+            script = expand(sn[key].replace("@N@", n).replace("@SIZE@", str(size)))
+            env = dict(os.environ, GHL_BOUNDARY_SCRIPT=script, GHL_BOUNDARY_UPPER="1" if up else "0",
+                       GHL_INVOKE_BENCH="%s %s %d" % (mode, n, size), GHL_INVOKE_PLAN="")
+            p = subprocess.run([host, "-", "invoke", "x"], cwd=work, env=env, capture_output=True, timeout=900)
+            out = p.stdout.decode("utf-8", "replace")
+            m = re.search(r"^BENCH \d+ \S+ \d+ \d+ (\d+)$", out, re.M)
+            row.append(m.group(1) if m else "failed: " + short(out.strip() + p.stderr.decode("utf-8", "replace")[-200:], 120))
+        print("%s\t%d\t%s" % (lang, size, "\t".join(row)))
+
 if __name__ == "__main__":
-    if len(sys.argv) == 6 and sys.argv[1] == "run-invoke":
+    if len(sys.argv) in (5, 6) and sys.argv[1] == "bench":
+        main_bench(*sys.argv[2:])
+    elif len(sys.argv) == 6 and sys.argv[1] == "run-invoke":
         main_invoke(*sys.argv[2:])
     elif len(sys.argv) == 6 and sys.argv[1] == "run":
         main_run(*sys.argv[2:])

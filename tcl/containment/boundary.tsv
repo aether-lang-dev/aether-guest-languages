@@ -34,3 +34,5 @@ x:flood	for {set i 0} {$i < 300} {incr i} { proc f$i {} [list return $i]; export
 x:malformed	proc {two words} {} { return 1 }@NL@export {two words}
 x:txn	set pending [list [txn_start deposit] [txn_start refund]]@NL@set seen 0@NL@proc on_txn {id} {@NL@    set d [txn_details $id]@NL@    incr ::seen@NL@    return "$::seen [dict get $d kind] [dict get $d amount]"@NL@}@NL@export on_txn
 x:pick	proc pick {a b c} { return $b }@NL@export pick
+x:bench-g2h	set p [string repeat x @SIZE@]@NL@for {set i 0} {$i < @N@} {incr i} { echo $p }
+x:bench-pull	set ev [next_event]@NL@while {$ev ne ""} { set ev [next_event $ev] }

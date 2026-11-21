@@ -38,3 +38,5 @@ x:flood	300.times { |i| export("f#{i}") { i } }
 x:malformed	export("two words") { 1 }
 x:txn	$pending = [txn_start("deposit"), txn_start("refund")]@NL@$seen = 0@NL@export def on_txn(id)@NL@  d = txn_details(id)@NL@  $seen += 1@NL@  "#{$seen} #{d["kind"]} #{d["amount"]}"@NL@end
 x:pick	export def pick(a, b, c) = b
+x:bench-g2h	pay = "x" * @SIZE@@NL@@N@.times { echo(pay) }
+x:bench-pull	ev = next_event@NL@ev = next_event(ev) until ev.nil?

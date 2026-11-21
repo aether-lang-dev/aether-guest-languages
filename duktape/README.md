@@ -288,6 +288,43 @@ The same cases (`tests/boundary.py run-inproc`) against this language's bridge i
 | a 100,000-byte answer (`big-down`) | crossed | | same | |
 <!-- boundary-inproc:end -->
 
+## Exporting functions to the host
+
+A script that exports functions ends with `READY` and serves its exports to the
+host (`guest.invoke`, then `guest.next` until `RETURN` or `RAISE`; `guest.end`
+when the host is done), with the script's state as the script left it. The host
+can reach into a guest three ways, as equals; pick by what the application needs:
+
+- **A direct call with arguments.** The invocation carries its input: any JSON
+  value the language can read, up to the frame limit (the grid below says what
+  crosses).
+- **Notify, then fetch.** A small notification, an id only, and the export phones
+  home through a mounted host function for the details: the smallest message
+  that says "something is ready for you", a practice message buses settled on.
+- **Pull, with no verb.** The script loops on a mounted `next_event()` and
+  dispatches itself; it needs nothing of the verb and works with any worker.
+
+In JavaScript (Duktape): `export_fn("name", fn)` (or `export_fn(fn)` for a named function): `export` is a reserved word in JavaScript. `export_fn` is the worker's name, so a host cannot mount a function called `export_fn`. Duktape hears a cancel only at a host call, in an export as in a script: an export that loops without calling the host is killed after the grace period.
+
+```javascript
+export_fn("total", function (items, rate) {   // a direct call: total([...], 0.2)
+  var s = 0;
+  for (var i = 0; i < items.length; i++) s += items[i].price;
+  return s * (1 + rate);
+});
+
+var seen = 0;                             // notify, then fetch: on_txn("123456")
+export_fn("on_txn", function (id) {
+  var d = txn_details(id);                // a mounted host function, mid-invocation
+  seen++;
+  return seen + " " + d.kind + " " + d.amount;
+});
+
+for (var ev; (ev = next_event()) !== null; ) handle(ev.name, ev.args);   // pull
+```
+
+The names are fixed when the script ends; an exception in an export is `RAISE` with the language's own error text and the worker serves on; a `CANCEL` or deadline during an invocation ends the worker, as in a script. The grid below is generated from the tests.
+
 ## What crosses the boundary
 
 The top-level README's first table says it in a line; this is the detail, each
