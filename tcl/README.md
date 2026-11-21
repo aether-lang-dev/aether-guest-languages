@@ -4,8 +4,8 @@
 aether's `contrib.host.tcl`, moved here ([PROVENANCE.md](PROVENANCE.md)): the
 same functions under the same names, `tcl.run`, `tcl.run_sandboxed`,
 `tcl.vm_new` and the rest. It loads the machine's libtcl at run time and
-needs no Tcl dev package (no `tcl.h`) to build. Tcl 8.5 and 8.6, and 9.0 in
-principle ([Loading libtcl](#loading-libtcl) says what was run).
+needs no Tcl dev package (no `tcl.h`) to build. Tcl 8.5, 8.6, 9.0 and 9.1
+([Loading libtcl](#loading-libtcl) says what was run).
 
 **Tcl 9.0 (checked 2026-11-21, on cachyos).** A default Tcl 9.0 keeps its script
 library in a zip archive attached to `libtcl9.0.so` (zipfs), and a Tcl 9 a
@@ -19,7 +19,10 @@ parity check and the contained child) passes against three Tcls on cachyos
 (ae 0.934.0, Landlock): the system's 8.6.16, a Tcl 9.0.4 built by hand with
 zipfs (the default) and one built with `--disable-zipfs`; the system's 8.6.12 on
 ae-x64 and the system's 8.5.9 on macOS pass the same set (the child is skipped
-on macOS). What a contained Tcl 9 needs that 8.6 does not is one read grant, on
+on macOS). CI runs Homebrew's Tcl 9.1.0 on macOS too, which is not a zipfs
+build, and the runner's Tcl 8.6.18; the `macos-tcl` job ran that
+8.6 in the run whose log was read (2026-11-21), not Homebrew's Tcl 9 that it
+installs. What a contained Tcl 9 needs that 8.6 does not is one read grant, on
 libtcl itself, under "Tcl 9 and its zipfs".
 
 ## Four ways to run Tcl from Aether
@@ -391,16 +394,17 @@ Where the bridge looks for libtcl, in order:
    `/opt/homebrew/opt/tcl-tk/lib/libtcl9.0.dylib` with Homebrew on macOS).
    When it is set, nothing else is tried.
 2. Otherwise these, the first that loads: `libtcl8.6.so.0`, `libtcl8.6.so`,
-   `libtcl9.0.so.0`, `libtcl9.0.so`, `libtcl.so`, Homebrew's tcl-tk
+   `libtcl9.0.so.0`, `libtcl9.0.so`, `libtcl9.1.so.0`, `libtcl9.1.so`,
+   `libtcl.so`, Homebrew's tcl-tk
    (`/opt/homebrew/opt/tcl-tk/lib/libtcl8.6.dylib`, then `libtcl9.0.dylib`,
-   and the same under `/usr/local/opt`), and `/usr/lib/libtcl.dylib`, which
+   then `libtcl9.1.dylib`, and the same under `/usr/local/opt`), and `/usr/lib/libtcl.dylib`, which
    is macOS's own Tcl 8.5 (in the dyld cache, with no file on disk). Debian
    and Ubuntu ship `libtcl8.6.so.0` in the runtime package (`tcl8.6`) and the
    unversioned `libtcl.so` only in the dev package, which is not needed.
 
 `../tests/tcl_env.sh` is one way to choose among several, for the tests:
-`TCL_VERSION=8.6` (or `9.0`, `8.5`) asks for that one, else 8.6 then 9.0
-then 8.5. A machine with its own layout:
+`TCL_VERSION=8.6` (or `9.0`, `9.1`, `8.5`) asks for that one, else 8.6, 9.0,
+9.1, then 8.5. A machine with its own layout:
 
 ```sh
 AETHER_TCL_SONAME=$(echo 'puts libtcl$tcl_version.so' | tclsh)
@@ -429,6 +433,7 @@ What has run, all with the specs, every containment row, the parity check and
 | 8.5.9, the system's | macOS arm64 | 2026-11-21 | `GUEST_LANG=tcl sh tests/run.sh` (no child on macOS) |
 | 9.0.4, a default build with zipfs, private prefix | cachyos | 2026-11-21 | the same as the first, with `AETHER_TCL_SONAME` set to its `libtcl9.0.so` |
 | 9.0.4, `--disable-zipfs`, private prefix | cachyos | 2026-11-21 | the same, and `GHL_TCL_EXTRA_READ` set to its `lib` directory |
+| 9.1.0, Homebrew's tcl-tk (library in files, not zipfs), in-process only | macOS 15 arm64, GitHub Actions | 2026-11-21 | the `macos-tcl9` job, `TCL_VERSION=9.1 GUEST_LANG=tcl sh tests/run.sh` (run 44946377149) |
 
 The two Tcl 9.0.4 builds are from the 9.0.4 source tarball, `./configure
 --prefix=<dir> --enable-shared` (and `--disable-zipfs`), `make`, `make

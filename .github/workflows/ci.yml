@@ -420,11 +420,12 @@ jobs:
   # runner, 2026-11-21) but does not test it: the runner has tcl-tk@8 (8.6)
   # installed already, and tests/tcl_env.sh looks for 8.6 first, so in the run
   # of 2026-11-21 (the job's log says "Tcl runtime: /opt/homebrew/opt/tcl-tk@8/lib/
-  # libtcl8.6.dylib 8.6.18") it ran Tcl 8.6. This one asks for 9.1, a default build with its script
-  # library in a zip attached to libtcl (zipfs), which is what a packaged Tcl 9
-  # is: the case the bridge's TclZipfs_AppHook call is for (tcl/README.md, "Tcl 9
-  # and its zipfs"). No Linux runner image has a Tcl 9 package (Ubuntu 24.04
-  # ships 8.6), so the Linux side of Tcl 9 is the lab run the README says.
+  # libtcl8.6.dylib 8.6.18") it ran Tcl 8.6. This one asks for 9.1, so Tcl 9's
+  # C interface is run in CI. It is not a zipfs build: Homebrew's Tcl 9.1 has its
+  # script library in files (/opt/homebrew/Cellar/tcl-tk/9.1.0/lib/tcl9.1), so
+  # the bridge's TclZipfs_AppHook call is run here against a Tcl without zipfs
+  # only. No Linux runner image has a Tcl 9 package (Ubuntu 24.04 ships 8.6), so
+  # a default zipfs Tcl 9 is the lab run tcl/README.md says ("Tcl 9 and its zipfs").
   macos-tcl9:
     name: macOS (in-process, Homebrew's tcl-tk 9)
     runs-on: macos-15

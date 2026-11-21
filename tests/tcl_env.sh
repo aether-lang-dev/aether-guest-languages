@@ -5,13 +5,13 @@
 # is somewhere else, or where there are several Tcls and a test run should
 # pick one.
 #
-# TCL_VERSION=8.6 (or 9.0, 8.5) asks for that one; the default order is 8.6,
-# 9.0, 8.5. On macOS Homebrew's tcl-tk comes before the system's Tcl 8.5,
+# TCL_VERSION=8.6 (or 9.0, 9.1, 8.5) asks for that one; the default order is 8.6,
+# 9.0, 9.1, 8.5. On macOS Homebrew's tcl-tk comes before the system's Tcl 8.5,
 # which is in the dyld cache (/usr/lib/libtcl.dylib has no file on disk, but
 # dlopen finds it).
 tcl_soname() {
     [ -n "${AETHER_TCL_SONAME:-}" ] && return 0
-    versions="${TCL_VERSION:-8.6 9.0 8.5}"
+    versions="${TCL_VERSION:-8.6 9.0 9.1 8.5}"
     case "$(uname -s 2>/dev/null)" in
         Darwin)
             for v in $versions; do

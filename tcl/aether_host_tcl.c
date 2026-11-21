@@ -9,7 +9,7 @@
 // perl, js — every Tcl C-API symbol resolved via dlsym
 // at first call. The bridge .a has NO unresolved Tcl_* symbols at
 // link time, so end-user binaries have no DT_NEEDED libtcl and are
-// ABI-portable across deploy-host Tcl minor versions (8.5 / 8.6 / 9.0).
+// ABI-portable across deploy-host Tcl minor versions (8.5 / 8.6 / 9.0 / 9.1).
 //
 // Tcl's C API is MOSTLY non-macro — most `Tcl_*` symbols are real
 // exported functions, so the bridge is largely a plain dlsym table.
@@ -212,16 +212,18 @@ static int load_libtcl(void) {
     } else {
         static const char* const candidates[] = {
             "libtcl8.6.so.0", "libtcl8.6.so", "libtcl9.0.so.0", "libtcl9.0.so",
-            "libtcl.so",
+            "libtcl9.1.so.0", "libtcl9.1.so", "libtcl.so",
             "/opt/homebrew/opt/tcl-tk/lib/libtcl8.6.dylib",
             "/opt/homebrew/opt/tcl-tk/lib/libtcl9.0.dylib",
+            "/opt/homebrew/opt/tcl-tk/lib/libtcl9.1.dylib",
             "/usr/local/opt/tcl-tk/lib/libtcl8.6.dylib",
             "/usr/local/opt/tcl-tk/lib/libtcl9.0.dylib",
+            "/usr/local/opt/tcl-tk/lib/libtcl9.1.dylib",
             "/usr/lib/libtcl.dylib",
             NULL,
         };
         for (int i = 0; candidates[i] && !h; i++) h = try_dlopen(candidates[i]);
-        tried = "libtcl8.6.so.0, libtcl9.0.so.0, libtcl.so, Homebrew's tcl-tk, /usr/lib/libtcl.dylib";
+        tried = "libtcl8.6.so.0, libtcl9.0.so.0, libtcl9.1.so.0, libtcl.so, Homebrew's tcl-tk, /usr/lib/libtcl.dylib";
     }
     if (!h) {
         // dlerror() clears the error it reports: read it once.
@@ -243,11 +245,11 @@ static int load_libtcl(void) {
     }
     int major = 0, minor = 0, patch = 0, type = 0;
     g_tcl.Tcl_GetVersion(&major, &minor, &patch, &type);
-    // 8.5, 8.6 and 9.0 are what tcl_abi.h is written for. An 8.4 lacks the
+    // 8.5, 8.6, 9.0 and 9.1 (the last seen on macOS in CI only) are what tcl_abi.h is written for. An 8.4 lacks the
     // limit functions (resolved above), and the layout argument was not made
     // for a Tcl past 9.
     if (major < 8 || major > 9 || (major == 8 && minor < 5)) {
-        fprintf(stderr, "aether host_tcl: Tcl %d.%d is not supported (8.5, 8.6 and 9.0 are)\n", major, minor);
+        fprintf(stderr, "aether host_tcl: Tcl %d.%d is not supported (8.5, 8.6, 9.0 and 9.1 are)\n", major, minor);
         dlclose(h);
         return -1;
     }
