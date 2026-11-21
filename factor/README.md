@@ -38,7 +38,7 @@ It reuses Factor's own `OBJ_EVAL_CALLBACK` / `eval>string` machinery and a
 **stock `factor.image`** baked by the normal bootstrap (no custom
 `save-image`). The map interop is layered in the bridge on top of the
 generic eval, so the fork's API stays Aether-free and upstream-proposable.
-The tests were run against the fork at `c467127bc2` (`FACTOR_FORK_REF` in
+The tests were run against the fork at `6b88e3b758` (`FACTOR_FORK_REF` in
 `../ci/versions.env`), built on CachyOS x86_64.
 
 ## Caveat 2: what contains Factor, and what does not
@@ -211,9 +211,9 @@ start with the shipped preload.
 | `test_stunt_no_grants` | `-` | not run: no Factor on macOS | from ae 0.884.0: differs: env-cached escapes; before: differs: env-cached escapes, exec-bin-sh escapes | differs: (the runtime does not start) blocked |
 | `test_stunt_write_granted` | `fs_write=$WORK/*` | not run: no Factor on macOS | matches | differs: (the runtime does not start) blocked |
 
-- Column 3, ae from 0.884.0: CachyOS, kernel 7.3.1 x86_64, ae 0.889.0, Factor the embed-api fork at c467127bc2
-- Column 3, ae before 0.884.0: CachyOS, kernel 7.3.1 x86_64, ae 0.878.0, Factor the embed-api fork at c467127bc2
-- Column 4, ae from 0.884.0: CachyOS, kernel 7.3.1 x86_64, ae 0.889.0, Factor the embed-api fork at c467127bc2
+- Column 3, ae from 0.884.0: CachyOS, kernel 7.3.5 x86_64, ae 0.934.0, Factor the embed-api fork at 6b88e3b758
+- Column 3, ae before 0.884.0: CachyOS, kernel 7.3.1 x86_64, ae 0.878.0, Factor the embed-api fork at c467127bc2 (before the -no-monitors commit)
+- Column 4, ae from 0.884.0: CachyOS, kernel 7.3.5 x86_64, ae 0.934.0, Factor the embed-api fork at 6b88e3b758
 <!-- stunt-parity:end -->
 
 The test names are stunt's, aether's `tests/integration/contrib_host_stunt`
@@ -329,20 +329,21 @@ as its third argument. Once parsed, a vocabulary reads nothing.
 `run_sandboxed` and `run_sandboxed_with_map` start the VM first for the same
 reason (it reads the image).
 
-**One read is still needed in-process, from ae 0.927.0.** While it evaluates a
-script, Factor lists its four vocabulary roots (`core`, `basis`, `extra`,
-`work` of its tree). Aether's preload has checked a directory listing since
-0.927.0 (aether #3751: `opendir` needs `fs_read` on the directory itself), and a
-refused listing does not come back to the script as a Factor error: Factor
-dies in a loop in its SIGSEGV handler (the first bad release is 0.927.0, the
-last good 0.926.0; plain Factor handles an `EACCES` from `opendir` as an
-error, so it is the refusal under the preload that does it), and the row hangs.
-So the in-process host (`containment/host.ae`) adds `fs_read` on
-`$FACTOR_HOME/*` to each row's grants, and nothing else: the stunt policy of
-the row is otherwise as stunt has it, and rows that ask whether Factor can read
-`/etc/passwd` or the fixture are unaffected. Under no read of its tree a host
-should not run Factor in a level at all. The tests end a hung row after
-`GHL_ROW_TIMEOUT` seconds (300) so that this shows as a failure, not a wait.
+**No read of Factor's tree is needed in-process any more (the fork's
+`-no-monitors`).** From ae 0.927.0 (aether #3751) a directory listing needs
+`fs_read` on the directory itself, and the VM's startup hook started a
+vocabulary monitor that opened inotify watches on the four vocabulary roots
+(`core`, `basis`, `extra`, `work`). A refused open did not come back as an
+error: the monitor's error path wrote through an invalid buffer and Factor died
+in a loop in its SIGSEGV handler, so every in-process row hung (it reproduces
+with `chmod 000` and no sandbox). The fork now starts the VM with
+`-no-monitors` (`vm/embed_api.cpp`, `embed_vm_init`; the fork's branch
+`embed-no-monitors`, commit 6b88e3b758, which `FACTOR_FORK_REF` names), so
+nothing lists those directories, and the stunt policy of a row is the stunt
+test's with no grant added. Until then the in-process host granted
+`fs_read` on `$FACTOR_HOME/*`; that grant is removed. The tests still end a
+hung row after `GHL_ROW_TIMEOUT` seconds (300), so a regression shows as a
+failure, not a wait.
 
 ## Loading libfactor and the image
 

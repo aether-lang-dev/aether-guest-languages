@@ -84,19 +84,6 @@ fn run_row(g: sandbox.Grants, check: string, expect: string, source: string) -> 
     return line
 }
 
-// The grants of a row plus the one thing Factor needs to run at all inside a
-// level: a read of its own tree ($FACTOR_HOME, which tests/factor_env.sh sets).
-// While it evaluates a script Factor lists its vocabulary roots (core, basis,
-// extra and work), and from ae 0.927.0 the preload wants fs_read on a
-// directory it lists (aether #3751); refused, Factor does not raise an error
-// but dies, looping in its SIGSEGV handler, so the row hangs. Nothing else is
-// added: a row's own file (/etc/passwd, the fixture) is still the policy's.
-fn with_tree(g: sandbox.Grants) -> sandbox.Grants {
-    home = os.getenv("FACTOR_HOME")
-    if home != "" { sandbox.grant_fs_read(g, "${home}/*") }
-    return g
-}
-
 fn finish(line: string, before: int, check: string) {
     after = aether_sandbox_depth()
     if after != before {
@@ -121,11 +108,11 @@ fn run_inproc(spec: string, check: string, expect: string) {
     bar = string.index_of(spec, "|")
     if bar < 0 {
         before = aether_sandbox_depth()
-        finish(run_row(with_tree(policy.grants(spec)), check, expect, source), before, check)
+        finish(run_row(policy.grants(spec), check, expect, source), before, check)
         return
     }
-    outer = with_tree(policy.grants(string.substring(spec, 0, bar)))
-    inner = with_tree(policy.grants(string.substring(spec, bar + 1, string.length(spec))))
+    outer = policy.grants(string.substring(spec, 0, bar))
+    inner = policy.grants(string.substring(spec, bar + 1, string.length(spec)))
     sandbox.enforce(outer) callback {
         if aether_sandbox_depth() != 1 {
             println("host: the enforce block is not one level deep")
