@@ -7,6 +7,17 @@ same functions under the same names, `tcl.run`, `tcl.run_sandboxed`,
 needs no Tcl dev package (no `tcl.h`) to build. Tcl 8.5 and 8.6, and 9.0 in
 principle ([Loading libtcl](#loading-libtcl) says what was run).
 
+**Tcl 9.0 (checked 2026-11-21, in-process).** A Tcl 9.0.4 built by hand on
+cachyos with `--enable-shared --disable-zipfs` passes all 11 in-process specs,
+and the in-process containment rows agree with the table's preload column. The
+contained child was not run against it (a library in a private prefix is outside
+what `spawn_socket`'s Landlock floor lets the worker read, and only Ruby's test
+host has a way to grant it). A default Tcl 9.0 build keeps its script library in
+a zip attached to `libtcl9.0.so` (zipfs), and the bridge does not mount it:
+`Tcl_Init` then fails with "Cannot find a usable init.tcl" and `tcl.init()` returns
+-1, so such a build needs `TCL_LIBRARY` pointing at an unpacked library, or a
+bridge that calls Tcl's zipfs hook; not done here.
+
 ## Four ways to run Tcl from Aether
 
 From least to most contained. The first three run Tcl inside your program,
