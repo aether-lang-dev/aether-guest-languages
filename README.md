@@ -62,7 +62,7 @@ the tests.
 |---|---|---|---|
 | Lua 5.3, 5.4, 5.5 | `import lua` | `lua/worker` (std.guest) | [lua/README.md](lua/README.md#containment-table) |
 | CPython 3.10 to 3.14 | `import python` | `python/worker` (std.guest) | [python/README.md](python/README.md#containment-table) |
-| JavaScript, Duktape 2.x (ES5.1) | `import duktape` (`import js`, the alias) | `duktape/worker` (std.guest) | [duktape/README.md](duktape/README.md#containment-table) |
+| JavaScript, Duktape 2.x (ES5.1) | `import duktape` | `duktape/worker` (std.guest) | [duktape/README.md](duktape/README.md#containment-table) |
 | JavaScript, QuickJS (quickjs-ng 0.18, ES2023) | `import quickjs` | `quickjs/worker` (std.guest) | [quickjs/README.md](quickjs/README.md#containment-table) |
 | Tcl 8.5, 8.6 (9.0 in principle) | `import tcl` | `tcl/worker` (std.guest) | [tcl/README.md](tcl/README.md#containment-table) |
 | Perl 5 (threaded), 5.34 to 5.44 tested | `import perl` | `perl/worker` (std.guest) | [perl/README.md](perl/README.md#containment-table) |
@@ -76,7 +76,7 @@ the tests.
 ## Layout
 
 ```
-aether.toml            the package: exports every language directory (modules = "lua, python, duktape, js, tcl, perl, ruby, quickjs, tinygo, go, java, factor, racket, rhombus")
+aether.toml            the package: exports every language directory (modules = "lua, python, duktape, tcl, perl, ruby, quickjs, tinygo, go, java, factor, racket, rhombus")
 ci/versions.env        toolchain pins (AE_PIN, AE_CHILD_PIN, AE_SPAWN_PIN, AEB_REF, AETHER_STUNT_REF)
 lua/
   module.ae            import lua: the bridge's API
@@ -116,9 +116,6 @@ quickjs/
   containment/         the containment hosts and checks.js, stunt's rows in JavaScript;
                        lang.sh; most rows are left out, with why: no I/O of its own
   PROVENANCE.md        where the bridge came from, and what the move changed
-js/
-  module.ae            import js: the back-compat alias of duktape
-  test_js_alias.ae     the alias reaches the bridge
 tcl/
   module.ae            import tcl: the bridge's API
   aether_host_tcl.c    the bridge, compiled into the importing program (@source)
@@ -237,11 +234,11 @@ the tree it installed (there are no tagged releases yet):
 ```
 
 Then `import lua` resolves to `lua/module.ae`, and likewise `import python`,
-`import duktape` (`import js`, its alias), `import quickjs`, `import tcl`, `import perl` and
+`import duktape`, `import quickjs`, `import tcl`, `import perl` and
 `import ruby` to their directories' `module.ae`:
-`import duktape` (`import js`, its alias), `import tcl`, `import perl`,
+`import duktape`, `import tcl`, `import perl`,
 `import ruby` and `import tinygo` to their directories' `module.ae`:
-`import duktape` (`import js`, its alias), `import tcl`, `import perl` and
+`import duktape`, `import tcl`, `import perl` and
 `import ruby` and `import go` to their directories' `module.ae` (and `import java`):
 `ae build`, `ae run` and `ae lib-path` put the package on the module search
 path, and the bridge's C is compiled into your program from the `@source`
@@ -410,7 +407,7 @@ Python.h; a free-threaded CPython is refused with a message rather than
 loaded.
 
 The Duktape bridge was copied from aether at `2609ec841`
-(duktape/PROVENANCE.md), together with its `contrib.host.js` alias, and moves
+(duktape/PROVENANCE.md), and moves
 the same way:
 
 ```diff
@@ -418,7 +415,7 @@ the same way:
 +import duktape
 ```
 
-(`import contrib.host.js` becomes `import js`.) What changes: no
+(aether's `contrib.host.js`, a thin alias of it, is not carried over: `import js` does not exist here.) What changes: no
 `make contrib MODULES=duktape` step and no libduktape-dev at build time, and
 libduktape is found under its usual names without `AETHER_DUKTAPE_SONAME`.
 Duktape has no I/O of its own, so what it can do in a sandbox is what the

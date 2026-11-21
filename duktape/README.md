@@ -4,8 +4,8 @@
 an embeddable ES5.1 engine. It is the bridge that was aether's
 `contrib.host.duktape`, moved here ([PROVENANCE.md](PROVENANCE.md)): the same
 functions under the same names, `duktape.run`, `duktape.run_sandboxed`,
-`duktape.vm_new` and the rest. `import js` is kept as an alias
-([../js/README.md](../js/README.md)).
+`duktape.vm_new` and the rest. There is no `import js`: aether's `contrib.host.js` alias was dropped in the move
+(PROVENANCE.md).
 
 The module is named for the engine, not the language, because "JS" is the one
 slot where several runtimes could serve it (Duktape, QuickJS, V8); another
@@ -456,7 +456,6 @@ Checks apply only inside a sandbox level (`run_sandboxed`, or the VM inside
 - [`test_host_duktape_vm.ae`](test_host_duktape_vm.ae): the callback-side
   readers and `push_double`, the execution-limit message, and the bindings
   `run_sandboxed` gives a script, each checked against the grants.
-- [`../js/test_js_alias.ae`](../js/test_js_alias.ae): the alias.
 - `../tests/test_stunt_*.sh` and `../tests/test_catalogue.sh`: the containment
   table above.
 

@@ -2,9 +2,9 @@
 # github.com/aether-lang-dev/aether-guest-languages` puts this repository's
 # root on the consumer's module search path, so `import lua` resolves to
 # lua/module.ae, `import python` to python/module.ae, `import duktape` to
-# duktape/module.ae (`import js` is its alias) and `import quickjs` to
+# duktape/module.ae and `import quickjs` to
 # quickjs/module.ae. See README.md,
 # "Using a language from this repository".
 [package]
 name = "aether-guest-languages"
-modules = "lua, python, duktape, js, tcl, perl, ruby, quickjs, tinygo, go, java, factor, racket, rhombus"
+modules = "lua, python, duktape, tcl, perl, ruby, quickjs, tinygo, go, java, factor, racket, rhombus"

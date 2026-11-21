@@ -2,8 +2,7 @@
 
 The Duktape bridge was copied from aether's `contrib/host/duktape/` at commit
 `2609ec841` (aether-lang-dev/aether, `main`, the v0.889.0 release merge,
-2026-11-05; the directory last changed at `3b8d8fb87`), with the `js` alias
-from `contrib/host/js/` and the parts of aether's tests that exercise the
+2026-11-05; the directory last changed at `3b8d8fb87`), and the parts of aether's tests that exercise the
 bridge. aether is MIT licensed, copyright "Aether Programming Language
 Contributors"; so is this repository (`../LICENSE`).
 
@@ -15,9 +14,6 @@ Contributors"; so is this repository (`../LICENSE`).
 | `test_host_duktape.ae` | `contrib/host/duktape/test_host_duktape.ae` | `import duktape` instead of `import contrib.host.duktape`; the `describe` name; the first comment lines |
 | `test_host_duktape_vm.ae` | `tests/integration/host_duktape_bidirectional/test_host_duktape_bidirectional.sh` | the C harness as an Aether spec, with `@c_callback` host functions: the same cases (dotted registration, persistent state, non-ASCII round trip, bool, nil, string list, caught and uncaught errors, the limit message) are in it and in `test_host_duktape.ae`, which already had them; this adds the callback-side readers, `push_double`, and the bindings `run_sandboxed` gives a script |
 | `duktape_abi.h` | (new) | the Duktape types and constants the bridge uses |
-| `../js/module.ae` | `contrib/host/js/module.ae` | wrappers over `import duktape` instead of `@extern("duktape_...")` bindings to the same C (see below) |
-| `../js/README.md` | `contrib/host/js/README.md` | rewritten for the alias here |
-| `../js/test_js_alias.ae` | (new) | the alias reaches the bridge |
 | `containment/`, `worker/` | (new) | modelled on `../lua/containment` and `../lua/worker` |
 | `examples/` | (new) | the programs in `README.md`'s four ways |
 
@@ -61,13 +57,14 @@ line. Here it is compiled into each program that imports it (`@source` in
 
 Nothing else in the file changed in the move.
 
-## The `js` alias
+## The `js` alias is gone
 
-aether's `contrib/host/js/module.ae` bound `js_*` names to the C symbols
-`duktape_*` with `@extern`, relying on `ae build`'s import-driven auto-link to
-find `libaether_host_duktape.a` for `js`. There is no archive here and no
-auto-link: `js/module.ae` imports `duktape` and each `js_*` function calls
-the `duktape_*` function of the same name. Both names are one bridge; use
-either, not a mix for the same VM's state.
+aether's `contrib/host/js/module.ae` was a second module, a thin alias of
+`contrib.host.duktape` (the module was `contrib.host.js` before it was renamed
+for its engine). It was not carried here, and `import js` does not exist in
+this package: the name `duktape` says which engine it is, and `quickjs` is the
+other JavaScript engine, so a bare `js` would not say which one it meant. Code
+that said `import js` says `import duktape` and calls `duktape.run` and the
+rest (the `js_*` names were the same functions under another prefix).
 
 aether keeps its copy for a transition period; see the top-level README.

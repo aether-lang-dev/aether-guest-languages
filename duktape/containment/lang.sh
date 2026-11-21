@@ -17,7 +17,7 @@
 
 LANG_TITLE=Duktape
 # The bridge's specs, from the repository root.
-LANG_SPECS="duktape/test_host_duktape.ae duktape/test_host_duktape_vm.ae js/test_js_alias.ae"
+LANG_SPECS="duktape/test_host_duktape.ae duktape/test_host_duktape_vm.ae"
 # lang_runtime finds the runtime library and exports it as LANG_RUNTIME_ENV.
 LANG_RUNTIME_ENV=AETHER_DUKTAPE_SONAME
 LANG_NO_RUNTIME="no Duktape runtime found (set AETHER_DUKTAPE_SONAME)"
