@@ -199,8 +199,24 @@ public final class Rows {
 
     // libc's fork through the Foreign Function API, the child exiting at once.
     // (A JVM does not fork: the child has this thread only. It calls _exit
-    // as its first act, and the parent gives it five seconds.)
+    // as its first act, and the parent gives it five seconds.) A child that
+    // does not exit is the JVM's own hazard, not the sandbox's: forked while
+    // another thread was at a safepoint or in the middle of a call, it can wait
+    // for a thread it does not have (seen on one run in six, on CachyOS and on a
+    // GitHub runner). It is killed and the fork tried again, up to five times;
+    // a refusal or an error is final the first time.
     private static Result forkOnce() {
+        Result r = null;
+        for (int attempt = 0; attempt < 5; attempt++) {
+            r = forkAttempt();
+            if (r == null) continue;
+            return r;
+        }
+        return failed("the forked child did not exit, five times");
+    }
+
+    // One fork; null when the child did not exit within the five seconds.
+    private static Result forkAttempt() {
         Native.prepare("_exit", "v", "i");
         Native.call("srandom", "v", "i", 0);   // runs a void(int) call once, so the child's call spins no new code
         Native.Result r = Native.call("fork", "i", "");
@@ -223,7 +239,8 @@ public final class Rows {
                 try { Thread.sleep(10); } catch (InterruptedException e) { break; }
             }
             Native.call("kill", "i", "ii", pid, 9);
-            return failed("the forked child did not exit");
+            Native.call("waitpid", "i", "ipi", pid, st, 0);
+            return null;
         }
     }
 
