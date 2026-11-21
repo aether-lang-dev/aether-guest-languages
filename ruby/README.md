@@ -15,9 +15,12 @@ build of Ruby 4.0.10 (`--enable-shared`) passed everything: the 20 in-process
 specs, every containment row, the parity table (identical to 3.4's) and the
 contained child with `GHL_REQUIRE_CHILD=1`. Two things were needed, neither a
 change in what the bridge does with Ruby: fiddle is a bundled gem from Ruby 3.5
-on, which `require` finds only with RubyGems loaded, so the worker now sets
-`AETHER_RUBY_GEMS=1` itself when asked to require fiddle (the bridge starts
-without RubyGems otherwise, and the worker has no environment); and a libruby in
+on, which `require` finds only with RubyGems loaded, so a host of the worker
+passes a third argument, `gems`, for such a Ruby and the worker sets
+`AETHER_RUBY_GEMS=1` itself (the bridge starts without RubyGems otherwise, and
+the worker has no environment; for older Rubies it must not, because with
+RubyGems loaded a require the lockdown refuses fails with a NameError, not a
+LoadError); and a libruby in
 a private prefix is outside what `spawn_socket`'s Landlock floor lets a worker
 read, so the test host takes `GHL_RUBY_EXTRA_READ` (the directories to grant) for
 a hand-built Ruby (a system Ruby needs nothing). The test host also grants each

@@ -179,6 +179,9 @@ fn run_child(spec: string, check: string, expect: string) {
     args = list.new()
     list.add(args, os.getenv("AETHER_RUBY_SONAME"))
     list.add(args, PREIMPORT)
+    // GHL_RUBY_NEEDS_GEMS=1 (tests/ruby_env.sh): a Ruby from 3.5, where fiddle
+    // is a bundled gem the worker finds only with RubyGems loaded.
+    if os.getenv("GHL_RUBY_NEEDS_GEMS") == "1" { list.add(args, "gems") }
     g, err = guest.launch(perms, worker, args, "ruby-worker", "")
     if err != "" {
         println("host: guest.launch: ${err}")

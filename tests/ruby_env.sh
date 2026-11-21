@@ -52,4 +52,12 @@ ruby_stdlib() {
     GHL_RUBY_STDLIB="$("$RUBY_FOR_TESTS" -rrbconfig -e 'c = RbConfig::CONFIG
 puts [c["rubylibdir"], c["rubyarchdir"], c["sitelibdir"], c["sitearchdir"], c["vendorlibdir"], c["vendorarchdir"]].compact.reject(&:empty?).uniq.sort.join(",")' 2>/dev/null)" || return 1
     export GHL_RUBY_STDLIB
+    # From Ruby 3.5 fiddle is a bundled gem: the worker needs RubyGems loaded
+    # to require it, which its host asks for (ruby/worker/worker.ae).
+    if "$RUBY_FOR_TESTS" -e 'exit(RUBY_VERSION.split(".").first(2).map(&:to_i).then { |a, b| a > 3 || (a == 3 && b >= 5) } ? 0 : 1)' 2>/dev/null; then
+        GHL_RUBY_NEEDS_GEMS=1
+    else
+        GHL_RUBY_NEEDS_GEMS=0
+    fi
+    export GHL_RUBY_NEEDS_GEMS
 }

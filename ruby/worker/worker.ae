@@ -16,7 +16,7 @@
 //                       RuntimeError("cancelled by host: ...")
 //   the end             DONE 0, or ERROR and "<ExceptionClass>: <message>"
 //
-// Usage (by a host): ruby-worker [<libruby soname or path> [<libraries>]]
+// Usage (by a host): ruby-worker [<libruby soname or path> [<libraries> [gems]]]
 //
 // <libraries> is a comma list of libraries to require before the lockdown.
 // Ruby reads a library from disk the first time it is required; once the
@@ -160,9 +160,11 @@ main() {
     // From Ruby 3.5 (4.0 among them) fiddle is a bundled gem, which `require`
     // finds only once RubyGems is loaded, and the bridge starts without it
     // unless AETHER_RUBY_GEMS is set (aether_host_ruby.c). The worker has no
-    // environment, so it sets it when it is asked to require fiddle: before
-    // the lockdown, while the gem directories can still be read.
-    if os.args_count() > 2 && string.contains(os.args_get(2), "fiddle") == 1 {
+    // environment, so the host says so in a third argument, "gems", before the
+    // lockdown (while the gem directories can be read). Not for every Ruby:
+    // with RubyGems loaded a require the lockdown refuses fails with a
+    // NameError instead of a LoadError.
+    if os.args_count() > 3 && os.args_get(3) == "gems" {
         setenv("AETHER_RUBY_GEMS", "1", 1)
     }
     if ruby.init_host() != 0 {
