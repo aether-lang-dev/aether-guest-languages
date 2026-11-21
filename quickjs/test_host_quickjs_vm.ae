@@ -629,10 +629,13 @@ main() {
         spec.it_when(have_qjs, "a heap cap: a script past it fails, and the VM runs on", reason) callback {
             vm5 = quickjs.vm_new_capped(4096)
             spec.assert_not_null(vm5, "a capped VM")
-            spec.assert_eq(quickjs.vm_eval(vm5, "var a = []; for (;;) a.push('x'.repeat(1000) + a.length)"), -1, "allocating past 4 MB fails")
+            // The array is the function's own, so nothing holds it once the
+            // eval has failed and the next allocation can collect it.
+            spec.assert_eq(quickjs.vm_eval(vm5, "(function () { var a = []; for (;;) a.push('x'.repeat(1000) + a.length) })()"), -1, "allocating past 4 MB fails")
             spec.assert_true(string.contains(quickjs.vm_result_str(vm5), "out of memory") == 1, "out of memory: ${quickjs.vm_result_str(vm5)}")
-            quickjs.vm_eval(vm5, "a = null; 1 + 1")
-            spec.assert_eq_long(quickjs.vm_result_int(vm5), 2, "and evaluates after")
+            rc5 = quickjs.vm_eval(vm5, "1 + 1")
+            spec.assert_eq(rc5, 0, "and evaluates after (${quickjs.vm_result_str(vm5)})")
+            spec.assert_eq_long(quickjs.vm_result_int(vm5), 2, "1 + 1")
             quickjs.vm_free(vm5)
         }
     }
