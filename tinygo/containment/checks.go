@@ -305,7 +305,7 @@ func dlopenRow(key string) func(facts) result {
 		if ok {
 			return succeeded("loaded %s", path)
 		}
-		if msg == "" || strings.Contains(msg, "Permission denied") || strings.Contains(msg, "Operation not permitted") {
+		if msg == "" || strings.Contains(msg, "Permission denied") || strings.Contains(msg, "Operation not permitted") || strings.Contains(msg, "refused by the sandbox") {
 			if msg == "" {
 				msg = "no dlerror() message"
 			}

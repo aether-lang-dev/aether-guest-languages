@@ -175,6 +175,9 @@ sub fork_once {
 # dl_error() is empty or "(null) at ... line N." (DynaLoader formats the NULL
 # dlerror() returns into a message with perl's location on the end), and
 # "Permission denied" or "Operation not permitted" in it is the refusal too.
+# From ae 0.893.0 (aether 80d0dd832) the preload sets a dlerror() message of its
+# own, "<name>: refused by the sandbox: dlopen of libc or the loader needs a
+# native grant", and that text is the refusal as well.
 sub load {
     my ($path) = @_;
     my $h = DynaLoader::dl_load_file($path, 0);
@@ -182,7 +185,7 @@ sub load {
     my $msg = DynaLoader::dl_error();
     $msg = '' unless defined $msg;
     $msg =~ s/\0.*//s;   # DynaLoader's message carries a trailing NUL
-    if ($msg eq '' || $msg =~ /^\(null\)/ || $msg =~ /Permission denied|Operation not permitted/) {
+    if ($msg eq '' || $msg =~ /^\(null\)/ || $msg =~ /Permission denied|Operation not permitted|refused by the sandbox/) {
         $msg =~ s/\n\z//;
         return ("refused", "dl_load_file: " . ($msg eq '' ? "no dlerror() message" : $msg) . " (the preload's refusal)");
     }

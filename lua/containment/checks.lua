@@ -93,7 +93,10 @@ end
 -- dlerror()'s text, not errno. A dlopen that fails on its own always leaves
 -- a dlerror() message; the preload's refusal returns NULL without one, which
 -- Lua passes on as a nil message. So a nil message is the refusal, as is a
--- "Permission denied" or "Operation not permitted" in the text.
+-- "Permission denied" or "Operation not permitted" in the text. From ae 0.893.0
+-- (aether 80d0dd832) the preload sets a dlerror() message of its own, "<name>:
+-- refused by the sandbox: dlopen of libc or the loader needs a native grant",
+-- and that text is the refusal too.
 local function loadlib(path)
   local f, msg, where = package.loadlib(path, "*")
   if f then return "succeeded", "loaded " .. path end
@@ -101,7 +104,8 @@ local function loadlib(path)
     return "refused", "package.loadlib: dlopen failed with no dlerror() message (the preload's refusal)"
   end
   msg = tostring(msg)
-  if msg:find("Permission denied", 1, true) or msg:find("Operation not permitted", 1, true) then
+  if msg:find("Permission denied", 1, true) or msg:find("Operation not permitted", 1, true) or
+     msg:find("refused by the sandbox", 1, true) then
     return "refused", "package.loadlib: " .. msg
   end
   return "error", "package.loadlib (" .. tostring(where) .. "): " .. msg

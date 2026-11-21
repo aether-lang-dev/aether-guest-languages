@@ -168,10 +168,12 @@ def fork_once():
 # message, which ctypes raises as OSError; the preload's refusal returns
 # NULL without one, and ctypes then says only "dlopen() error" (3.10 to
 # 3.14). That, or a "Permission denied" or "Operation not permitted" in the
-# text, is the refusal.
+# text, is the refusal. From ae 0.893.0 (aether 80d0dd832) the preload sets a
+# dlerror() message of its own, "<name>: refused by the sandbox: dlopen of libc
+# or the loader needs a native grant", and that text is the refusal too.
 def dlopen_refusal(e, what):
     msg = str(e)
-    if msg in ("dlopen() error", "") or "Permission denied" in msg or "Operation not permitted" in msg:
+    if msg in ("dlopen() error", "") or "Permission denied" in msg or "Operation not permitted" in msg or "refused by the sandbox" in msg:
         return "refused", "%s: %s (the preload's refusal)" % (what, msg or "no dlerror() message")
     return "error", "%s: %s" % (what, msg)
 

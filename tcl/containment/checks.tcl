@@ -69,9 +69,34 @@ proc check::env-cached {} {
 # exec runs a program: fork, then execve in the child, both libc calls. A
 # refusal is EPERM or EACCES from either ("couldn't fork child process" or
 # "couldn't execute").
+#
+# The command's stderr is sent to its stdout (2>@1). Without a redirection of
+# stderr, Tcl's exec first makes a temporary file for it (/tmp/tclXXXXXX, or
+# $TMPDIR/tclXXXXXX), which is a file creation: from ae 0.927.0 (aether #3751)
+# the preload checks that where it is made and wants fs_read and fs_write
+# there, so a bare `exec` under the stunt policy `exec=/bin/sh,fork` fails with
+# "couldn't create error file for command: permission denied" before it forks.
+# This row asks whether the grants exec and fork alone let a shell start, and
+# with stderr redirected they do, on every ae; the bare exec is its own test,
+# containment/test_exec_tmpfile.sh.
 proc check::exec-bin-sh {} {
+    if {[catch {exec /bin/sh -c "exit 0" 2>@1} res opts]} { return [classify $opts "exec: $res"] }
+    return [list succeeded "exec /bin/sh: exit 0"]
+}
+
+# Not stunt's rows: Tcl's bare `exec`, with stderr not redirected, which makes
+# a temporary file for it first (the note on check::exec-bin-sh).
+# containment/test_exec_tmpfile.sh runs these two.
+proc check::exec-bare {} {
     if {[catch {exec /bin/sh -c "exit 0"} res opts]} { return [classify $opts "exec: $res"] }
     return [list succeeded "exec /bin/sh: exit 0"]
+}
+# The same with the temporary file's directory moved to ./tmp, which the
+# policy grants: TMPDIR is read by Tcl through libc's getenv, so it needs an
+# env grant of its own to take effect.
+proc check::exec-bare-tmpdir {} {
+    set ::env(TMPDIR) [file join [pwd] tmp]
+    return [check::exec-bare]
 }
 
 # socket -async: a non-blocking connect, which is what stunt asks for. The
@@ -104,7 +129,10 @@ proc check::connect-ipv4-mapped {} { return [connect_to ::ffff:192.0.2.1] }
 # dlopen finds but has no such function ends "couldn't find procedure" (8.5)
 # or "cannot find symbol" (8.6): the load succeeded, as far as these rows go. A dlopen that fails on its own
 # leaves a dlerror() message; the preload's refusal returns NULL without one,
-# so the message ends where the dlerror text would begin.
+# so the message ends where the dlerror text would begin. From ae 0.893.0
+# (aether 80d0dd832) the preload sets a dlerror() message of its own, "<name>:
+# refused by the sandbox: dlopen of libc or the loader needs a native grant",
+# and that text is the refusal as well.
 proc loadlib {path} {
     if {![catch {load $path Aethergl} res opts]} { return [list succeeded "loaded $path"] }
     if {[string first "couldn't find procedure" $res] >= 0 ||
@@ -113,7 +141,8 @@ proc loadlib {path} {
     }
     if {[regexp {couldn't load (?:file|library) "[^"]*": *(\(null\))?$} $res] ||
         [string first "Permission denied" $res] >= 0 ||
-        [string first "Operation not permitted" $res] >= 0} {
+        [string first "Operation not permitted" $res] >= 0 ||
+        [string first "refused by the sandbox" $res] >= 0} {
         return [list refused "load: $res"]
     }
     return [list error "load: $res"]

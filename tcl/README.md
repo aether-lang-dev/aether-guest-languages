@@ -244,7 +244,7 @@ CI.
 | `env-cached` (`$::env(HOME)`) | **escapes**: the copy Tcl took in `Tcl_Init` | **not held** | refused under every policy: the worker is started with no environment |
 | `connect-192.0.2.1` (`socket -async`) | per policy | **not held** | refused under every policy: the worker's own lockdown has no tcp grant |
 | `connect-ipv4-mapped` (`socket -async ::ffff:192.0.2.1`) | per policy | (left out on macOS: Tcl 8.5 there resolves no IPv6 literal) | refused under every policy |
-| `exec-bin-sh` (`exec`) | per policy, from ae 0.884.0; before it **escapes**: `execvp` reaches `execve` inside libc | **not held** | refused under every policy: the worker can create no file, and `exec` makes one before it forks |
+| `exec-bin-sh` (`exec ... 2>@1`, stderr redirected, see below) | per policy, from ae 0.884.0; before it **escapes**: `execvp` reaches `execve` inside libc | **not held** | refused under every policy: the worker's own lockdown has no `fork` grant, and `exec` forks |
 | `fork` | (left out: Tcl has no fork) | (left out) | (left out) |
 | `dlopen-libm` (`load`) | loads | loads | loads |
 | `dlopen-libc-by-name`, `dlopen-libc-by-path` (`load`) | (child-only row) | (child-only row) | (left out: the worker **dies** on the refusal, below) |
@@ -313,6 +313,25 @@ What the table says:
   holds it that test fails and this table is brought up to date. The
   `exec-bin-sh` row is checked on either side of ae 0.884.0
   (`AE_SPAWN_PIN` in `ci/versions.env`), from the ae the tests run on.
+
+- **A bare `exec` needs a temporary file.** Without a redirection of stderr
+  Tcl's `exec` first makes a file for the command's stderr (`/tmp/tclXXXXXX`,
+  or `$TMPDIR/tclXXXXXX`, with libc's `mkstemp`; it unlinks it at once). From
+  ae 0.927.0 the preload checks a temporary file where it is made (aether
+  #3751: "a temporary file needs `fs_write` where it is made"), and the
+  open is for reading and writing, so it wants `fs_read` and `fs_write`
+  there. Under stunt's policy `exec=/bin/sh,fork` a bare `exec` is then
+  refused with `couldn't create error file for command: permission denied`
+  (before 0.927.0 it ran). So the `exec-bin-sh` row is done with
+  `2>@1`, which makes no file and so asks only what stunt's row asks, whether
+  `exec` and `fork` alone let a shell start (they do, on every ae), and the
+  bare `exec` is `containment/test_exec_tmpfile.sh`, in-process, which holds
+  both sides: refused under `exec=/bin/sh,fork` from 0.927.0, and
+  succeeding under the narrowest grant that lets it run, `fs_read` and
+  `fs_write` on one scratch directory (`$WORK/tmp/*` there) plus `env=TMPDIR`
+  with `$::env(TMPDIR)` set to it, since Tcl reads `TMPDIR` through libc's
+  `getenv` and falls back to `/tmp` when that is refused. A host that runs
+  Tcl scripts that call `exec` should grant that, never `/tmp`.
 
 Tcl has not been run on FreeBSD.
 

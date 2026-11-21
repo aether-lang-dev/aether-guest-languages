@@ -151,10 +151,13 @@ end
 # returns NULL without one, and Fiddle (1.1.x, in Ruby 3.4) raises only when
 # there is a message: it hands back a Handle holding NULL instead, so a
 # refusal is a Handle whose address is 0 (or, from a Fiddle that does raise,
-# a "Permission denied" or empty message).
+# a "Permission denied" or empty message). From ae 0.893.0 (aether 80d0dd832)
+# the preload sets a dlerror() message of its own, "<name>: refused by the
+# sandbox: dlopen of libc or the loader needs a native grant", which Fiddle
+# raises: that text is the refusal too.
 def dlopen_refusal(e, what)
   msg = e.message.to_s
-  if msg == "" || msg == "(null)" || msg =~ /Permission denied|Operation not permitted/
+  if msg == "" || msg == "(null)" || msg =~ /Permission denied|Operation not permitted|refused by the sandbox/
     return ["refused", "#{what}: #{msg.empty? ? 'no dlerror() message' : msg} (the preload's refusal)"]
   end
   ["error", "#{what}: #{msg}"]

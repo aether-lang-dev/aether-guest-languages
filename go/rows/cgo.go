@@ -107,7 +107,7 @@ func load(path string) result {
 		return succeeded("loaded " + path)
 	}
 	m := C.GoString(&msg[0])
-	if m == "" || strings.Contains(m, "Permission denied") || strings.Contains(m, "Operation not permitted") {
+	if m == "" || strings.Contains(m, "Permission denied") || strings.Contains(m, "Operation not permitted") || strings.Contains(m, "refused by the sandbox") {
 		if m == "" {
 			m = "no dlerror() message"
 		}

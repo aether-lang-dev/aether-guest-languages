@@ -17,8 +17,8 @@ lang_version() { tcl_version; }
 LANG_CHECKS_ENV=TCL_CHECKS
 LANG_CHECKS_FILE=checks.tcl
 LANG_WORKER_ENV=TCL_WORKER
-# Tcl's own tests beside the stunt ones: none.
-LANG_EXTRA_TESTS=""
+# Tcl's own tests beside the stunt ones: the bare exec's temporary file.
+LANG_EXTRA_TESTS="$ROOT/tcl/containment/test_exec_tmpfile.sh"
 
 # Rows Tcl cannot express, by name. Each prints LEFT OUT and why.
 left_out() {
@@ -67,7 +67,7 @@ child_stricter() {
         open-granted-file|write-granted-file) echo "the worker's own lockdown: a granted file comes as a descriptor, through read_file" ;;
         env-cached) echo "guest.launch gives the worker no environment: a variable comes through getenv" ;;
         connect-*) echo "the worker's own lockdown has no tcp grant: the preload refuses the connect whatever the policy" ;;
-        exec-bin-sh) echo "the worker's own lockdown can create no file, and Tcl's exec makes a temporary file for the command's stderr before it forks" ;;
+        exec-bin-sh) echo "the worker's own lockdown has no fork grant, and Tcl's exec forks, which is refused whatever the policy" ;;
         *) return 1 ;;
     esac
 }
