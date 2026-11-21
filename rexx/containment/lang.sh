@@ -60,7 +60,7 @@ left_out() {
         fork) echo "RexxAE has no process API: ADDRESS is a request to the host, never a fork of its own" ;;
         syscall-*) echo "RexxAE has no syscall() and no way to call C: the engine is Aether code whose entry points are @pure and whose imports RexxAE pins (tools/check_containment.py)" ;;
         dlopen-*) echo "RexxAE cannot load a library: it has no FFI, no extern in the engine, and REQUIRE goes to a resolver the host mounts (none here)" ;;
-        silent) echo "a Rexx script cannot keep RexxAE's worker from answering a CANCEL: the worker looks for one every 1000 instructions and while it waits on a call, and no single builtin runs long (a result is capped at 1 MiB), so a loop is spin's row, cancelled with an answer (the host's kill of a worker that never answers is RexxAE's worker-test, with a stand-in worker)" ;;
+        silent) echo "a Rexx script cannot keep RexxAE's worker from answering a CANCEL: the worker looks for one every 1000 instructions and while it waits on a call, and no single builtin runs long (test_surface.sh times every one on 1 MiB strings: each within 3 s), so a loop is spin's row, cancelled with an answer (the host's kill of a worker that never answers is RexxAE's worker-test, with a stand-in worker)" ;;
         half-frame) echo "a script cannot write part of a frame: the worker frames what it says" ;;
         *) return 1 ;;
     esac

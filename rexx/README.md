@@ -224,6 +224,47 @@ claim with the spec that backs it.
   [containment/checks.rexx](containment/checks.rexx); the surface in
   [containment/test_surface.sh](containment/test_surface.sh).
 
+### The contained child, in the first table's four terms
+
+What crosses between a host and RexxAE's worker, each with the test that
+shows it. "RexxAE's worker-test" is RexxAE's own `make worker-test`
+(`tests/test_worker.ae` at `REXXAE_REF`; 12 passing on cachyos, ae 0.934.0,
+2026-11-21), not run by this repository's CI.
+
+- **Transport.** `std.guest` over a `std.ipc` socketpair made by
+  `sandbox.spawn_socket` (Landlock, seccomp, the preload; refused on macOS:
+  checked by every run there). 4-byte length-prefixed frames, at most 64 KiB:
+  a 1 MiB `SAY` is refused and the worker killed (the `oversize` row). A
+  granted file is an open descriptor, never a path
+  (`binding-read-granted-file`; an ungranted one is a `deny`,
+  `binding-read-etc-passwd`).
+- **Types.** arguments go up as the engine's JSON (`rexxae_arguments_json`),
+  answers come down as JSON the engine decodes into Rexx values: strings and
+  integers both ways (`callback-greet`, `callback-add`), objects in answers
+  (`READ_FILE` and `GETENV` answer `{"granted": ..., "text"|"why": ...}`,
+  read as `r.granted`, `r.text`: the `binding-*` rows), booleans in answers
+  (`map-overwrite-input` reads `AETHER_MAP_PUT`'s `false`). Arrays, null and
+  floats in the child are untested here; in process they cross
+  (`test_host_rexx.ae`, "typed values cross both ways as JSON"), and the
+  worker passes the same JSON through unchanged.
+- **Duplex.** the guest starts every exchange: `SAY` and `LOG` up with no
+  answer, `CALL name [json]` up and the host's answer down before the script
+  goes on; the engine suspends inside the expression and resumes with the
+  answer (in process: "a script suspends on each call mid-expression"). One
+  call open at a time. The host speaks unasked only to cancel: `CANCEL` is
+  heard every 1000 instructions and while a call waits, so a loop ends
+  `ERROR cancelled by host` (the `spin` row) and a script waiting on a reply
+  is cancelled too (RexxAE's worker-test). `ADDRESS` never reaches the host:
+  the worker answers RC 1 itself and sends an `AUDIT` line (`exec-bin-sh`,
+  stricter).
+- **Callbacks.** the host mounts functions by name with an arity
+  (`guest.mount`); the script calls them as Rexx functions. A name not
+  mounted ends the script, "unknown or unavailable function"
+  (`callback-unregistered`); a `FAIL` answer ends it too, since Rexx cannot
+  catch an error (no `SIGNAL ON`), which is why the hosts here answer
+  refusals as `{"granted": false}` values. Nothing the guest makes is handed
+  to the host.
+
 ## Stunt parity
 
 Each of stunt's tests, as Rexx comes out of it in each way that runs the
@@ -244,9 +285,9 @@ the rows that did not and how.
 | `test_stunt_no_grants` | `-` | differs: open-etc-passwd left out, open-granted-file left out, write-granted-file left out, getenv-home left out, env-cached left out, connect-192.0.2.1 left out, connect-ipv4-mapped left out, dlopen-libm left out | differs: open-etc-passwd left out, open-granted-file left out, write-granted-file left out, getenv-home left out, env-cached left out, connect-192.0.2.1 left out, connect-ipv4-mapped left out, dlopen-libm left out | differs: open-etc-passwd left out, open-granted-file left out, write-granted-file left out, getenv-home left out, env-cached left out, connect-192.0.2.1 left out, connect-ipv4-mapped left out, fork left out, dlopen-libc-by-name left out, dlopen-libc-by-path left out, dlopen-libm left out, syscall-fn-openat left out, syscall-openat left out, syscall-socket left out |
 | `test_stunt_write_granted` | `fs_write=$WORK/*` | differs: write-granted-file left out, open-granted-file left out | differs: write-granted-file left out, open-granted-file left out | differs: write-granted-file left out, open-granted-file left out |
 
-- Column 2, ae from 0.884.0: macOS 27.3 arm64, ae 0.934.0, Rexx RexxAE e7e9da6
-- Column 3, ae from 0.884.0: CachyOS, kernel 7.3.5 x86_64, ae 0.934.0, Rexx RexxAE e7e9da6
-- Column 4, ae from 0.884.0: CachyOS, kernel 7.3.5 x86_64, ae 0.934.0, Rexx RexxAE e7e9da6
+- Column 2, ae from 0.884.0: macOS 27.3 arm64, ae 0.934.0, Rexx RexxAE 5c8862c
+- Column 3, ae from 0.884.0: CachyOS, kernel 7.3.5 x86_64, ae 0.934.0, Rexx RexxAE 5c8862c
+- Column 4, ae from 0.884.0: CachyOS, kernel 7.3.5 x86_64, ae 0.934.0, Rexx RexxAE 5c8862c
 <!-- stunt-parity:end -->
 
 The test names are stunt's, aether's `tests/integration/contrib_host_stunt` at
@@ -299,7 +340,7 @@ it is:
 | `fork` | left out: no process API; `ADDRESS` is a request | | cannot express |
 | `syscall-fn-openat`, `syscall-openat`, `syscall-socket` | left out: no `syscall()`, no way to call C | | cannot express |
 | `dlopen-libm`, `dlopen-libc-by-name`, `dlopen-libc-by-path` | left out: no FFI, no `extern` in the engine; `REQUIRE` goes to a resolver the host mounts | | cannot express |
-| `silent` | (child-only row) | left out: a script cannot keep the worker from answering `CANCEL` (it polls every 1000 instructions, and a builtin's result is capped at 1 MiB, so none runs long) | cannot express |
+| `silent` | (child-only row) | left out: a script cannot keep the worker from answering `CANCEL`: it polls every 1000 instructions, and no single builtin runs long (`test_surface.sh` times each on 1 MiB strings; four did, below, until RexxAE fixed them) | cannot express |
 | `half-frame` | (child-only row) | left out: the worker frames what a script says | cannot express |
 
 What the table says:
@@ -317,8 +358,9 @@ What the table says:
   log event) or makes a permission check; every other name RexxJS has (315,
   its 79 host-effect functions and 20 date and time functions among them)
   and classic Rexx's I/O and clock names are unknown functions; `ADDRESS`
-  under six environment names is a request each time. On Linux it runs
-  again under the preload, logging denials: none. The cron extension does
+  under six environment names is a request each time; and every builtin and
+  extension is timed on 1 MiB strings (474 calls), each within 3 s. On
+  Linux the sweep runs again under the preload, logging denials: none. The cron extension does
   not read a clock: `CRON_NEXT` takes the instant it starts from as an
   argument.
 - **What a host registers is what a guest gets, and no more.** Every row
@@ -328,9 +370,19 @@ What the table says:
 - **The child is stricter by one row**, `exec-bin-sh`: RexxAE's worker
   answers `ADDRESS` itself. A host that wants commands from a contained Rexx
   script mounts a function instead.
-- **No hole was found in RexxAE.** Nothing in its surface reached the file
-  system, the environment, the process table, the network or a clock
-  without a host request.
+- **No effect escaped RexxAE; one bound did not hold, and is fixed there.**
+  Nothing in its surface reached the file system, the environment, the
+  process table, the network or a clock without a host request. But the
+  sweep's timing pass found four builtins that ran for seconds in one call
+  on 1 MiB strings: `TRANSLATE`, `VERIFY` and `STRIP` looked each character
+  up in their whole table (14 s), and the cron parser behind `CRON_VALID`
+  and `CRON_NEXT` built its text a byte at a time (6 s). One call is one
+  instruction to the step budget and a `CANCEL` is heard between
+  instructions, so such a call held the worker past any deadline (it could
+  have been the `silent` row) and an in-process run past its time limit.
+  RexxAE made them linear (its commits `0545b5f` and `5c8862c`, with a spec
+  seen failing first), and `REXXAE_REF` moved past them; the sweep now
+  fails if any builtin takes over 3 s.
 
 ## Tests
 

@@ -13,7 +13,8 @@
 #      system and declares no extern (RexxAE's tools/check_containment.py
 #      holds the same with the compiler's @pure and --emit=lib probes).
 #   2. surface.ae, in this process, inside sandbox.enforce with no grants:
-#      no permission check made, nothing asked of the host.
+#      no permission check made, nothing asked of the host; and every builtin
+#      timed on 1 MiB strings, each within 3 s.
 #   3. On Linux, the same under libaether_sandbox.so with denials logged to
 #      stderr: none but the control's (a libc fopen of /etc/passwd the
 #      program makes itself, to show the log would have caught one).

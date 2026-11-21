@@ -15,6 +15,9 @@
 //     COMMAND event; a LOG event only from the LOG_* extensions, which a host
 //     receives and nothing else does) and without the runtime making a single
 //     permission check (std.audit), inside sandbox.enforce with no grants;
+//   - the same names timed on the largest strings a builtin may make (1 MiB):
+//     each call must end within 3 s, since one call is one instruction to
+//     the step budget and a host's CANCEL is heard only between them;
 //   - every other function name RexxJS has, docs/function-inventory.json's
 //     core list (386 names, RexxJS's 79 host-effect functions, FILE_READ,
 //     GETENV, HTTP_GET, ..., and its 20 date and time ones among them), and
@@ -39,6 +42,7 @@ import std.json
 import std.list
 import std.os
 import std.string
+import std.time
 
 extern exit(code: int)
 extern aether_sandbox_depth() -> int
@@ -198,6 +202,56 @@ main() {
         i = i + 1
     }
     println("  [PASS] engine: ${n_rexxjs} builtins and ${n_all - n_rexxjs} extensions (${src}/tests/guest_functions.json), ${calls} calls, none asked the host for anything (LOG_* excepted) or made a permission check")
+
+    // ---- no builtin runs long ------------------------------------------------
+    // One builtin call is one instruction to the step budget, and a CANCEL is
+    // seen between instructions: a builtin that ran long on large inputs would
+    // let a script keep the worker from answering (stunt's silent row) and
+    // overrun the bridge's time limit. Each is called on the largest strings
+    // a builtin may make (1 MiB results), timed, and must finish within 3 s.
+    // (Skipped in the preload's run, control-libc: that run is about denials.)
+    big_sets = list.new()
+    list.add(big_sets, "s")
+    list.add(big_sets, "s, r")
+    list.add(big_sets, "r, s")
+    list.add(big_sets, "s, r, r")
+    list.add(big_sets, "r, s, 'M'")
+    list.add(big_sets, "s, 1000000")
+    slowest = ""
+    long slowest_ms = 0
+    slow = 0
+    big_calls = 0
+    i = 0
+    if os.args_count() == 3 { i = n_all }
+    while i < n_all {
+        name, _e = list.get_string(engine_names, i)
+        j = 0
+        while j < list.size(big_sets) {
+            args, _ae = list.get_string(big_sets, j)
+            t0 = time.now_ms()
+            r = run("LET s = COPIES('b', 1000000)\nLET r = COPIES('a', 999999) || 'b'\nLET x = ${name}(${args})", 0)
+            ms = time.now_ms() - t0
+            big_calls = big_calls + 1
+            if ms > slowest_ms {
+                slowest_ms = ms
+                slowest = "${name}(${args})"
+            }
+            if ms > 3000 || r.end == "STUCK" {
+                println("  [FAIL] ${name}(${args}) on 1 MiB strings: ${ms} ms, ended ${r.end}")
+                slow = slow + 1
+            }
+            j = j + 1
+        }
+        i = i + 1
+    }
+    if os.args_count() == 3 {
+        println("  [SKIP] time: not timed again under the preload")
+    } else if slow == 0 {
+        println("  [PASS] time: ${big_calls} calls on 1 MiB strings, each within 3 s (the slowest ${slowest}, ${slowest_ms} ms)")
+    } else {
+        println("  [FAIL] time: ${slow} of ${big_calls} calls on 1 MiB strings took over 3 s")
+        fails = fails + slow
+    }
 
     // ---- every other name: RexxJS's, and classic Rexx's ----------------------
     inv = read_json("${src}/docs/function-inventory.json")
