@@ -247,7 +247,8 @@ The shared tests in `tests/boundary.py`, run in this language's worker (`tests/t
 | `str` | ok | ok |
 | `str-empty` | ok | ok |
 | `str-nonascii` | ok | ok |
-| `str-nul` | differs: the host saw ["a��b"] | differs: the host saw ["a��b"] |
+| `str-nul` | refused | refused |
+| `str-astral` | ok | ok |
 | `str-60k` | ok | ok |
 | `int` | ok | ok |
 | `int-neg` | ok | ok |
@@ -275,6 +276,30 @@ claim with the spec that backs it.
 
 - **In-process transport.** a direct C call into the embedded Tcl (`dlopen`ed libtcl); no transport.
 - **Types.** everything is a string underneath. in: str, int, strlist as globals. out: str, int, double, bool (typed results). A callback reads str, int, double, bool and pushes int, str, bool, nil, double.
+- **Strings: NUL is refused, a character beyond the BMP is carried.** Tcl keeps
+  strings as "modified UTF-8": a NUL is the two bytes `C0 80`, and an 8.x built
+  with 16-bit characters (the default) keeps a character beyond the BMP as two
+  three-byte surrogate halves (CESU-8). Neither is UTF-8, and the bridge used
+  to hand those bytes to the host as if they were (the host saw `C0 80` for a
+  NUL, and six bytes for an emoji on Tcl 8.6; Tcl 9 stores four bytes and was
+  right). Every string that crosses, in either direction, is now converted at
+  the boundary (`tcl/aether_host_tcl.c`, "strings across the boundary"): an
+  emoji is joined or split into the form each side expects (Tcl 8.6 and 9.0
+  both checked, in-process and as a contained child), and **a string with an
+  embedded NUL is refused**, because carrying it would need a second
+  representation of NUL that no other language here shares, and silent
+  corruption is the worst outcome. A lone surrogate half is refused the same
+  way (UTF-8 cannot encode it). Refused means: the script gets a Tcl error it
+  can `catch`, whose message names the place and the reason (`echo: argument 1:
+  refused: it holds an embedded NUL; ...`); a callback with such an argument is
+  not called; the host gets an error result (a script result or error message
+  with a NUL is `-1` with the refusal as the message), never a truncated or
+  changed string; a host string with Tcl's `C0 80` spelling raises the same
+  error in the script, and a `set_global_str` of one makes the next `eval`
+  fail with the reason. The grid above reads `refused` for `str-nul`: a
+  deliberate, documented outcome, not a defect. Backed by
+  `tcl/test_host_tcl_vm.ae` ("a character beyond the BMP crosses both ways, as
+  UTF-8", "an embedded NUL is refused, in every place a string crosses").
 - **Duplex.** host calls the guest; the guest calls back mid-eval; a nested `eval` runs at global level and leaves the callback's arguments intact (tested).
 - **Callbacks.** host commands by name, namespaced ok.
 - **Errors and state.** a failing script is -1 with the error as the result; `raise_error`; a command limit and a time limit; one interpreter per VM handle, used by one thread (another thread is refused, not crashed).

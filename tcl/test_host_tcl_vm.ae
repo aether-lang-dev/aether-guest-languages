@@ -20,6 +20,7 @@ extern ghl_t_eval_on_other_thread(vm: ptr) -> string
 extern ghl_t_rss_kb() -> long
 extern ghl_t_i64_max() -> long
 extern ghl_t_i64_min() -> long
+extern ghl_t_overlong_nul() -> string
 
 @c_callback
 cb_add(vm: ptr) -> int {
@@ -61,6 +62,26 @@ cb_nothing(vm: ptr) -> int {
 @c_callback
 cb_raise(vm: ptr) -> int {
     return tcl.raise_error(vm, tcl.arg_str(vm, 1))
+}
+
+// Notes that it ran (a global the script can read), to show a refused call
+// never reached the host.
+@c_callback
+cb_flag(vm: ptr) -> int {
+    tcl.vm_set_global_int(vm, "CALLED", 1)
+    return 0
+}
+
+// Hands the script a string with Tcl's spelling of NUL in it (C0 80).
+@c_callback
+cb_overlong(vm: ptr) -> int {
+    tcl.push_str(vm, ghl_t_overlong_nul())
+    return 1
+}
+
+@c_callback
+cb_raise_overlong(vm: ptr) -> int {
+    return tcl.raise_error(vm, ghl_t_overlong_nul())
 }
 
 // Each argument's type tag, as a string of digits.
@@ -168,6 +189,9 @@ main() {
         tcl.vm_register(vm, "host.nest_small", cb_nest_small)
         tcl.vm_register(vm, "ns::inner::add", cb_add)
         tcl.vm_register(vm, "host.nested_codes", cb_nested_codes)
+        tcl.vm_register(vm, "host.flag", cb_flag)
+        tcl.vm_register(vm, "host.overlong", cb_overlong)
+        tcl.vm_register(vm, "host.raise_overlong", cb_raise_overlong)
     }
 
     spec.describe(fw, "tcl vm (#904)") {
@@ -189,6 +213,59 @@ main() {
             spec.assert_eq_long(tcl.vm_result_int(vm), 9, "ns::inner::add")
             ev(vm, "expr {[llength $KEYS] == 2 && [lindex $KEYS 1] eq {k 2}}")
             spec.assert_eq(tcl.vm_result_bool(vm), 1, "the string list global is a Tcl list")
+            tcl.vm_pop_result(vm)
+        }
+
+        // Tcl keeps NUL as the two bytes C0 80 and, in an 8.x built with 16-bit
+        // characters, a character beyond the BMP as a surrogate pair of three
+        // bytes each: neither is UTF-8. Every string that crosses is converted,
+        // a NUL is refused (a Tcl error to the script, an error result to the
+        // host, never a changed string), a character beyond the BMP is carried.
+        spec.it_when(have_tcl, "a character beyond the BMP crosses both ways, as UTF-8", reason) callback {
+            tcl.vm_set_global_str(vm, "EMOJI", "a😀b 𝒳")
+            ev(vm, "host.echo_str $EMOJI")
+            spec.assert_str_eq(tcl.vm_result_str(vm), "a😀b 𝒳", "a global, through a callback and back")
+            ev(vm, "set EMOJI")
+            spec.assert_str_eq(tcl.vm_result_str(vm), "a😀b 𝒳", "a global, as the result")
+            ev(vm, "set _x \"x😀y\"")
+            spec.assert_str_eq(tcl.vm_result_str(vm), "x😀y", "a script that has one in its text")
+            ev(vm, "string length \"a😀b\"")
+            spec.assert_true(tcl.vm_result_int(vm) == 3 || tcl.vm_result_int(vm) == 4, "it is one character, or two halves on a 16-bit Tcl")
+            tcl.vm_pop_result(vm)
+        }
+
+        spec.it_when(have_tcl, "an embedded NUL is refused, in every place a string crosses", reason) callback {
+            tcl.vm_set_global_int(vm, "CALLED", 0)
+            // guest to host: the result
+            spec.assert_eq(ev(vm, "format a%cb 0"), -1, "a result with a NUL is an error result")
+            spec.assert_eq(tcl.vm_result_type(vm), tcl.TCL_TERR, "typed as an error")
+            spec.assert_true(string.contains(tcl.vm_result_str(vm), "the script's result: refused: it holds an embedded NUL") == 1, "that names the reason")
+            // the error message
+            spec.assert_eq(ev(vm, "error [format a%cb 0]"), -1, "an error message with a NUL")
+            spec.assert_true(string.contains(tcl.vm_result_str(vm), "the script's error message: refused") == 1, "is refused too")
+            // a callback's argument: the host function is not called, the script can catch it
+            spec.assert_eq(ev(vm, "host.flag [format a%cb 0]"), -1, "a callback argument with a NUL")
+            spec.assert_true(string.contains(tcl.vm_result_str(vm), "host.flag: argument 1: refused: it holds an embedded NUL") == 1, "names the command and the argument")
+            spec.assert_eq(ev(vm, "expr {[info exists CALLED] ? $CALLED : -1}"), 0, "ran")
+            spec.assert_eq_long(tcl.vm_result_int(vm), 0, "the host function was never called")
+            spec.assert_eq(ev(vm, "catch {host.echo_str [format a%cb 0]} m; string range $m 0 37"), 0, "the script can catch it")
+            spec.assert_str_eq(tcl.vm_result_str(vm), "host.echo_str: argument 1: refused: it", "and read it")
+            spec.assert_eq(ev(vm, "host.echo_str [list x [format a%cb 0]]"), -1, "a list with a NUL in an element")
+            // host to guest: the one NUL a C string can carry is Tcl's own spelling
+            spec.assert_eq(ev(vm, "catch {host.overlong} m; set m"), 0, "a callback's string with C0 80")
+            spec.assert_true(string.contains(tcl.vm_result_str(vm), "the value the host returned: refused: it holds an embedded NUL") == 1, "is refused in the script")
+            spec.assert_eq(ev(vm, "catch {host.raise_overlong} m; set m"), 0, "an error message with C0 80")
+            spec.assert_true(string.contains(tcl.vm_result_str(vm), "the error message the host raised: refused") == 1, "is refused too")
+            tcl.vm_set_global_str(vm, "BAD", ghl_t_overlong_nul())
+            spec.assert_eq(ev(vm, "expr 1"), -1, "a global set from a string with C0 80: the next eval does not run")
+            spec.assert_true(string.contains(tcl.vm_result_str(vm), "tcl_vm_set_global_str(BAD): the value: refused") == 1, "and names the global")
+            spec.assert_eq(ev(vm, "info exists BAD"), 0, "the eval after that runs")
+            spec.assert_eq_long(tcl.vm_result_int(vm), 0, "and the global was not set")
+            spec.assert_eq(ev(vm, ghl_t_overlong_nul()), -1, "a script with C0 80 in it")
+            spec.assert_true(string.contains(tcl.vm_result_str(vm), "the script: refused") == 1, "is refused")
+            // nothing was changed on the way: a string without one still works
+            spec.assert_eq(ev(vm, "host.echo_str ok"), 0, "afterwards")
+            spec.assert_str_eq(tcl.vm_result_str(vm), "ok", "everything else crosses")
             tcl.vm_pop_result(vm)
         }
 

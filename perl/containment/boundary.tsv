@@ -9,6 +9,7 @@ big-up	echo("x" x 100000);
 v:str	"hello"
 v:str-empty	""
 v:str-nonascii	"h" . chr(233) . "llo " . chr(0x2713) . " " . chr(0x65E5) . chr(0x672C)
+v:str-astral	"a" . chr(0x1F600) . "b " . chr(0x1D4B3)
 v:str-nul	"a\0b"
 v:str-60k	"x" x 60000
 v:int	42

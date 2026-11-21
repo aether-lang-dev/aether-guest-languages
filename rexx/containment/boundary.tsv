@@ -9,6 +9,7 @@ big-up	r = echo(copies('x', 100000))
 v:str	'hello'
 v:str-empty	''
 v:str-nonascii	'héllo ✓ 日本'
+v:str-astral	'a😀b 𝒳'
 v:str-60k	copies('x', 60000)
 v:int	42
 v:int-neg	-7

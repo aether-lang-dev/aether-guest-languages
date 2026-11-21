@@ -91,7 +91,7 @@ def containment_cell(lang):
 sys.path.insert(0, root + "/tests")
 import boundary_table as bt
 
-GROUPS = [("str", ["str", "str-empty", "str-nonascii", "str-nul", "str-60k"], {"str-empty": "empty", "str-nonascii": "non-ASCII", "str-nul": "NUL", "str-60k": "60 KB"}),
+GROUPS = [("str", ["str", "str-empty", "str-nonascii", "str-nul", "str-astral", "str-60k"], {"str-empty": "empty", "str-nonascii": "non-ASCII", "str-nul": "NUL", "str-astral": "beyond the BMP", "str-60k": "60 KB"}),
           ("int", ["int", "int-neg"], {"int-neg": "negative"}), ("int64", ["int-max", "int-min"], {}),
           ("float", ["float"], {}), ("bool", ["bool-true", "bool-false"], {}), ("null", ["null"], {}),
           ("array", ["array"], {}), ("map", ["map"], {}), ("nested", ["nested"], {})]
@@ -112,8 +112,10 @@ def types_dir(res, d):
         if all(got):
             ok.append(name)
         elif any(got):
-            miss = [labels.get(i, i) for i, g in zip(ids, got) if not g]
-            partial.append("%s (not %s)" % (name, ", ".join(miss)))
+            # A refusal is a deliberate outcome and says so: "NUL refused", not "not NUL".
+            miss = ["%s refused" % labels.get(i, i) if res.get((i, d)) == "refused" else "not %s" % labels.get(i, i)
+                    for i, g in zip(ids, got) if not g]
+            partial.append("%s (%s)" % (name, ", ".join(miss)))
         else:
             no.append(name)
     return ok + partial, no

@@ -2,6 +2,7 @@ str	"hello"
 str-empty	""
 str-nonascii	"héllo ✓ 日本"
 str-nul	"a\u0000b"
+str-astral	"a😀b 𝒳"
 str-60k	@REP:x:60000@
 int	42
 int-neg	-7

@@ -232,6 +232,46 @@ static const char* dh_safe_to_string(duk_context* c, duk_idx_t idx) {
     return g_duk.duk_safe_to_lstring(c, idx, NULL);
 }
 
+// What a string looks like from outside. Duktape keeps a character beyond the
+// BMP that came in as a surrogate pair (a JS source literal, String.fromCharCode,
+// JSON.stringify of one) as CESU-8: two three-byte halves, ED A0..AF xx ED B0..BF xx.
+// That is not UTF-8, and the host got six bytes that no decoder accepts. One that
+// came in as four UTF-8 bytes stays four. So a string handed out is joined: the
+// stack slot `idx` (which holds `s`) is replaced by a copy with each pair as its
+// four-byte form, and the pointer into that is returned, valid as long as the slot.
+// (A lone surrogate half has no UTF-8 form and is left as Duktape holds it.)
+static const char* dh_utf8_at(duk_context* c, duk_idx_t idx, const char* s) {
+    if (!s) return s;
+    const unsigned char* p = (const unsigned char*)s;
+    int pairs = 0;
+    for (; *p; p++)
+        if (p[0] == 0xED && (p[1] & 0xF0) == 0xA0 && (p[2] & 0xC0) == 0x80 &&
+            p[3] == 0xED && (p[4] & 0xF0) == 0xB0 && (p[5] & 0xC0) == 0x80) { pairs++; p += 5; }
+    if (!pairs) return s;
+    char* out = (char*)malloc(strlen(s) + 1);
+    if (!out) return s;
+    char* o = out;
+    for (p = (const unsigned char*)s; *p; ) {
+        if (p[0] == 0xED && (p[1] & 0xF0) == 0xA0 && (p[2] & 0xC0) == 0x80 &&
+            p[3] == 0xED && (p[4] & 0xF0) == 0xB0 && (p[5] & 0xC0) == 0x80) {
+            unsigned hi = 0xD000u | ((p[1] & 0x3Fu) << 6) | (p[2] & 0x3Fu);
+            unsigned lo = 0xD000u | ((p[4] & 0x3Fu) << 6) | (p[5] & 0x3Fu);
+            unsigned cp = 0x10000u + (((hi & 0x3FFu) << 10) | (lo & 0x3FFu));
+            *o++ = (char)(0xF0 | (cp >> 18)); *o++ = (char)(0x80 | ((cp >> 12) & 0x3F));
+            *o++ = (char)(0x80 | ((cp >> 6) & 0x3F)); *o++ = (char)(0x80 | (cp & 0x3F));
+            p += 6;
+        } else {
+            *o++ = (char)*p++;
+        }
+    }
+    *o = 0;
+    duk_idx_t abs = idx < 0 ? g_duk.duk_get_top(c) + idx : idx;
+    g_duk.duk_push_string(c, out);
+    g_duk.duk_replace(c, abs);
+    free(out);
+    return g_duk.duk_get_string(c, abs);
+}
+
 // --- bridge state (unchanged) ----------------------------------------------
 
 static duk_context* ctx = NULL;
@@ -636,7 +676,7 @@ const char* duktape_vm_result_str(void* c) {
     if (!c) return "";
     duk_context* ctx_ptr = (duk_context*)c;
     if (g_duk.duk_get_top(ctx_ptr) == 0) return "";
-    return dh_safe_to_string(ctx_ptr, -1);
+    return dh_utf8_at(ctx_ptr, -1, dh_safe_to_string(ctx_ptr, -1));
 }
 
 int duktape_vm_result_bool(void* c) {
@@ -694,7 +734,7 @@ const char* duktape_arg_str(void* c, int i) {
     duk_context* ctx_ptr = (duk_context*)c;
     duk_idx_t idx = (duk_idx_t)(i - 1);
     if (idx >= g_duk.duk_get_top(ctx_ptr)) return "";
-    const char* s = g_duk.duk_get_string(ctx_ptr, idx);
+    const char* s = dh_utf8_at(ctx_ptr, idx, g_duk.duk_get_string(ctx_ptr, idx));
     return s ? s : "";
 }
 

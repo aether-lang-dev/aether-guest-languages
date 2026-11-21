@@ -92,6 +92,14 @@ w_poll(vm: ptr) -> int {
 // before the script. Written for Tcl 8.5 and later.
 fn slave_prelude() -> string {
     return <<TCL
+# A string with an embedded NUL does not cross, either way: Tcl keeps NUL as
+# the two bytes C0 80, which are not UTF-8 and would reach the host as a corrupt
+# string. The script gets a Tcl error it can catch (the bridge refuses the same
+# string in its own C, tcl/aether_host_tcl.c).
+proc ::__refuse_nul {what} {
+    error "$what: refused: it holds an embedded NUL; Tcl stores NUL as the two bytes C0 80, which are not UTF-8, so this bridge refuses it rather than pass on bytes that are wrong"
+}
+
 namespace eval ::__json {
     variable s ""
     variable i 0
@@ -140,7 +148,9 @@ proc ::__json::str {} {
             r { append out \r; set i [expr {$j + 2}] }
             t { append out \t; set i [expr {$j + 2}] }
             u {
-                append out [format %c 0x[string range $s [expr {$j + 2}] [expr {$j + 5}]]]
+                set cp 0x[string range $s [expr {$j + 2}] [expr {$j + 5}]]
+                if {$cp == 0} { ::__refuse_nul "the host's answer" }
+                append out [format %c $cp]
                 set i [expr {$j + 6}]
             }
             default { append out $e; set i [expr {$j + 2}] }
@@ -206,7 +216,12 @@ proc ::__json::dec {text} {
 # A call of a mounted command: CALL name [args as JSON], then the answer.
 proc ::__ae_invoke {name arglist} {
     set a {}
-    foreach x $arglist { lappend a [::__json::enc $x] }
+    set n 0
+    foreach x $arglist {
+        incr n
+        if {[string first [format %c 0] $x] >= 0} { ::__refuse_nul "$name: argument $n" }
+        lappend a [::__json::enc $x]
+    }
     set r [__call $name "\[[join $a ,]\]"]
     set nl [string first "\n" $r]
     set kind [string range $r 0 [expr {$nl - 1}]]
@@ -230,10 +245,10 @@ proc puts {args} {
         set args [lrange $args 1 end]
         incr n -1
     }
-    if {$n == 1} {
-        __say [lindex $args 0]
-    } elseif {$n == 2 && [lindex $args 0] in {stdout stderr}} {
-        __say [lindex $args 1]
+    if {$n == 1 || ($n == 2 && [lindex $args 0] in {stdout stderr})} {
+        set text [lindex $args end]
+        if {[string first [format %c 0] $text] >= 0} { ::__refuse_nul "puts: the text" }
+        __say $text
     } else {
         return [uplevel 1 [linsert $args 0 ::__ae_puts]]
     }

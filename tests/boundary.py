@@ -107,6 +107,10 @@ def judge_value(r, want, direction):
                 except Exception:
                     pass
     k, t = r["end"]
+    # A refusal the language documents: the script is stopped with an error that
+    # says "refused: it holds <what>" and nothing reached the host. It is a
+    # deliberate outcome, not a defect (tcl/README.md says why Tcl refuses NUL).
+    if k == "ERROR" and "refused: it holds" in t: return "refused", short(t)
     if k == "ERROR": return "error", short(t)
     if k == "KILLED": return "killed", short(t)
     return "no call", short(t)

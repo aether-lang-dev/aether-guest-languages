@@ -47,3 +47,7 @@ int64_t ghl_t_rss_kb(void) {
 
 int64_t ghl_t_i64_max(void) { return INT64_MAX; }
 int64_t ghl_t_i64_min(void) { return INT64_MIN; }
+
+// A string with Tcl's own spelling of NUL, the two bytes C0 80, in it: the one
+// way a host's C string can carry a NUL into a script.
+const char* ghl_t_overlong_nul(void) { return "a\xC0\x80" "b"; }

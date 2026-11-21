@@ -193,6 +193,7 @@ The shared tests in `tests/boundary.py`, run in this language's worker (`tests/t
 | `str-empty` | ok | ok |
 | `str-nonascii` | ok | ok |
 | `str-nul` | n/a | ok |
+| `str-astral` | ok | ok |
 | `str-60k` | ok | ok |
 | `int` | ok | ok |
 | `int-neg` | ok | ok |

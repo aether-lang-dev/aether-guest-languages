@@ -135,20 +135,44 @@ fn run_child(spec: string, check: string, expect: string) {
     // floor lets the loader read libraries but lists no directory. So every
     // policy is the stunt test's plus a read grant on it (GHL_TCL_LIBRARY,
     // from tests/tcl_env.sh), as any host of tcl-worker must give it. No row
-    // reads there.
+    // reads there. A Tcl 9 that keeps its library in a zip attached to libtcl
+    // (zipfs) has no such directory: GHL_TCL_LIBRARY is then empty, and what
+    // the worker has to be granted is the one file the zip is read from.
     tcllib = os.getenv("GHL_TCL_LIBRARY")
-    if tcllib == "" {
-        println("host: GHL_TCL_LIBRARY is not set (Tcl's library directory)")
-        exit(2)
+    if tcllib != "" {
+        dirs = string.split(tcllib, ",")
+        nd = string.array_size(dirs)
+        di = 0
+        while di < nd {
+            sandbox.grant_fs_read(perms, "${string.array_get(dirs, di)}/*")
+            di = di + 1
+        }
+        string.array_free(dirs)
     }
-    dirs = string.split(tcllib, ",")
-    nd = string.array_size(dirs)
-    di = 0
-    while di < nd {
-        sandbox.grant_fs_read(perms, "${string.array_get(dirs, di)}/*")
-        di = di + 1
+    // That file is libtcl itself (GHL_TCL_ZIPFS_LIB, from tests/tcl_env.sh, the
+    // path as Tcl resolved it): Tcl opens it a second time to mount the
+    // archive, with a libc open the preload checks like any other, even where
+    // the loader's own read of it needed no grant (tcl/README.md, "Tcl 9 and
+    // its zipfs"). One file, not its directory.
+    zipfs_lib = os.getenv("GHL_TCL_ZIPFS_LIB")
+    if zipfs_lib != "" { sandbox.grant_fs_read(perms, zipfs_lib) }
+    // A libtcl in a private prefix (a Tcl built by hand, not the system's) is
+    // outside the places spawn_socket's Landlock floor lets the loader read, so
+    // the worker cannot open it: GHL_TCL_EXTRA_READ names the directories to
+    // grant (comma-separated, each as itself and its contents), as
+    // GHL_RUBY_EXTRA_READ does for Ruby.
+    extra = os.getenv("GHL_TCL_EXTRA_READ")
+    if extra != "" {
+        ed = string.split(extra, ",")
+        ne = string.array_size(ed)
+        ei = 0
+        while ei < ne {
+            sandbox.grant_fs_read(perms, string.array_get(ed, ei))
+            sandbox.grant_fs_read(perms, "${string.array_get(ed, ei)}/*")
+            ei = ei + 1
+        }
+        string.array_free(ed)
     }
-    string.array_free(dirs)
     args = list.new()
     list.add(args, os.getenv("AETHER_TCL_SONAME"))
     g, err = guest.launch(perms, worker, args, "tcl-worker", "")

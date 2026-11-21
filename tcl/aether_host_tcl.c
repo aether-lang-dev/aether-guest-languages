@@ -112,6 +112,9 @@ static struct {
     void         (*Tcl_LimitTypeSet)(Tcl_Interp* interp, int type);
     void         (*Tcl_LimitTypeReset)(Tcl_Interp* interp, int type);
     void         (*Tcl_GetTime)(Tcl_Time* timeBuf);
+    // Only to find out how this Tcl stores a character beyond the BMP: see
+    // ae_tcl_utf4_native. int on 8.x, Tcl_Size on 9; the value is 3 or 4.
+    int          (*Tcl_UniCharToUtf)(int ch, char* buf);
     // Optional: Tcl 9's zipfs hook, which tclsh calls first in main(). Absent
     // in 8.x (no zipfs there) and so never required: see tcl_process_init().
     const char*  (*TclZipfs_AppHook)(int* argcPtr, char*** argvPtr);
@@ -160,6 +163,7 @@ static int resolve_tcl_symbols(void* h) {
     RESOLVE(Tcl_LimitTypeSet,      "Tcl_LimitTypeSet");
     RESOLVE(Tcl_LimitTypeReset,    "Tcl_LimitTypeReset");
     RESOLVE(Tcl_GetTime,           "Tcl_GetTime");
+    RESOLVE(Tcl_UniCharToUtf,      "Tcl_UniCharToUtf");
     // Not in 8.5 or 8.6, so not RESOLVE: NULL there is the normal case.
     *(void**)(&g_tcl.TclZipfs_AppHook) = dlsym(h, "TclZipfs_AppHook");
     return 0;
@@ -181,6 +185,170 @@ static const char* tcl_string_result(Tcl_Interp* interp) {
 }
 static const char* tcl_obj_string(Tcl_Obj* obj) {
     return g_tcl.Tcl_GetStringFromObj(obj, NULL);
+}
+
+/* ---- strings across the boundary ------------------------------------------
+ *
+ * What Tcl keeps inside is not UTF-8. A string is "modified UTF-8":
+ *   - a NUL is the two bytes C0 80 (Tcl_GetStringFromObj never returns a
+ *     zero byte inside a string), which is invalid UTF-8;
+ *   - a Tcl built with 16-bit characters (every 8.x by default, TCL_UTF_MAX 3)
+ *     stores a character beyond the BMP as a surrogate pair, each half three
+ *     bytes (ED A0..AF xx, ED B0..BF xx: CESU-8), also invalid UTF-8;
+ *     Tcl 9 stores it as the four UTF-8 bytes.
+ * Handing Tcl_GetStringFromObj's bytes to the host as if they were UTF-8 sent
+ * the first of these as "C0 80" and the second as six bytes. And the other way,
+ * Tcl_NewStringObj on a four-byte UTF-8 sequence puts four bytes into a string
+ * that a 16-bit Tcl then reads as four stray characters.
+ *
+ * So every string that crosses is converted here. A NUL is REFUSED, not carried
+ * (the repository's decision: a refusal the caller sees beats a string that is
+ * silently wrong), and so is a lone surrogate, which UTF-8 cannot encode. A
+ * character beyond the BMP is carried, by joining or splitting the pair. The
+ * answer is "this string cannot cross" and a reason, never a changed string.
+ */
+#define AE_TCL_REFUSE_NUL \
+    "an embedded NUL; Tcl stores NUL as the two bytes C0 80, which are not UTF-8, so this bridge refuses it rather than pass on bytes that are wrong"
+#define AE_TCL_REFUSE_SURROGATE \
+    "an unpaired surrogate, which UTF-8 cannot encode"
+
+enum { AE_STR_OK = 0, AE_STR_NUL = 1, AE_STR_SURROGATE = 2 };
+
+static const char* ae_tcl_reason(int status) {
+    return status == AE_STR_NUL ? AE_TCL_REFUSE_NUL : AE_TCL_REFUSE_SURROGATE;
+}
+
+/* Whether this Tcl stores a character beyond the BMP as four UTF-8 bytes
+ * (Tcl 9, or an 8.x built with TCL_UTF_MAX 4) rather than as a surrogate pair.
+ * Found by asking Tcl to encode one, not by its version. */
+static int ae_tcl_utf4_native(void) {
+    char buf[8];
+    return g_tcl.Tcl_UniCharToUtf(0x1F600, buf) == 4;
+}
+
+static int ae_tcl_is_high(const unsigned char* p) {   /* ED A0..AF xx: a high surrogate */
+    return p[0] == 0xED && (p[1] & 0xF0) == 0xA0 && (p[2] & 0xC0) == 0x80;
+}
+static int ae_tcl_is_low(const unsigned char* p) {    /* ED B0..BF xx: a low surrogate */
+    return p[0] == 0xED && (p[1] & 0xF0) == 0xB0 && (p[2] & 0xC0) == 0x80;
+}
+
+/* Tcl's string to UTF-8. *conv is NULL when `in` is already UTF-8 and may be
+ * used as it is, else a malloc'd copy the caller frees. Anything but AE_STR_OK
+ * is a refusal (and *conv is NULL). */
+static int ae_tcl_to_utf8(const char* in, char** conv) {
+    const unsigned char* p = (const unsigned char*)in;
+    int pairs = 0;
+    *conv = NULL;
+    for (; *p; p++) {
+        if (p[0] == 0xC0 && p[1] == 0x80) return AE_STR_NUL;
+        if (p[0] == 0xED && (p[1] & 0xE0) == 0xA0) {         /* a surrogate, ED A0..BF */
+            if (ae_tcl_is_high(p) && !ae_tcl_utf4_native() && p[3] && p[4] && p[5] && ae_tcl_is_low(p + 3)) { pairs++; p += 5; continue; }
+            return AE_STR_SURROGATE;
+        }
+    }
+    if (!pairs) return AE_STR_OK;
+    char* out = (char*)malloc(strlen(in) + 1);
+    if (!out) return AE_STR_SURROGATE;
+    char* o = out;
+    for (p = (const unsigned char*)in; *p; ) {
+        if (ae_tcl_is_high(p) && p[3] && p[4] && p[5] && ae_tcl_is_low(p + 3)) {
+            unsigned hi = 0xD000u | ((p[1] & 0x3Fu) << 6) | (p[2] & 0x3Fu);
+            unsigned lo = 0xD000u | ((p[4] & 0x3Fu) << 6) | (p[5] & 0x3Fu);
+            unsigned cp = 0x10000u + (((hi & 0x3FFu) << 10) | (lo & 0x3FFu));
+            *o++ = (char)(0xF0 | (cp >> 18));
+            *o++ = (char)(0x80 | ((cp >> 12) & 0x3F));
+            *o++ = (char)(0x80 | ((cp >> 6) & 0x3F));
+            *o++ = (char)(0x80 | (cp & 0x3F));
+            p += 6;
+        } else {
+            *o++ = (char)*p++;
+        }
+    }
+    *o = 0;
+    *conv = out;
+    return AE_STR_OK;
+}
+
+static int ae_tcl_is_four(const unsigned char* p) {
+    return p[0] >= 0xF0 && p[0] <= 0xF4 && (p[1] & 0xC0) == 0x80 && (p[2] & 0xC0) == 0x80 && (p[3] & 0xC0) == 0x80;
+}
+
+/* UTF-8 to Tcl's string. A NUL cannot arrive in a C string; its overlong
+ * spelling C0 80 would become one inside Tcl, so it is refused. On a Tcl with
+ * 16-bit characters a four-byte sequence is split into the pair Tcl keeps. */
+static int ae_tcl_from_utf8(const char* in, char** conv) {
+    const unsigned char* p = (const unsigned char*)in;
+    int fours = 0;
+    *conv = NULL;
+    for (; *p; p++) {
+        if (p[0] == 0xC0 && p[1] == 0x80) return AE_STR_NUL;
+        if (ae_tcl_is_four(p)) { fours++; p += 3; }
+    }
+    if (!fours || ae_tcl_utf4_native()) return AE_STR_OK;
+    char* out = (char*)malloc(strlen(in) + fours * 2 + 1);
+    if (!out) return AE_STR_SURROGATE;
+    char* o = out;
+    for (p = (const unsigned char*)in; *p; ) {
+        if (ae_tcl_is_four(p)) {
+            unsigned cp = ((p[0] & 0x07u) << 18) | ((p[1] & 0x3Fu) << 12) | ((p[2] & 0x3Fu) << 6) | (p[3] & 0x3Fu);
+            cp -= 0x10000u;
+            unsigned hi = 0xD800u | (cp >> 10), lo = 0xDC00u | (cp & 0x3FFu);
+            *o++ = (char)(0xE0 | (hi >> 12)); *o++ = (char)(0x80 | ((hi >> 6) & 0x3F)); *o++ = (char)(0x80 | (hi & 0x3F));
+            *o++ = (char)(0xE0 | (lo >> 12)); *o++ = (char)(0x80 | ((lo >> 6) & 0x3F)); *o++ = (char)(0x80 | (lo & 0x3F));
+            p += 4;
+        } else {
+            *o++ = (char)*p++;
+        }
+    }
+    *o = 0;
+    *conv = out;
+    return AE_STR_OK;
+}
+
+/* A Tcl object holding the host's UTF-8 string, or NULL (with *status) when the
+ * string cannot cross. */
+static Tcl_Obj* ae_tcl_new_str(const char* in, int* status) {
+    char* conv = NULL;
+    int st = ae_tcl_from_utf8(in ? in : "", &conv);
+    if (status) *status = st;
+    if (st != AE_STR_OK) return NULL;
+    Tcl_Obj* o = g_tcl.Tcl_NewStringObj(conv ? conv : (in ? in : ""), -1);
+    free(conv);
+    return o;
+}
+
+/* A refusal as a message: "<what>: refused: it holds <reason>". */
+static void ae_tcl_refusal(char* buf, size_t n, const char* what, int status) {
+    snprintf(buf, n, "%s: refused: it holds %s", what, ae_tcl_reason(status));
+}
+
+/* The program text for a script: converted, or NULL with a stderr line. */
+static char* ae_tcl_code(const char* code) {
+    char* conv = NULL;
+    int st = ae_tcl_from_utf8(code, &conv);
+    if (st != AE_STR_OK) {
+        char msg[400];
+        ae_tcl_refusal(msg, sizeof msg, "the script", st);
+        fprintf(stderr, "[tcl] %s\n", msg);
+        return NULL;
+    }
+    return conv ? conv : strdup(code);
+}
+
+/* The message a failed shared-interpreter run prints, as UTF-8. */
+static void ae_tcl_print_error(Tcl_Interp* interp) {
+    char* conv = NULL;
+    const char* m = tcl_string_result(interp);
+    int st = ae_tcl_to_utf8(m, &conv);
+    if (st != AE_STR_OK) {
+        char msg[400];
+        ae_tcl_refusal(msg, sizeof msg, "the error message", st);
+        fprintf(stderr, "[tcl] %s\n", msg);
+    } else {
+        fprintf(stderr, "[tcl] %s\n", conv ? conv : m);
+    }
+    free(conv);
 }
 
 static void* try_dlopen(const char* name) {
@@ -373,8 +541,12 @@ void tcl_finalize(void) {
 int tcl_run(const char* code) {
     if (!code) return -1;
     if (tcl_init() != 0) return -1;
-    if (tcl_eval(T, code) != TCL_OK) {
-        fprintf(stderr, "[tcl] %s\n", tcl_string_result(T));
+    char* c = ae_tcl_code(code);
+    if (!c) return -1;
+    int rc = tcl_eval(T, c);
+    free(c);
+    if (rc != TCL_OK) {
+        ae_tcl_print_error(T);
         return -1;
     }
     return 0;
@@ -385,15 +557,18 @@ int tcl_run_sandboxed(void* perms, const char* code) {
     if (tcl_init() != 0) return -1;
     if (aether_sandbox_depth() >= AETHER_SANDBOX_MAX_LEVELS) return -1;
 
+    char* c = ae_tcl_code(code);
+    if (!c) return -1;
     aether_sandbox_push(perms);
 
     int result = 0;
-    if (tcl_eval(T, code) != TCL_OK) {
-        fprintf(stderr, "[tcl] %s\n", tcl_string_result(T));
+    if (tcl_eval(T, c) != TCL_OK) {
+        ae_tcl_print_error(T);
         result = -1;
     }
 
     aether_sandbox_pop();
+    free(c);
 
     return result;
 }
@@ -401,6 +576,15 @@ int tcl_run_sandboxed(void* perms, const char* code) {
 // --- Shared map native bindings for Tcl ------------------------------------
 
 static uint64_t current_map_token = 0;
+
+/* A map command that was handed a string that cannot cross: a Tcl error the
+ * script can catch, and nothing is stored or returned. */
+static int ae_tcl_map_refuse(Tcl_Interp* interp, const char* what, int status) {
+    char msg[400];
+    ae_tcl_refusal(msg, sizeof msg, what, status);
+    g_tcl.Tcl_SetObjResult(interp, g_tcl.Tcl_NewStringObj(msg, -1));
+    return TCL_ERROR;
+}
 
 static int tcl_aether_map_get(ClientData cd, Tcl_Interp* interp,
                                Tcl_Size objc_wide, Tcl_Obj* const objv[]) {
@@ -410,10 +594,16 @@ static int tcl_aether_map_get(ClientData cd, Tcl_Interp* interp,
         g_tcl.Tcl_WrongNumArgs(interp, 1, objv, "key");
         return TCL_ERROR;
     }
+    char* kc = NULL;
     const char* key = tcl_obj_string(objv[1]);
-    const char* val = aether_shared_map_get_by_token(current_map_token, key);
+    int st = ae_tcl_to_utf8(key, &kc);
+    if (st != AE_STR_OK) return ae_tcl_map_refuse(interp, "aether_map_get: the key", st);
+    const char* val = aether_shared_map_get_by_token(current_map_token, kc ? kc : key);
+    free(kc);
     if (val) {
-        g_tcl.Tcl_SetObjResult(interp, g_tcl.Tcl_NewStringObj(val, -1));
+        Tcl_Obj* o = ae_tcl_new_str(val, &st);
+        if (!o) return ae_tcl_map_refuse(interp, "aether_map_get: the value in the map", st);
+        g_tcl.Tcl_SetObjResult(interp, o);
     } else {
         g_tcl.Tcl_SetObjResult(interp, g_tcl.Tcl_NewStringObj("", 0));
     }
@@ -428,9 +618,16 @@ static int tcl_aether_map_put(ClientData cd, Tcl_Interp* interp,
         g_tcl.Tcl_WrongNumArgs(interp, 1, objv, "key value");
         return TCL_ERROR;
     }
+    char *kc = NULL, *vc = NULL;
     const char* key = tcl_obj_string(objv[1]);
     const char* val = tcl_obj_string(objv[2]);
-    aether_shared_map_put_by_token(current_map_token, key, val);
+    int st = ae_tcl_to_utf8(key, &kc);
+    if (st != AE_STR_OK) return ae_tcl_map_refuse(interp, "aether_map_put: the key", st);
+    st = ae_tcl_to_utf8(val, &vc);
+    if (st != AE_STR_OK) { free(kc); return ae_tcl_map_refuse(interp, "aether_map_put: the value", st); }
+    aether_shared_map_put_by_token(current_map_token, kc ? kc : key, vc ? vc : val);
+    free(kc);
+    free(vc);
     return TCL_OK;
 }
 
@@ -452,15 +649,18 @@ int tcl_run_sandboxed_with_map(void* perms, const char* code, uint64_t map_token
 
     current_map_token = map_token;
 
+    char* c = ae_tcl_code(code);
+    if (!c) { current_map_token = 0; return -1; }
     aether_sandbox_push(perms);
 
     int result = 0;
-    if (tcl_eval(T, code) != TCL_OK) {
-        fprintf(stderr, "[tcl] %s\n", tcl_string_result(T));
+    if (tcl_eval(T, c) != TCL_OK) {
+        ae_tcl_print_error(T);
         result = -1;
     }
 
     aether_sandbox_pop();
+    free(c);
     current_map_token = 0;
 
     return result;
@@ -507,11 +707,19 @@ int tcl_run_sandboxed_with_map(void* perms, const char* code, uint64_t map_token
  * pushed or raised. A callback that evaluates on its own VM can reach a
  * second callback, so each trampoline keeps its own frame and restores the
  * one it interrupted. */
+/* A UTF-8 copy of a Tcl string, kept until the call or result it belongs to
+ * ends (the host reads a plain pointer). */
+typedef struct AeTclBuf {
+    struct AeTclBuf* next;
+    char* s;
+} AeTclBuf;
+
 typedef struct AeTclFrame {
     int objc;
     Tcl_Obj* const* objv;
     Tcl_Obj* pushed;   /* one reference held, or NULL */
     Tcl_Obj* error;    /* one reference held, or NULL */
+    AeTclBuf* bufs;    /* converted arguments, freed when the call ends */
     struct AeTclFrame* prev;
 } AeTclFrame;
 
@@ -527,6 +735,8 @@ typedef struct {
     int command_granularity;
     int64_t time_budget_ms;   /* <= 0: no time limit */
     int time_granularity;
+    AeTclBuf* result_bufs;    /* the converted result, freed at pop_result or the next eval */
+    char pending[512];        /* a host-side string that could not cross, said at the next eval; "" for none */
 } AeTclVm;
 
 typedef struct {
@@ -543,6 +753,15 @@ static void ae_tcl_hold(Tcl_Obj** slot, Tcl_Obj* o) {
     if (o) ae_tcl_incr(o);
     if (*slot) ae_tcl_decr(*slot);
     *slot = o;
+}
+
+static void ae_tcl_bufs_free(AeTclBuf** list) {
+    while (*list) {
+        AeTclBuf* b = *list;
+        *list = b->next;
+        free(b->s);
+        free(b);
+    }
 }
 
 static int ae_tcl_on_owner(const AeTclVm* vm) {
@@ -605,10 +824,26 @@ static int ae_tcl_to_bool(Tcl_Obj* o) {
     return b != 0;
 }
 
-static const char* ae_tcl_to_str(Tcl_Obj* o) {
+/* The object's text as UTF-8, kept in `*keep` until that list is freed. A
+ * string that cannot cross (status) reads "" and sets *status. */
+static const char* ae_tcl_to_str(Tcl_Obj* o, AeTclBuf** keep, int* status) {
+    if (status) *status = AE_STR_OK;
     if (!o) return "";
     const char* s = tcl_obj_string(o);
-    return s ? s : "";
+    if (!s) return "";
+    char* conv = NULL;
+    int st = ae_tcl_to_utf8(s, &conv);
+    if (st != AE_STR_OK) {
+        if (status) *status = st;
+        return "";
+    }
+    if (!conv) return s;
+    AeTclBuf* b = (AeTclBuf*)malloc(sizeof *b);
+    if (!b) { free(conv); return ""; }
+    b->s = conv;
+    b->next = *keep;
+    *keep = b;
+    return conv;
 }
 
 void* tcl_vm_new(void) {
@@ -642,6 +877,7 @@ void tcl_vm_free(void* p) {
         return;
     }
     ae_tcl_hold(&vm->result, NULL);
+    ae_tcl_bufs_free(&vm->result_bufs);
     /* Deleting the interpreter deletes its commands, whose delete procs free
      * their AeTclCommand records. */
     g_tcl.Tcl_DeleteInterp(vm->interp);
@@ -655,13 +891,31 @@ static int ae_tcl_trampoline(ClientData cd, Tcl_Interp* interp,
     int objc = (int)objc_wide;   // see tcl_abi.h: int in Tcl 8, Tcl_Size in 9
     AeTclCommand* cmd = (AeTclCommand*)cd;
     AeTclVm* vm = cmd->vm;
-    AeTclFrame frame = {objc, objv, NULL, NULL, vm->frame};
+    AeTclFrame frame = {objc, objv, NULL, NULL, NULL, vm->frame};
+    /* A string argument the host could not be given whole is refused before
+     * the host function runs: the script gets a Tcl error that names the
+     * command and the argument, and the host function is not called. */
+    for (int i = 1; i < objc; i++) {
+        int t = ae_tcl_type_of(objv[i]);
+        if (t != AE_TCL_TSTR && t != AE_TCL_TTABLE && t != AE_TCL_TOTHER) continue;
+        char* conv = NULL;
+        int st = ae_tcl_to_utf8(tcl_obj_string(objv[i]), &conv);
+        free(conv);
+        if (st != AE_STR_OK) {
+            char what[200], msg[800];
+            snprintf(what, sizeof what, "%s: argument %d", tcl_obj_string(objv[0]), i);
+            ae_tcl_refusal(msg, sizeof msg, what, st);
+            g_tcl.Tcl_SetObjResult(interp, g_tcl.Tcl_NewStringObj(msg, -1));
+            return TCL_ERROR;
+        }
+    }
     vm->frame = &frame;
     int rc = cmd->host_fn((void*)vm);
     vm->frame = frame.prev;
+    ae_tcl_bufs_free(&frame.bufs);
 
     int status = TCL_OK;
-    if (rc == AE_TCL_RAISE && frame.error) {
+    if (frame.error) {
         g_tcl.Tcl_SetObjResult(interp, frame.error);
         status = TCL_ERROR;
     } else if (rc > 0 && frame.pushed) {
@@ -698,7 +952,15 @@ static void ae_tcl_set_global(AeTclVm* vm, const char* name, Tcl_Obj* value) {
 void tcl_vm_set_global_str(void* p, const char* name, const char* value) {
     AeTclVm* vm = (AeTclVm*)p;
     if (!vm || !name || !ae_tcl_on_owner(vm)) return;
-    ae_tcl_set_global(vm, name, g_tcl.Tcl_NewStringObj(value ? value : "", -1));
+    int st;
+    Tcl_Obj* o = ae_tcl_new_str(value, &st);
+    if (!o) {
+        char what[200];
+        snprintf(what, sizeof what, "tcl_vm_set_global_str(%s): the value", name);
+        ae_tcl_refusal(vm->pending, sizeof vm->pending, what, st);
+        return;
+    }
+    ae_tcl_set_global(vm, name, o);
 }
 
 void tcl_vm_set_global_int(void* p, const char* name, int64_t value) {
@@ -717,8 +979,17 @@ void tcl_vm_set_global_strlist(void* p, const char* name, void* items) {
         for (int i = 0; i < count; i++) {
             void* item = list_get_raw(items, i);
             const char* str = item ? aether_string_data(item) : "";
-            g_tcl.Tcl_ListObjAppendElement(NULL, list,
-                                           g_tcl.Tcl_NewStringObj(str ? str : "", -1));
+            int st;
+            Tcl_Obj* o = ae_tcl_new_str(str, &st);
+            if (!o) {
+                char what[200];
+                snprintf(what, sizeof what, "tcl_vm_set_global_strlist(%s): item %d", name, i);
+                ae_tcl_refusal(vm->pending, sizeof vm->pending, what, st);
+                ae_tcl_incr(list);
+                ae_tcl_decr(list);
+                return;
+            }
+            g_tcl.Tcl_ListObjAppendElement(NULL, list, o);
         }
     }
     ae_tcl_set_global(vm, name, list);
@@ -804,9 +1075,27 @@ int tcl_vm_eval(void* p, const char* code) {
     }
     if (!code) return -1;
     vm->c_error = NULL;
+    ae_tcl_bufs_free(&vm->result_bufs);
+    /* A host-side string that could not cross (a global it set) or a script
+     * that cannot: the eval does not run, and says why. */
+    int cst = AE_STR_OK;
+    Tcl_Obj* script = NULL;
+    if (vm->pending[0]) {
+        script = NULL;
+        cst = -1;
+    } else {
+        script = ae_tcl_new_str(code, &cst);
+    }
+    if (!script) {
+        char msg[600];
+        if (cst == -1) { snprintf(msg, sizeof msg, "%s", vm->pending); vm->pending[0] = 0; }
+        else ae_tcl_refusal(msg, sizeof msg, "the script", cst);
+        ae_tcl_hold(&vm->result, g_tcl.Tcl_NewStringObj(msg, -1));
+        vm->result_is_err = 1;
+        return -1;
+    }
     if (vm->eval_depth == 0) ae_tcl_arm_limits(vm);
     vm->eval_depth++;
-    Tcl_Obj* script = g_tcl.Tcl_NewStringObj(code, -1);
     ae_tcl_incr(script);
     int rc = g_tcl.Tcl_EvalObjEx(vm->interp, script, TCL_EVAL_GLOBAL);
     ae_tcl_decr(script);
@@ -822,6 +1111,24 @@ int tcl_vm_eval(void* p, const char* code) {
     }
     ae_tcl_hold(&vm->result, g_tcl.Tcl_GetObjResult(vm->interp));
     vm->result_is_err = rc == TCL_ERROR;
+    /* A result or an error message with a NUL (or a lone surrogate) in it
+     * cannot be handed to the host as the string it is: it becomes an error
+     * that says so. */
+    {
+        int t = ae_tcl_type_of(vm->result);
+        if (t == AE_TCL_TSTR || t == AE_TCL_TTABLE || t == AE_TCL_TOTHER) {
+            char* conv = NULL;
+            int st = ae_tcl_to_utf8(tcl_obj_string(vm->result), &conv);
+            free(conv);
+            if (st != AE_STR_OK) {
+                char msg[600];
+                ae_tcl_refusal(msg, sizeof msg, rc == TCL_ERROR ? "the script's error message" : "the script's result", st);
+                ae_tcl_hold(&vm->result, g_tcl.Tcl_NewStringObj(msg, -1));
+                vm->result_is_err = 1;
+                rc = TCL_ERROR;
+            }
+        }
+    }
     if (vm->eval_depth == 0) ae_tcl_disarm_limits(vm);
     g_tcl.Tcl_ResetResult(vm->interp);
     return rc == TCL_ERROR ? -1 : 0;
@@ -854,7 +1161,7 @@ const char* tcl_vm_result_str(void* p) {
     if (!vm) return "";
     if (vm->c_error) return vm->c_error;
     if (!ae_tcl_on_owner(vm)) return "";
-    return ae_tcl_to_str(vm->result);
+    return ae_tcl_to_str(vm->result, &vm->result_bufs, NULL);
 }
 
 int tcl_vm_result_bool(void* p) {
@@ -869,6 +1176,7 @@ void tcl_vm_pop_result(void* p) {
     vm->c_error = NULL;
     if (!ae_tcl_on_owner(vm)) return;
     ae_tcl_hold(&vm->result, NULL);
+    ae_tcl_bufs_free(&vm->result_bufs);
     vm->result_is_err = 0;
 }
 
@@ -917,7 +1225,12 @@ int64_t tcl_arg_int(void* p, int i) { return ae_tcl_to_i64(ae_tcl_arg(p, i)); }
 double tcl_arg_double(void* p, int i) { return ae_tcl_to_double(ae_tcl_arg(p, i)); }
 int tcl_arg_bool(void* p, int i) { return ae_tcl_to_bool(ae_tcl_arg(p, i)); }
 /* Valid until the callback returns. */
-const char* tcl_arg_str(void* p, int i) { return ae_tcl_to_str(ae_tcl_arg(p, i)); }
+const char* tcl_arg_str(void* p, int i) {
+    AeTclVm* vm = (AeTclVm*)p;
+    /* The trampoline refused any string argument that cannot cross before the
+     * host function ran, so there is a frame and this converts only. */
+    return ae_tcl_to_str(ae_tcl_arg(p, i), vm && vm->frame ? &vm->frame->bufs : &vm->result_bufs, NULL);
+}
 
 static void ae_tcl_push(void* p, Tcl_Obj* o) {
     AeTclVm* vm = (AeTclVm*)p;
@@ -940,7 +1253,15 @@ void tcl_push_bool(void* p, int v) {
     if (ae_tcl_in_callback(p)) ae_tcl_push(p, g_tcl.Tcl_NewWideIntObj(v != 0));
 }
 void tcl_push_str(void* p, const char* v) {
-    if (ae_tcl_in_callback(p)) ae_tcl_push(p, g_tcl.Tcl_NewStringObj(v ? v : "", -1));
+    if (!ae_tcl_in_callback(p)) return;
+    int st;
+    Tcl_Obj* o = ae_tcl_new_str(v, &st);
+    if (o) { ae_tcl_push(p, o); return; }
+    /* The host's string cannot be given to the script as it is: the call fails
+     * with the reason, in the script, instead of returning something else. */
+    char msg[600];
+    ae_tcl_refusal(msg, sizeof msg, "the value the host returned", st);
+    ae_tcl_hold(&((AeTclVm*)p)->frame->error, g_tcl.Tcl_NewStringObj(msg, -1));
 }
 /* Tcl has no nil: the empty string, which reads back TCL_TNIL. */
 void tcl_push_nil(void* p) {
@@ -950,7 +1271,14 @@ void tcl_push_nil(void* p) {
 int tcl_raise_error(void* p, const char* msg) {
     AeTclVm* vm = (AeTclVm*)p;
     if (!vm || !vm->frame) return 0;
-    ae_tcl_hold(&vm->frame->error, g_tcl.Tcl_NewStringObj(msg ? msg : "error", -1));
+    int st;
+    Tcl_Obj* o = ae_tcl_new_str(msg ? msg : "error", &st);
+    if (!o) {
+        char m2[600];
+        ae_tcl_refusal(m2, sizeof m2, "the error message the host raised", st);
+        o = g_tcl.Tcl_NewStringObj(m2, -1);
+    }
+    ae_tcl_hold(&vm->frame->error, o);
     return AE_TCL_RAISE;
 }
 

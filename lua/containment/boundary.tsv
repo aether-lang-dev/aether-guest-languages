@@ -9,6 +9,7 @@ big-up	echo(string.rep("x", 100000))
 v:str	"hello"
 v:str-empty	""
 v:str-nonascii	"héllo ✓ 日本"
+v:str-astral	"a😀b 𝒳"
 v:str-nul	"a\0b"
 v:str-60k	string.rep("x", 60000)
 v:int	42

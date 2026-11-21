@@ -84,6 +84,19 @@ main() {
             duktape.vm_free(vm)
         }
 
+        // Duktape holds a character beyond the BMP made from a surrogate pair as
+        // CESU-8 (six bytes); a host reads UTF-8 (four).
+        spec.it_when(have_duktape, "a character beyond the BMP reaches the host as UTF-8", reason) callback {
+            vm = duktape.vm_new()
+            duktape.vm_eval(vm, "'a' + String.fromCharCode(0xD83D, 0xDE00) + 'b'")
+            spec.assert_str_eq(duktape.vm_result_str(vm), "a😀b", "a pair made in the script")
+            duktape.vm_pop_result(vm)
+            duktape.vm_eval(vm, "'a😀b 𝒳'")
+            spec.assert_str_eq(duktape.vm_result_str(vm), "a😀b 𝒳", "one written in the source")
+            duktape.vm_pop_result(vm)
+            duktape.vm_free(vm)
+        }
+
         spec.it_when(have_duktape, "a syntax error is an error result", reason) callback {
             vm = duktape.vm_new()
             spec.assert_not_eq(duktape.vm_eval(vm, "function ("), 0, "does not parse")
