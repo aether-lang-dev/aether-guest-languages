@@ -416,6 +416,35 @@ jobs:
       - name: Homebrew's tcl-tk
         run: GUEST_LANG=tcl sh tests/run.sh
 
+  # Tcl 9. The macos-tcl job above installs Homebrew's tcl-tk (9.1.0 on the
+  # runner, 2026-11-21) but does not test it: the runner has tcl-tk@8 (8.6)
+  # installed already, and tests/tcl_env.sh looks for 8.6 first, so in the run
+  # of 2026-11-21 (the job's log says "Tcl runtime: /opt/homebrew/opt/tcl-tk@8/lib/
+  # libtcl8.6.dylib 8.6.18") it ran Tcl 8.6. This one asks for 9.1, a default build with its script
+  # library in a zip attached to libtcl (zipfs), which is what a packaged Tcl 9
+  # is: the case the bridge's TclZipfs_AppHook call is for (tcl/README.md, "Tcl 9
+  # and its zipfs"). No Linux runner image has a Tcl 9 package (Ubuntu 24.04
+  # ships 8.6), so the Linux side of Tcl 9 is the lab run the README says.
+  macos-tcl9:
+    name: macOS (in-process, Homebrew's tcl-tk 9)
+    runs-on: macos-15
+    env:
+      GHL_CI_RUNTIME: "Tcl 9.1 (Homebrew tcl-tk)"
+      TCL_VERSION: "9.1"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tcl
+        run: brew install tcl-tk
+      - name: ae (AE_PIN)
+        run: |
+          . ci/versions.env
+          curl -fsSL "https://raw.githubusercontent.com/aether-lang-dev/aeb/$AEB_REF/get.sh" \
+            | AE_PIN="$AE_PIN" AEB_REF="$AEB_REF" sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - run: ae version
+      - name: Homebrew's tcl-tk 9
+        run: GUEST_LANG=tcl sh tests/run.sh
+
   # Perl: the runtime library only (libperl5.38t64 on Ubuntu 24.04, which the
   # perl package depends on); no libperl-dev, which the bridge does not need
   # to build. tests/perl_env.sh asks PERL for its library.

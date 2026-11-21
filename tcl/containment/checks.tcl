@@ -99,6 +99,55 @@ proc check::exec-bare-tmpdir {} {
     return [check::exec-bare]
 }
 
+# Not a row of stunt's catalogue: Tcl's own script library, read the first time
+# a script uses what is in it (clock.tcl for `clock format`, an .enc file for an
+# encoding that is not built in, tclIndex for parray). With the library in
+# files (Tcl 8, a Tcl 9 built without zipfs) that is a read of a file, which a
+# sandbox with no grant on the library directory refuses, and which the contained
+# child, locked down before the script starts, cannot do at all. With the
+# library in a zip attached to libtcl (a default Tcl 9, "zipfs") Tcl read the
+# whole archive into memory when it mounted it, so nothing is opened and the
+# same script needs no grant. containment/test_library_first_use.sh runs this,
+# expecting whichever the build does.
+proc check::library-first-use {} {
+    foreach {what script} {
+        {clock format} {clock format 0 -timezone UTC -format %Y}
+        {an encoding} {string length [encoding convertfrom iso8859-2 \xb1]}
+        {auto_load parray} {auto_load parray}
+    } {
+        if {[catch $script res opts]} {
+            if {[string match "*permission denied*" $res]} { return [list refused "$what: $res"] }
+            # A command that the library defines can fail with "invalid command
+            # name" when auto_load could not read the file it is in (Tcl 9's
+            # clock without zipfs): that is a refusal only if the file itself is.
+            if {[string match "invalid command name*" $res] &&
+                [catch {open [file join [info library] clock.tcl] r} chan copts]} {
+                set c [classify $copts "open clock.tcl: $chan"]
+                if {[lindex $c 0] eq "refused"} { return [list refused "$what: $res; the library file is refused: $chan"] }
+            }
+            return [classify $opts "$what: $res"]
+        }
+    }
+    return [list succeeded "clock format, an encoding and parray, from [info library]"]
+}
+
+# Not a row of stunt's catalogue, and only for a Tcl 9 with zipfs: mounting a
+# zip archive of the script's own. What is already mounted (Tcl's library) is
+# read from memory with no open, but a new mount is an open of the zip file,
+# which is a libc call like any other: held by the same grants as `open`.
+# containment/test_zipfs_mount.sh runs this with a zip in the work directory.
+proc check::zipfs-mount {} {
+    if {[catch {zipfs mount ./stunt-fixture.zip //zipfs:/fixture} res opts]} {
+        if {[string match "*permission denied*" $res]} { return [list refused "zipfs mount: $res"] }
+        return [classify $opts "zipfs mount: $res"]
+    }
+    set chan [open //zipfs:/fixture/hello.txt r]
+    set s [read $chan]
+    close $chan
+    zipfs unmount //zipfs:/fixture
+    return [list succeeded "mounted ./stunt-fixture.zip and read \"[first_line $s]\""]
+}
+
 # socket -async: a non-blocking connect, which is what stunt asks for. The
 # address is nobody's (TEST-NET-1), so a connect that is let through never
 # completes; the channel is closed at once.

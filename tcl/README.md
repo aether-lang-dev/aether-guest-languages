@@ -7,16 +7,20 @@ same functions under the same names, `tcl.run`, `tcl.run_sandboxed`,
 needs no Tcl dev package (no `tcl.h`) to build. Tcl 8.5 and 8.6, and 9.0 in
 principle ([Loading libtcl](#loading-libtcl) says what was run).
 
-**Tcl 9.0 (checked 2026-11-21, in-process).** A Tcl 9.0.4 built by hand on
-cachyos with `--enable-shared --disable-zipfs` passes all 11 in-process specs,
-and the in-process containment rows agree with the table's preload column. The
-contained child was not run against it (a library in a private prefix is outside
-what `spawn_socket`'s Landlock floor lets the worker read, and only Ruby's test
-host has a way to grant it). A default Tcl 9.0 build keeps its script library in
-a zip attached to `libtcl9.0.so` (zipfs), and the bridge does not mount it:
-`Tcl_Init` then fails with "Cannot find a usable init.tcl" and `tcl.init()` returns
--1, so such a build needs `TCL_LIBRARY` pointing at an unpacked library, or a
-bridge that calls Tcl's zipfs hook; not done here.
+**Tcl 9.0 (checked 2026-11-21, on cachyos).** A default Tcl 9.0 keeps its script
+library in a zip archive attached to `libtcl9.0.so` (zipfs), and a Tcl 9 a
+distribution packages will be built that way. The bridge mounts the archive the
+way `tclsh` does, so a stock Tcl 9 initialises with nothing set, and
+`TCL_LIBRARY` still wins when it is ([Tcl 9 and its zipfs](#tcl-9-and-its-zipfs)).
+Before 2026-11-21 it did not: `Tcl_Init` failed with "Cannot find a usable
+init.tcl" and `tcl.init()` returned -1. The full Tcl set (`GUEST_LANG=tcl
+GHL_REQUIRE_CHILD=1 sh tests/run.sh`: the specs, every containment row, the
+parity check and the contained child) passes against three Tcls on cachyos
+(ae 0.934.0, Landlock): the system's 8.6.16, a Tcl 9.0.4 built by hand with
+zipfs (the default) and one built with `--disable-zipfs`; the system's 8.6.12 on
+ae-x64 and the system's 8.5.9 on macOS pass the same set (the child is skipped
+on macOS). What a contained Tcl 9 needs that 8.6 does not is one read grant, on
+libtcl itself, under "Tcl 9 and its zipfs".
 
 ## Four ways to run Tcl from Aether
 
@@ -29,7 +33,7 @@ supported: pick by how far you trust the script, not by which is newest.
 | Where Tcl runs | your process | your process | your process | its own process (`tcl/worker`) |
 | Your host commands | not checked | checked against the grants | checked against the grants | checked against the grants; each call is a message the host answers |
 | Tcl's own `open`, `socket`, `exec` and `load` | not checked | **not checked** | checked against the grants (Linux), except `$env` | refused, beyond what the host hands over |
-| Tcl's library, loaded on first use (`parray`, `clock format`, encodings) | yes | yes | only with a read grant on Tcl's library directory | only what the worker's warm-up script used before its lockdown |
+| Tcl's library, loaded on first use (`parray`, `clock format`, encodings) | yes | yes | only with a read grant on Tcl's library directory; a default Tcl 9 always, it reads the library from memory | only what the worker's warm-up script used before its lockdown; a default Tcl 9 always |
 | Platforms | everywhere libtcl loads | same | Linux | Linux with Landlock; macOS refuses to start it |
 | Needs | ae 0.875.0 | ae 0.875.0 | ae 0.875.0; `exec` held from 0.884.0 | ae 0.878.0 (`std.guest`) |
 
@@ -136,7 +140,9 @@ Two things in it are Tcl's own:
   `run_sandboxed`, or grant the directory:
   `grant_fs_read("/usr/lib/tcl8.6/*")`. (`clock format` also needs the
   `msgcat` package; on this host an embedded interpreter cannot find it at
-  all, preload or not: `can't find package msgcat 1.6`.)
+  all, preload or not: `can't find package msgcat 1.6`.) A default Tcl 9
+  keeps its library in memory, not in files, so none of this applies to it:
+  those commands work with no grant ([Tcl 9 and its zipfs](#tcl-9-and-its-zipfs)).
 
 It is a library interposer, not a kernel boundary: a raw system call made
 without libc is not seen (Tcl itself cannot make one without a compiled
@@ -154,7 +160,7 @@ import std.list
 
 main() {
     perms = sandbox.new("tcl") {
-        grant_fs_read("/usr/lib/tcl8.6/*")          // Tcl_Init sources init.tcl from here
+        grant_fs_read("/usr/lib/tcl8.6/*")          // Tcl_Init sources init.tcl from here (a default Tcl 9: libtcl9.0.so itself)
     }
     args = list.new()
     list.add(args, "libtcl8.6.so")
@@ -315,7 +321,13 @@ What the table says:
   `tcl-worker` has to give it. Nothing else is needed to start: after
   `Tcl_Init` the worker locks itself down and reads nothing more, so the
   script has only the part of Tcl's library the worker's warm-up used (the
-  worker's second argument; see below). No row reads there.
+  worker's second argument; see below). No row reads there. For a default
+  Tcl 9 the one grant is a different one, narrower and on a file: a read of
+  libtcl itself (`GHL_TCL_ZIPFS_LIB`), and then the script has all of Tcl's
+  library; see [Tcl 9 and its zipfs](#tcl-9-and-its-zipfs). A libtcl in a
+  private prefix also needs its directory granted for the loader
+  (`GHL_TCL_EXTRA_READ`, as Ruby's test host takes `GHL_RUBY_EXTRA_READ`); the
+  system's needs nothing for that.
 - **`load` of a refused `dlopen` killed the worker, before ae 0.934.0.** The
   preload refuses a handle on libc by returning NULL from `dlopen`; until
   aether #3799 (0.934.0) it did not set `dlerror()`. Tcl 8.6's `TclpDlopen`
@@ -407,12 +419,118 @@ only, the fourth word in all three; reference counts go through
 field. `Tcl_GetVersion` is checked at load, and a library older than 8.5 or
 newer than 9.x is refused with a message.
 
-What has run: **8.5.9 on macOS** (the system's) and **8.6.16 on CachyOS**,
-both the specs and every containment row. **Tcl 9.0 has not been run
-against this build** (no Tcl 9 was available where it was made); the
-bridge as it stood in aether was used with 9.0 on macOS/Homebrew, and what
-this move changed (the widths above) is argued, not exercised. CI runs
-macOS with Homebrew's tcl-tk.
+What has run, all with the specs, every containment row, the parity check and
+(on Linux) the contained child, ae 0.934.0:
+
+| Tcl | where | when | how |
+|---|---|---|---|
+| 8.6.16, the system's | cachyos | 2026-11-21 | `GUEST_LANG=tcl GHL_REQUIRE_CHILD=1 sh tests/run.sh` |
+| 8.6.12, the system's (Ubuntu 22.04) | ae-x64 | 2026-11-21 | the same |
+| 8.5.9, the system's | macOS arm64 | 2026-11-21 | `GUEST_LANG=tcl sh tests/run.sh` (no child on macOS) |
+| 9.0.4, a default build with zipfs, private prefix | cachyos | 2026-11-21 | the same as the first, with `AETHER_TCL_SONAME` set to its `libtcl9.0.so` |
+| 9.0.4, `--disable-zipfs`, private prefix | cachyos | 2026-11-21 | the same, and `GHL_TCL_EXTRA_READ` set to its `lib` directory |
+
+The two Tcl 9.0.4 builds are from the 9.0.4 source tarball, `./configure
+--prefix=<dir> --enable-shared` (and `--disable-zipfs`), `make`, `make
+install`; the zipfs build's `make` needs `LD_LIBRARY_PATH` pointing at the build
+directory, for the Tcl it runs while building its bundled packages. A Tcl 9
+that a package manager installed was not run: cachyos packages Tcl 8.6.16
+only (`pacman -Si tcl`), and no system package was installed for this. What CI
+runs is in [Tests](#tests).
+
+### Tcl 9 and its zipfs
+
+A default build of Tcl 9.0 keeps its script library (`init.tcl`, the time zone
+data, the encodings, `http` and the rest: 870 files in 9.0.4) in a zip archive
+attached to `libtcl9.0.so`, and mounts it read-only at `//zipfs:/lib/tcl` (the
+library itself at `//zipfs:/lib/tcl/tcl_library`) when the application
+initialises Tcl the way Tcl 9 documents (`zipfs.3`): `tclsh` calls
+`TclZipfs_AppHook` first thing in `main`, which calls `Tcl_FindExecutable`,
+mounts a zip attached to the executable and the one attached to libtcl, and
+records where the library is. A build made with `--disable-zipfs` has its
+library in files, as Tcl 8 does. The bridge used to call only
+`Tcl_FindExecutable(NULL)`, so nothing was mounted, `Tcl_Init` looked for files
+that are not there and `tcl.init()` was -1, "Cannot find a usable init.tcl".
+It now does what `tclsh` does (`tcl_process_init` in `aether_host_tcl.c`):
+
+- It looks up `TclZipfs_AppHook` with `dlsym`, optionally. A Tcl 8 has no such
+  symbol and gets `Tcl_FindExecutable(NULL)` as before, so 8.5 and 8.6 are
+  unchanged.
+- It passes a name with no slash that finds no executable as `argv[0]`, not
+  NULL. With NULL, Tcl 9.0.4 returns from `TclpFindExecutable` before it records
+  which shared library it runs from, and no zipfs is mounted (found by reading
+  `unix/tclUnixFile.c` and by trying: `zipfs mount` was empty). With a name
+  that finds nothing, `info nameofexecutable` is empty, which is what Tcl 8 gives
+  here too. The host's own executable is not given: Tcl would open it looking
+  for an attached zip, and `info nameofexecutable` would name the host program,
+  which a script could `exec`.
+- It is done once per process, under a mutex, before the first interpreter
+  (the shared one and every VM call it): it is Tcl's own process-wide state (the
+  executable name, the zipfs mounts), not the bridge's, so there is no handle to
+  hang it on. `Tcl_Finalize` is final in Tcl 8.6 and 9.0 alike ("Tcl_InitSubsystems
+  called while exiting" if you initialise again), so it is not undone.
+- `TCL_LIBRARY` is honoured: Tcl's init script tries it before the zip and before
+  the compiled-in directory. A Tcl built without zipfs finds its library on disk
+  as before. A failed `Tcl_Init` on a Tcl 9 says, besides Tcl's message, that the
+  library is in a zip unless built otherwise and what to do.
+
+What Tcl 9 reads, measured on cachyos with `strace -f` on the contained worker
+(Tcl 9.0.4 with zipfs): libtcl9.0.so by the loader, then the same file again
+by Tcl while it initialises (a libc `open`, which the preload turns into an
+`openat2` that refuses symlinks, so Tcl resolves the path first and the path to
+grant is the real file; then an `mmap` of the whole file and a `close`), and
+nothing else: from then on the archive is read from memory. No temporary file
+is made, because the default archive has no shared object in it (`zipfs list
+-glob *.so` is empty; thread, sqlite3, tdbc and itcl are ordinary files beside
+libtcl, found as before).
+
+What that does to containment, against Tcl 8.6 and a Tcl 9 without zipfs:
+
+| | library in files (8.x, 9 without zipfs) | library in the zip (default 9) |
+|---|---|---|
+| grant needed to initialise inside a sandbox | read of the library directory (`$tcl_library/*`) | read of libtcl itself: the one file, as Tcl resolved it |
+| the loader's read of libtcl | the Landlock floor covers a system library; a private prefix needs its directory (`GHL_TCL_EXTRA_READ`) | the same, and the grant above covers a private prefix's too |
+| `clock format`, an encoding, `parray` on first use, with no grant, in-process under the preload | refused | works |
+| the same in the contained child, with no warm-up script | refused | works |
+| mounting an archive of the script's own (`zipfs mount`) | (no such command) | an `open` the grants hold: refused with no grant, and in the child under every policy |
+
+- **The grant is narrower, on a file.** The narrowest grant for a default Tcl 9
+  is `grant_fs_read("<libtcl9.0.so as Tcl resolved it>")`: ask a `tclsh` of that
+  Tcl for `zipfs mount //zipfs:/lib/tcl`, which prints the file
+  (`tests/tcl_env.sh` does, as `GHL_TCL_ZIPFS_LIB`). It is needed wherever Tcl
+  is initialised under a sandbox: in the contained child always, and in an
+  in-process host that makes its interpreter inside a `sandbox.enforce` block.
+  A host that makes the interpreter first, as `containment/host.ae` does and as
+  the other in-process ways here do, needs nothing. Measured with the preload on
+  cachyos, interpreter made inside a block with no grants: `tcl.vm_new()` fails;
+  with `fs_read` on exactly `libtcl9.0.so` it works; with `fs_read` on another
+  file it fails; a no-zipfs build needs its library directory instead. In the
+  contained child with a Tcl in a private prefix, exactly that one file is
+  enough. Never grant a directory like `/usr/lib/*` or `/tmp` for this.
+- **Not run: a system Tcl 9 in the contained child.** No packaged Tcl 9 was
+  available (cachyos packages 8.6.16). That the one-file grant is needed there as
+  well follows from the same preload check of Tcl's `open`, since the loader's
+  floor makes no difference to a libc `open`; it was not seen.
+- **The library is available with no grant, from memory.** In a default Tcl 9
+  `clock format`, `parray`, an encoding and the time zones work in-process under
+  the preload with no grants and in the contained child with no warm-up script,
+  where Tcl 8.6 refuses them (`containment/test_library_first_use.sh` holds both
+  sides). A script cannot reach any file by it: only what is mounted, Tcl's own
+  library, is in memory.
+- **A mount of the script's own is held.** `zipfs mount file.zip //zipfs:/x` is
+  an `open` of `file.zip`, refused without `fs_read`, and in the child under every
+  policy (`containment/test_zipfs_mount.sh`).
+- **`load` of a shared object out of a mounted zip makes a temporary file.** Tcl
+  copies it to `/tmp/tclXXXXXX` (or `$TMPDIR`; created, written, unlinked), then
+  `dlopen`s that. Seen by hand with `strace` on a zip made with `zipfs mkzip`,
+  not a row: a script has to mount that zip first, which needs the grant above,
+  and the default archive has none. A host that allows it would need the
+  temporary-file grants of the bare `exec` below, on one scratch directory,
+  never `/tmp`. Not tried under a sandbox.
+- **No stunt row changes.** The parity check (`tests/parity.sh`) agrees with the
+  table's columns for all three Tcls, 20 cells each, and the bare `exec`'s
+  temporary file, the two `dlopen` rows (`load` of a file on disk) and `env-cached`
+  come out as under 8.6. The `exec` row's temporary file is Tcl's, not the zip's.
 
 ## In a contained child
 
@@ -440,7 +558,10 @@ complete host.
 **What it needs to read, and when.** Before the lockdown, `Tcl_Init` reads
 `init.tcl` from Tcl's library directory (`$tcl_library`): the host's policy
 must grant a read on it (`grant_fs_read("/usr/lib/tcl8.6/*")` above), and
-the worker needs nothing else to start. After the lockdown nothing can be
+the worker needs nothing else to start. (A default Tcl 9 reads its library
+from a zip in libtcl instead: the grant is a read of libtcl9.0.so itself, and
+the rest of this paragraph does not apply, since the library is then in memory:
+[Tcl 9 and its zipfs](#tcl-9-and-its-zipfs).) After the lockdown nothing can be
 read, whatever the policy: Tcl's lazily loaded library is out of reach unless
 the warm-up used it. Measured on CachyOS: `clock format`
 (`couldn't read file "/usr/lib/tcl8.6/clock.tcl"`), `parray`
@@ -542,6 +663,10 @@ sign of it (the `map-overwrite-input` row reads the key back).
   needs none of Tcl's headers: the few types it uses are in `tcl_abi.h`.
   Tcl's stubs mechanism is for extensions loaded into a running Tcl, not
   for an embedder, so plain `dlsym` it is.
+- Tcl's one-time, process-wide initialisation (`tcl_process_init`) is the one
+  piece of state that is not per handle: `TclZipfs_AppHook` on a Tcl 9,
+  `Tcl_FindExecutable(NULL)` otherwise, guarded and idempotent
+  ([Tcl 9 and its zipfs](#tcl-9-and-its-zipfs)).
 - Tcl 9 made `Tcl_Eval`, `Tcl_GetString` and `Tcl_GetStringResult` macros
   and stopped exporting them; the bridge composes them from `Tcl_EvalEx`,
   `Tcl_GetStringFromObj` and `Tcl_GetObjResult`, which exist in 8.5, 8.6 and
@@ -566,6 +691,20 @@ sign of it (the `map-overwrite-input` row reads the key back).
   bignums, top-level `return`, errors, nested evals and their return codes,
   both limits, the thread refusal, two VMs, and memory staying flat over
   60,000 rounds.
+- [`test_host_tcl_library.ae`](test_host_tcl_library.ae): Tcl's script
+  library under the bridge. A libtcl that was named by `AETHER_TCL_SONAME` must
+  initialise (the other specs skip when it does not, which hid the zipfs
+  failure: on the old bridge a default Tcl 9 gave "0 passing, 11 skipped" and a
+  green run; this spec fails there), and its library is found, readable and
+  loads on first use (`clock format`, a time zone, an encoding, `parray`,
+  `package require http`).
+- `containment/test_tcl_library.sh`: that spec run three ways: with the build's
+  own library, with the library copied out of wherever it is, and with
+  `TCL_LIBRARY` naming the copy (it must win over the zip).
+- `containment/test_library_first_use.sh`, `containment/test_zipfs_mount.sh`:
+  what a script can do with Tcl's library and with a zip archive once the
+  sandbox is in force, on either side of the zipfs line ([Tcl 9 and its
+  zipfs](#tcl-9-and-its-zipfs)); the second runs only for a build with zipfs.
 - `../tests/test_stunt_*.sh` and `../tests/test_catalogue.sh`: the
   containment table and the parity table above.
 

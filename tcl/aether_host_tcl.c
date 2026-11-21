@@ -112,6 +112,9 @@ static struct {
     void         (*Tcl_LimitTypeSet)(Tcl_Interp* interp, int type);
     void         (*Tcl_LimitTypeReset)(Tcl_Interp* interp, int type);
     void         (*Tcl_GetTime)(Tcl_Time* timeBuf);
+    // Optional: Tcl 9's zipfs hook, which tclsh calls first in main(). Absent
+    // in 8.x (no zipfs there) and so never required: see tcl_process_init().
+    const char*  (*TclZipfs_AppHook)(int* argcPtr, char*** argvPtr);
 } g_tcl;
 static int resolve_tcl_symbols(void* h) {
 #define RESOLVE(field, sym) do {                                       \
@@ -157,6 +160,8 @@ static int resolve_tcl_symbols(void* h) {
     RESOLVE(Tcl_LimitTypeSet,      "Tcl_LimitTypeSet");
     RESOLVE(Tcl_LimitTypeReset,    "Tcl_LimitTypeReset");
     RESOLVE(Tcl_GetTime,           "Tcl_GetTime");
+    // Not in 8.5 or 8.6, so not RESOLVE: NULL there is the normal case.
+    *(void**)(&g_tcl.TclZipfs_AppHook) = dlsym(h, "TclZipfs_AppHook");
     return 0;
 #undef RESOLVE
 }
@@ -273,14 +278,78 @@ extern const char* aether_string_data(const void*);
 // The shared grant matcher (runtime/aether_sandbox_match.h).
 #include "aether_sandbox_match.h"
 
+// Tcl's one-time, process-wide initialisation, which an embedding application
+// must do before it makes an interpreter. It is Tcl's state, not the bridge's
+// (Tcl keeps its executable name, its encodings and, in 9.0, its zipfs mounts
+// in the process), so it is made once per process and guarded: every
+// interpreter this bridge makes, the shared one and each VM, calls it first,
+// and a second call does nothing.
+//
+// Tcl 8.x: Tcl_FindExecutable(NULL), as before.
+//
+// Tcl 9.0 and later: a default build keeps its script library (init.tcl and
+// the rest) in a zip archive attached to libtcl9.0.so itself, "zipfs", which
+// the process has to mount before Tcl_Init can read it. tclsh does that in
+// main() with TclZipfs_AppHook (unix/tclAppInit.c; Tcl 9's zipfs.3 documents
+// it as the application's initialisation, and it calls Tcl_FindExecutable
+// itself), which mounts a zip attached to the executable and the one attached
+// to libtcl, and records where the library is mounted (//zipfs:/lib/tcl/
+// tcl_library) for Tcl_Init's tclInit script to find through
+// ::tcl::zipfs::tcl_library_init. TCL_LIBRARY, when set, is still read first
+// by that script, and a build made with --disable-zipfs finds its library on
+// disk as before. dlsym finds the hook only in a Tcl 9.
+//
+// The argv[0] it is given is a name that finds no executable. Tcl_FindExecutable
+// documents that when it finds none, `info nameofexecutable` is empty, which is
+// what 8.x gives here too (the bridge never had a name to give it), and it
+// still records which shared library Tcl is running from, which is what the
+// zipfs mount needs. NULL does not do: unix/tclUnixFile.c returns from
+// TclpFindExecutable on a NULL argv0 before it records the library, so no
+// zipfs is mounted and Tcl_Init finds no library. A real executable name is
+// not given because Tcl would then open that file looking for a zip attached
+// to it (the host program is not a Tcl application) and `info
+// nameofexecutable` would name the host, which a script could exec.
+static pthread_mutex_t process_init_lock = PTHREAD_MUTEX_INITIALIZER;
+static int process_ready = 0;
+
+static void tcl_process_init(void) {
+    pthread_mutex_lock(&process_init_lock);
+    if (!process_ready) {
+        if (g_tcl.TclZipfs_AppHook) {
+            char name[] = "aether-embedded-tcl";   // no slash, found in no PATH directory
+            char* argv0[2] = { name, NULL };
+            char** argv = argv0;
+            int argc = 1;
+            g_tcl.TclZipfs_AppHook(&argc, &argv);
+        } else {
+            g_tcl.Tcl_FindExecutable(NULL);
+        }
+        process_ready = 1;
+    }
+    pthread_mutex_unlock(&process_init_lock);
+}
+
+// What to say after a failed Tcl_Init on a Tcl 9: its library may be in a zip
+// attached to libtcl, which Tcl mounts by opening libtcl a second time, and a
+// sandbox that does not grant a read of it makes that fail as "Cannot find a
+// usable init.tcl".
+static void tcl_init_hint(void) {
+    if (g_tcl.TclZipfs_AppHook)
+        fprintf(stderr,
+            "[tcl] Tcl 9 keeps its script library in a zip attached to libtcl (zipfs) unless it was\n"
+            "[tcl] built with --disable-zipfs: set TCL_LIBRARY to a directory that has it, or, under a\n"
+            "[tcl] sandbox, grant fs_read on libtcl itself (tcl/README.md, \"Tcl 9 and its zipfs\")\n");
+}
+
 int tcl_init(void) {
     if (T) return 0;
     if (load_libtcl() != 0) return -1;
-    g_tcl.Tcl_FindExecutable(NULL);
+    tcl_process_init();
     T = g_tcl.Tcl_CreateInterp();
     if (!T) return -1;
     if (g_tcl.Tcl_Init(T) != TCL_OK) {
         fprintf(stderr, "[tcl] init: %s\n", tcl_string_result(T));
+        tcl_init_hint();
         g_tcl.Tcl_DeleteInterp(T);
         T = NULL;
         return -1;
@@ -293,6 +362,9 @@ void tcl_finalize(void) {
         g_tcl.Tcl_DeleteInterp(T);
         T = NULL;
     }
+    // Tcl_Finalize is final: a process that calls it cannot initialise Tcl
+    // again (Tcl panics "Tcl_InitSubsystems called while exiting", in 8.6 and
+    // 9.0 alike), so process_ready is left set.
     if (g_tcl.Tcl_Finalize) g_tcl.Tcl_Finalize();
 }
 
@@ -537,18 +609,14 @@ static const char* ae_tcl_to_str(Tcl_Obj* o) {
     return s ? s : "";
 }
 
-static int tcl_lib_ready = 0;
-
 void* tcl_vm_new(void) {
     if (load_libtcl() != 0) return NULL;
-    if (!tcl_lib_ready) {
-        g_tcl.Tcl_FindExecutable(NULL);
-        tcl_lib_ready = 1;
-    }
+    tcl_process_init();
     Tcl_Interp* interp = g_tcl.Tcl_CreateInterp();
     if (!interp) return NULL;
     if (g_tcl.Tcl_Init(interp) != TCL_OK) {
         fprintf(stderr, "[tcl] vm init: %s\n", tcl_string_result(interp));
+        tcl_init_hint();
         g_tcl.Tcl_DeleteInterp(interp);
         return NULL;
     }

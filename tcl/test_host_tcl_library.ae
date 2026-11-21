@@ -1,0 +1,114 @@
+// Tcl's own script library under the bridge: where it is, and that it works.
+//
+// A Tcl 8 keeps init.tcl and the rest on disk (/usr/lib/tcl8.6). A default
+// Tcl 9 keeps them in a zip archive attached to libtcl9.0.so (zipfs), which
+// the process has to mount before Tcl_Init can read them: the bridge does it
+// (tcl_process_init in aether_host_tcl.c), and without it `tcl.init()` is -1
+// with "Cannot find a usable init.tcl". This spec is the one that says so:
+// the other specs skip when Tcl does not initialise, because a machine with no
+// libtcl is a normal thing, but a libtcl that was named and does not
+// initialise is a failure, and that is the first test here.
+//
+// Three modes, picked by the environment, so tcl/containment/
+// test_tcl_library.sh can run this one program three ways:
+//
+//   (nothing)                      the checks that hold for any build
+//   GHL_UNPACK_TCL_LIBRARY=<dir>   copy Tcl's library to <dir> (out of the
+//                                  zip, for a zipfs build) and say where from
+//   GHL_EXPECT_TCL_LIBRARY=<dir>   with TCL_LIBRARY=<dir> set: `info library`
+//                                  is <dir>, not the zip and not the build's
+//
+// Assertions are on values read back from Tcl, never on its stdout.
+
+import tcl
+import std.spec
+import std.string
+import std.os
+
+// A script's string result, "" when it fails.
+fn eval_str(vm: ptr, script: string) -> string {
+    if tcl.vm_eval(vm, script) != 0 {
+        out = "ERROR: ${tcl.vm_result_str(vm)}"
+        tcl.vm_pop_result(vm)
+        return out
+    }
+    out = tcl.vm_result_str(vm)
+    tcl.vm_pop_result(vm)
+    return out
+}
+
+main() {
+    fw = spec.init()
+
+    named = os.getenv("AETHER_TCL_SONAME")
+    init_rc = tcl.init()
+    have_tcl = 0
+    if init_rc == 0 { have_tcl = 1 }
+    reason = "libtcl not loadable (set AETHER_TCL_SONAME)"
+    expect = os.getenv("GHL_EXPECT_TCL_LIBRARY")
+    unpack = os.getenv("GHL_UNPACK_TCL_LIBRARY")
+
+    spec.describe(fw, "tcl library") {
+        // Not it_when: a skip here would hide the failure this is for.
+        named_set = 0
+        if named != "" { named_set = 1 }
+        spec.it_when(named_set, "a libtcl that was named initialises", "AETHER_TCL_SONAME is not set") callback {
+            spec.assert_eq(init_rc, 0, "tcl.init() with AETHER_TCL_SONAME=${named}")
+        }
+
+        spec.it_when(have_tcl, "Tcl's library is found and its files can be read", reason) callback {
+            vm = tcl.vm_new()
+            spec.assert_not_null(vm, "vm_new created a VM")
+            lib = eval_str(vm, "info library")
+            spec.assert_true(string.length(lib) > 0, "info library is set (${lib})")
+            spec.assert_str_eq(eval_str(vm, "file exists [file join [info library] init.tcl]"), "1", "init.tcl is there")
+            spec.assert_str_eq(eval_str(vm, "info exists ::tcl_library"), "1", "and tcl_library is set")
+            tcl.vm_free(vm)
+        }
+
+        // Not with TCL_LIBRARY set to a copy of the library directory: Tcl 8's
+        // clock needs the msgcat module and a Tcl 9 without zipfs keeps msgcat
+        // and http in modules beside the library, which a copy of the one
+        // directory does not have.
+        first_use = 0
+        if have_tcl == 1 && expect == "" { first_use = 1 }
+        spec.it_when(first_use, "what Tcl loads from its library on first use works", reason) callback {
+            vm = tcl.vm_new()
+            // clock.tcl is read by auto_load the first time `clock format` runs
+            // (the zip, for a zipfs build); tzdata and msgs are read from it too.
+            spec.assert_str_eq(eval_str(vm, "clock format 0 -timezone UTC -format %Y"), "1970", "clock format")
+            spec.assert_str_eq(eval_str(vm, "clock format 0 -timezone Europe/Paris -format %H"), "01", "a time zone from tzdata")
+            // An encoding that is not built in is read from an .enc file.
+            spec.assert_str_eq(eval_str(vm, "string length [encoding convertfrom iso8859-2 \\xb1]"), "1", "an encoding from the library")
+            // parray is in tclIndex, found by auto_load.
+            spec.assert_str_eq(eval_str(vm, "array set a {x 1}; auto_load parray"), "1", "auto_load finds parray")
+            spec.assert_str_eq(eval_str(vm, "package require http; expr {[package present http] ne {}}"), "1", "a package from the library")
+            tcl.vm_free(vm)
+        }
+
+        // The two modes of test_tcl_library.sh: with nothing set this checks
+        // nothing more; with GHL_UNPACK_TCL_LIBRARY it copies the library out;
+        // with GHL_EXPECT_TCL_LIBRARY (and TCL_LIBRARY) it checks where Tcl looked.
+        spec.it_when(have_tcl, "the library is where TCL_LIBRARY says, when it is set", reason) callback {
+            vm = tcl.vm_new()
+            lib = eval_str(vm, "info library")
+            if expect != "" {
+                spec.assert_str_eq(lib, expect, "info library is TCL_LIBRARY")
+                spec.assert_str_eq(eval_str(vm, "string match //zipfs:* [info library]"), "0", "and not in the zip")
+                spec.assert_str_eq(eval_str(vm, "file exists [file join [info library] init.tcl]"), "1", "and init.tcl is read from it")
+            }
+            if unpack != "" {
+                // The library, copied out of wherever it is (out of the zip, for
+                // a zipfs build): a directory TCL_LIBRARY can then name.
+                spec.assert_str_eq(eval_str(vm, "file copy -force [info library] {${unpack}}; file exists [file join {${unpack}} init.tcl]"), "1", "copied out")
+                println("UNPACKED_FROM ${lib}")
+            }
+            tcl.vm_free(vm)
+        }
+    }
+
+    _rc = spec.run_summary(fw)
+
+    if have_tcl == 1 { tcl.finalize() }
+    return _rc
+}
