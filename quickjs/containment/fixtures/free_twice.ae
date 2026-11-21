@@ -1,0 +1,8 @@
+// Must not compile: the VM is freed twice (test_vm_free.sh, E0903).
+import quickjs
+
+main() {
+    vm = quickjs.vm_new()
+    quickjs.vm_free(vm)
+    quickjs.vm_free(vm)
+}

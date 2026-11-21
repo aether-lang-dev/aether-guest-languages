@@ -15,15 +15,13 @@
 // binding that reaches the system. What a script reaches is the host
 // functions below, which check the grants themselves, as stunt's host does.
 //
-// Three entry points carry a row:
+// Two of the bridge's entry points carry a row, as in lua/containment/host.ae:
 //   - quickjs.run_sandboxed_with_map, the bridge's own sandboxed run, for
-//     the callback-unregistered and shared-map rows. The line comes back
-//     through the map, as an output the script writes.
-//   - an engine runtime (contrib.quickjs) with host functions registered,
-//     inside sandbox.enforce, for the rows that call them (binding-*,
-//     callback-greet, callback-add).
-//   - quickjs.run_sandboxed for spin, which only the bridge's time limit
-//     (5 s per run) can end.
+//     the shared-map rows. The line comes back through the map, as an output
+//     the script writes.
+//   - the two-way VM (quickjs.vm_*) inside sandbox.enforce, for the rows that
+//     call host functions (binding-*, callback-*) and for spin, which needs
+//     the time limit. read_file and getenv check the grants themselves.
 //
 // <policy> is "-" for no grants, or kind=pattern,... with kinds fs_read,
 // fs_write, exec, env, tcp (host:port), native, fork. "<outer>|<inner>"
@@ -34,7 +32,6 @@
 @source("host_support.c")
 
 import quickjs
-import contrib.quickjs as engine
 import policy
 import std.sandbox
 import std.os
@@ -52,84 +49,111 @@ extern ghl_map_put(key: string, value: string)
 extern ghl_map_get(key: string) -> string
 extern ghl_stdin_null()
 
-// ---- host functions the guest calls (an engine runtime) ---------------------
+// ---- host functions the guest calls (the two-way VM) ------------------------
 //
 // A refusal or a failure is an Error thrown into the script, whose message is
 // what the script's check reads: "refused: ..." for the grants saying no.
 
-fn register(q: ptr) {
-    rf = engine.function(q, "read_file", 1, |q2: ptr, this_h: int, args: int| {
-        path = engine.arg_string(q2, args, 0)
-        if aether_sandbox_check_slow("fs_read", path) == 0 {
-            return engine.throw_error(q2, "Error", "refused: fs_read ${path}")
-        }
-        text, err = fs.read(path)
-        if err != "" { return engine.throw_error(q2, "Error", err) }
-        return engine.new_string(q2, text)
-    })
-    engine.set_global(q, "read_file", rf)
-    engine.release(q, rf)
+// read_file(path): the file's text.
+@c_callback
+host_read_file(vm: ptr) -> int {
+    path = quickjs.arg_str(vm, 1)
+    if aether_sandbox_check_slow("fs_read", path) == 0 {
+        return quickjs.raise_error(vm, "refused: fs_read ${path}")
+    }
+    text, err = fs.read(path)
+    if err != "" { return quickjs.raise_error(vm, err) }
+    quickjs.push_str(vm, text)
+    return 1
+}
 
-    ge = engine.function(q, "getenv", 1, |q2: ptr, this_h: int, args: int| {
-        name = engine.arg_string(q2, args, 0)
-        if aether_sandbox_check_slow("env", name) == 0 {
-            return engine.throw_error(q2, "Error", "refused: env ${name}")
-        }
-        v = os.getenv(name)
-        if v == "" { return engine.throw_error(q2, "Error", "${name} is unset") }
-        return engine.new_string(q2, v)
-    })
-    engine.set_global(q, "getenv", ge)
-    engine.release(q, ge)
+// getenv(name): the variable's value.
+@c_callback
+host_getenv(vm: ptr) -> int {
+    name = quickjs.arg_str(vm, 1)
+    if aether_sandbox_check_slow("env", name) == 0 {
+        return quickjs.raise_error(vm, "refused: env ${name}")
+    }
+    v = os.getenv(name)
+    if v == "" { return quickjs.raise_error(vm, "${name} is unset") }
+    quickjs.push_str(vm, v)
+    return 1
+}
 
-    gr = engine.function(q, "greet", 1, |q2: ptr, this_h: int, args: int| {
-        return engine.new_string(q2, "hello, ${engine.arg_string(q2, args, 0)}")
-    })
-    engine.set_global(q, "greet", gr)
-    engine.release(q, gr)
+@c_callback
+host_greet(vm: ptr) -> int {
+    quickjs.push_str(vm, "hello, ${quickjs.arg_str(vm, 1)}")
+    return 1
+}
 
-    ad = engine.function(q, "add", 2, |q2: ptr, this_h: int, args: int| {
-        return engine.new_int(q2, engine.arg_int(q2, args, 0) + engine.arg_int(q2, args, 1))
-    })
-    engine.set_global(q, "add", ad)
-    engine.release(q, ad)
+@c_callback
+host_add(vm: ptr) -> int {
+    if quickjs.arg_type(vm, 1) != quickjs.QJS_TINT || quickjs.arg_type(vm, 2) != quickjs.QJS_TINT {
+        return quickjs.raise_error(vm, "add takes two ints")
+    }
+    quickjs.push_int(vm, quickjs.arg_int(vm, 1) + quickjs.arg_int(vm, 2))
+    return 1
 }
 
 // ---- the rows ---------------------------------------------------------------
 
-// Which entry point carries a row.
-fn uses_engine(check: string) -> int {
+// Which entry point carries a row: the two-way VM for host functions and
+// spin, the bridge's sandboxed run for the rest.
+fn uses_vm(check: string) -> int {
     if string.starts_with(check, "binding-") == 1 { return 1 }
-    if check == "callback-greet" || check == "callback-add" { return 1 }
+    if string.starts_with(check, "callback-") == 1 { return 1 }
+    if check == "spin" { return 1 }
     return 0
 }
 
-fn run_engine(g: sandbox.Grants, check: string, expect: string, source: string) -> string {
-    q = engine.runtime(65536, 0)
-    if q == null {
-        println("host: cannot make a QuickJS runtime")
+fn run_vm(g: sandbox.Grants, check: string, expect: string, source: string) -> string {
+    vm = quickjs.vm_new_capped(65536)
+    if vm == null {
+        println("host: cannot make a QuickJS VM")
         exit(1)
     }
-    // One script per runtime: 5 s of JS from now.
-    engine.set_deadline_ns(q, engine.now_ns() + 5000000000)
-    register(q)
+    quickjs.vm_register(vm, "read_file", host_read_file)
+    quickjs.vm_register(vm, "getenv", host_getenv)
+    quickjs.vm_register(vm, "greet", host_greet)
+    quickjs.vm_register(vm, "add", host_add)
     box = list.new()
+    if check == "spin" {
+        // A loop only the time limit can end: it must end with the limit's
+        // error, and not before the limit.
+        quickjs.vm_set_time_limit(vm, 1000, 1)
+        t0 = time.now_ms()
+        sandbox.enforce(g) callback {
+            rc = quickjs.vm_eval(vm, "${source}\nvar n = 0; for (;;) { n++; }")
+            list.add(box, "${rc}\t${quickjs.vm_result_str(vm)}")
+        }
+        ms = time.now_ms() - t0
+        quickjs.vm_free(vm)
+        got, _e = list.get_string(box, 0)
+        out = string.copy(got)
+        list.free(box)
+        tab = string.index_of(out, "\t")
+        rc_text = string.substring(out, 0, tab)
+        msg = string.substring(out, tab + 1, string.length(out))
+        if rc_text != "0" && string.contains(msg, "time limit") == 1 && ms >= 900 {
+            return "spin: stopped at the time limit (${msg}, after ${ms} ms) - host-checked: PASS"
+        }
+        return "spin: rc ${rc_text} (${msg}) after ${ms} ms - host-checked: FAIL"
+    }
+    quickjs.vm_set_time_limit(vm, 5000, 1)
     sandbox.enforce(g) callback {
-        v, e = engine.eval(q, "${source}\ncheck_line(\"${check}\", \"${expect}\")", "checks.js")
-        if e != "" {
-            list.add(box, "${check}: the script failed (${e}) - expected ${expect}: FAIL")
+        rc = quickjs.vm_eval(vm, "${source}\ncheck_line(\"${check}\", \"${expect}\")")
+        if rc != 0 {
+            list.add(box, "${check}: the script failed (${quickjs.vm_result_str(vm)}) - expected ${expect}: FAIL")
+        } else if quickjs.vm_result_type(vm) != quickjs.QJS_TSTR {
+            list.add(box, "${check}: check_line gave a ${quickjs.vm_result_type(vm)}, not a string - expected ${expect}: FAIL")
         } else {
-            text, terr = engine.to_string(q, v)
-            if terr != "" {
-                list.add(box, "${check}: the result would not convert (${terr}) - expected ${expect}: FAIL")
-            } else {
-                list.add(box, text)
-            }
-            engine.release(q, v)
+            list.add(box, quickjs.vm_result_str(vm))
         }
     }
-    out, _e = list.get_string(box, 0)
-    engine.dispose(q)
+    quickjs.vm_free(vm)
+    got, _e = list.get_string(box, 0)
+    out = string.copy(got)
+    list.free(box)
     return out
 }
 
@@ -144,21 +168,8 @@ fn run_bridge(g: sandbox.Grants, check: string, expect: string, source: string) 
     return line
 }
 
-// spin: a loop only the bridge's time limit can end (5 s per run, set in
-// the bridge). It must end with an error, and not at once.
-fn run_spin(g: sandbox.Grants) -> string {
-    t0 = time.now_ms()
-    rc = quickjs.run_sandboxed(g, "var n = 0; for (;;) { n++; }")
-    ms = time.now_ms() - t0
-    if rc != 0 && ms >= 4000 && ms < 30000 {
-        return "spin: stopped at the time limit (rc ${rc} after ${ms} ms) - host-checked: PASS"
-    }
-    return "spin: rc ${rc} after ${ms} ms - host-checked: FAIL"
-}
-
 fn run_row(g: sandbox.Grants, check: string, expect: string, source: string) -> string {
-    if check == "spin" { return run_spin(g) }
-    if uses_engine(check) == 1 { return run_engine(g, check, expect, source) }
+    if uses_vm(check) == 1 { return run_vm(g, check, expect, source) }
     return run_bridge(g, check, expect, source)
 }
 

@@ -3,80 +3,99 @@
 // A host starts this with guest.launch (sandbox.spawn_socket: Landlock and
 // seccomp on Linux; refused on macOS and Windows, where nothing starts) and
 // sends it the functions it may call (MOUNT) and a JavaScript script
-// (SCRIPT). The worker runs the script in a QuickJS runtime (aether's
-// contrib.quickjs, compiled into this program) inside std.guest.child's
-// lockdown:
+// (SCRIPT). The worker runs the script in the bridge's two-way VM
+// (`import quickjs`, on aether's contrib.quickjs, compiled into this program)
+// inside std.guest.child's lockdown:
 //
 //   print(...), console.log(...)
 //                       SAY, the arguments String()'d and space-joined
-//   NAME(...)           for each mounted NAME: CALL NAME [args as JSON],
+//   NAME(...)           for each mounted NAME: CALL NAME [args as JSON]
+//                       (strings, numbers, booleans, null, arrays, objects),
 //                       the host's answer decoded back (JSON.parse; a granted
 //                       file is {granted: true, text: ...}); a FAIL throws an
-//                       Error with the host's message; a CANCEL throws
-//                       "cancelled by host: ..."
-//   the end             DONE 0, or ERROR and the error's text
+//                       Error with the host's message, which the script can
+//                       catch; a CANCEL ends the script
+//   the end             DONE 0, or ERROR and the error ("TypeError: ...")
+//
+// A CANCEL is heard inside a loop as well as in a call's reply: a watcher
+// thread (worker_support.c) waits on the socket while the script runs and,
+// when the host speaks unasked, sets the VM's cancel cell, which stops the
+// JavaScript where it is, uncatchably. The worker then reads the CANCEL and
+// ends with ERROR "cancelled by host: <the host's reason>", as the Lua,
+// Python, Perl, Ruby and Tcl workers do. The host's kill after its grace
+// period is still what holds a worker that does not answer.
 //
 // QuickJS has no standard library on disk, no I/O of its own and (quickjs-libc
 // not being compiled in) no module loader, and the engine is part of this
 // program: there is nothing to load, so nothing is opened before the lockdown
 // and the worker takes no arguments.
 //
-// A CANCEL is looked for in every call's reply. There is no hook to look for
-// it from inside a loop: contrib.quickjs offers a time limit per entry but
-// no interrupt callback, so a script that loops without calling the host
-// never sees one, and the host kills it after its grace period. The
-// containment is the host's, not the worker's.
-//
 // Usage (by a host): quickjs-worker
 
-import contrib.quickjs as qjs
+@source("worker_support.c")
+
+import quickjs
 import std.guest.child
-import std.string
+import std.list
+import std.sync
 
 extern exit(code: int)
+extern ghl_watch_start(fd: int, cell: ptr) -> ptr
+extern ghl_watch_call(w: ptr, on: int)
+extern ghl_watch_stop(w: ptr)
 
-// The arguments of a host function, space-joined, as print says them.
-fn say_args(q: ptr, args: int) -> string {
-    out = ""
-    n = qjs.arg_count(q, args)
-    i = 0
-    while i < n {
-        if i > 0 { out = "${out} " }
-        out = "${out}${qjs.arg_string(q, args, i)}"
-        i = i + 1
+// What the callbacks need, through the VM's user pointer.
+struct Worker {
+    h: *child.Host
+    watch: ptr
+    cell: ptr
+}
+
+fn worker_of(vm: ptr) -> *Worker {
+    return quickjs.vm_user(vm) as *Worker
+}
+
+// __say(text)
+@c_callback
+w_say(vm: ptr) -> int {
+    child.say(worker_of(vm).h, quickjs.arg_str(vm, 1))
+    return 0
+}
+
+// __call(name, args_json): the host's answer as a value, or an Error.
+@c_callback
+w_call(vm: ptr) -> int {
+    w = worker_of(vm)
+    ghl_watch_call(w.watch, 1)
+    r = child.call_host(w.h, quickjs.arg_str(vm, 1), quickjs.arg_str(vm, 2))
+    ghl_watch_call(w.watch, 0)
+    if r.kind == "VALUE" {
+        if quickjs.push_json(vm, r.text) != 0 { return quickjs.raise_error(vm, "the host's answer is not JSON") }
+        return 1
     }
-    return out
+    if r.kind == "CANCEL" {
+        // Stops the script at its next step even if it catches this.
+        sync.atomic_store(w.cell, 1)
+        return quickjs.raise_error(vm, "cancelled by host: ${r.text}")
+    }
+    return quickjs.raise_error(vm, r.text)
 }
 
-// Mount one host function as a JavaScript global.
-fn mount(q: ptr, h: *child.Host, name: string) {
-    f = qjs.function(q, name, 0, |q2: ptr, this_h: int, args: int| {
-        r = child.call_host(h, name, qjs.to_json(q2, args))
-        if r.kind == "VALUE" {
-            pv, pe = qjs.parse_json(q2, r.text)
-            if pe != "" { return qjs.throw_error(q2, "Error", pe) }
-            return pv
-        }
-        if r.kind == "CANCEL" {
-            return qjs.throw_error(q2, "Error", "cancelled by host: ${r.text}")
-        }
-        return qjs.throw_error(q2, "Error", r.text)
-    })
-    qjs.set_global(q, name, f)
-    qjs.release(q, f)
-}
-
-fn mount_print(q: ptr, h: *child.Host) {
-    f = qjs.function(q, "print", 0, |q2: ptr, this_h: int, args: int| {
-        child.say(h, say_args(q2, args))
-        return 0
-    })
-    qjs.set_global(q, "print", f)
-    c = qjs.new_object(q)
-    _r = qjs.set(q, c, "log", f)
-    qjs.set_global(q, "console", c)
-    qjs.release(q, c)
-    qjs.release(q, f)
+// The glue between JavaScript and the protocol, run before the script.
+fn prelude() -> string {
+    return <<JS
+(function () {
+  const say = __say, call = __call, mounts = __MOUNTS;
+  delete globalThis.__say; delete globalThis.__call; delete globalThis.__MOUNTS;
+  function str(v) { try { return String(v); } catch (e) { return '[' + typeof v + ']'; } }
+  function print(...a) { say(a.map(str).join(' ')); }
+  globalThis.print = print;
+  globalThis.console = { log: print };
+  for (const name of mounts) {
+    globalThis[name] = function (...args) { return call(name, JSON.stringify(args)); };
+  }
+})();
+JS
 }
 
 main() {
@@ -87,29 +106,55 @@ main() {
     }
     if child.read_script(h) != "" { exit(1) }
     // 64 MiB of heap, the default stack. No time limit: the host's deadline
-    // and grace period end a script.
-    q = qjs.runtime(65536, 0)
-    if q == null {
+    // and CANCEL end a script.
+    vm = quickjs.vm_new_capped(65536)
+    if vm == null {
         child.error(h, "quickjs-worker: cannot make a QuickJS runtime")
         exit(1)
     }
-    mount_print(q, h)
+    cell = sync.atomic_new(0)
+    quickjs.vm_set_cancel_cell(vm, cell)
+    w = heap.new(Worker)
+    w.h = h
+    w.cell = cell
+    w.watch = null
+    quickjs.vm_set_user(vm, w as ptr)
+    quickjs.vm_register(vm, "__say", w_say)
+    quickjs.vm_register(vm, "__call", w_call)
+    names = list.new()
     n = child.mount_count(h)
     i = 0
     while i < n {
         name, _min, _max = child.mount_at(h, i)
-        mount(q, h, name)
+        list.add(names, name)
         i = i + 1
     }
+    quickjs.vm_set_global_strlist(vm, "__MOUNTS", names)
+    list.free(names)
+    if quickjs.vm_eval(vm, prelude()) != 0 {
+        child.error(h, "quickjs-worker: the prelude failed: ${quickjs.vm_result_str(vm)}")
+        exit(1)
+    }
+    quickjs.vm_pop_result(vm)
     child.run(h) callback {
-        v, e = qjs.eval(q, h.source, "script.js")
-        if e != "" {
-            child.error(h, e)
+        w.watch = ghl_watch_start(h.ch, cell)
+        rc = quickjs.vm_eval(vm, h.source)
+        ghl_watch_stop(w.watch)
+        w.watch = null
+        if rc == 0 {
+            child.done(h, 0)
+        } else if h.cancel != "" || quickjs.vm_result_str(vm) == "InternalError: interrupted: cancelled" {
+            // The watcher saw the host speak; read what it said.
+            why = child.poll(h)
+            child.error(h, "cancelled by host: ${why}")
         } else {
-            qjs.release(q, v)
-            _n, je = qjs.run_jobs(q)
-            if je != "" { child.error(h, je) } else { child.done(h, 0) }
+            child.error(h, quickjs.vm_result_str(vm))
         }
     }
+    quickjs.vm_set_cancel_cell(vm, null)
+    quickjs.vm_free(vm)
+    sync.atomic_free(cell)
+    heap.free(w)
+    child.free(h)
     exit(0)
 }

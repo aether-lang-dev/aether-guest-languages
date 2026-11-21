@@ -48,7 +48,9 @@ fn serve(g: *guest.Guest, perms: sandbox.Grants, e: guest.Event) {
         sandbox.enforce(perms) callback {
             if aether_sandbox_check_slow("fs_read", path) == 1 { list.add(allowed, "y") }
         }
-        if list.size(allowed) == 1 {
+        granted = list.size(allowed)
+        list.free(allowed)
+        if granted == 1 {
             guest.grant_file(g, path, path)
         } else {
             guest.deny(g, path, "fs_read ${path}")
@@ -65,7 +67,9 @@ fn serve(g: *guest.Guest, perms: sandbox.Grants, e: guest.Event) {
                 list.add(box, "V${os.getenv(vname)}")
             }
         }
-        got, _e = list.get_string(box, 0)
+        kept, _e = list.get_string(box, 0)
+        got = string.copy(kept)
+        list.free(box)
         if got == "R" {
             guest.fail(g, "refused: env ${vname}")
         } else if got == "V" {
@@ -111,15 +115,28 @@ fn serve(g: *guest.Guest, perms: sandbox.Grants, e: guest.Event) {
 
 // The script a host-checked row runs in the child.
 fn host_checked_script(check: string) -> string {
-    // contrib.quickjs has a time limit but no interrupt callback, so the
-    // worker has no hook to poll for a CANCEL from inside a loop: a script
-    // that loops never answers the deadline's CANCEL, and the host must kill
-    // it. So spin and silent end the same way here (in a worker with the
-    // hook, spin would answer the CANCEL).
-    if check == "spin" || check == "silent" { return "for (;;) {}" }
+    // The worker's watcher hears the deadline's CANCEL inside the loop and
+    // stops it: spin answers, with ERROR "cancelled by host".
+    if check == "spin" { return "for (;;) {}" }
+    // silent never answers: one long native call, which the engine's
+    // interrupt cannot reach midway (contrib.quickjs says so: "a single long
+    // native call is not interrupted"). Array.prototype.join of BigInts of a
+    // million bits each runs their toString in C, seconds apiece, with no
+    // JavaScript in between, so the host's grace period passes and it kills
+    // the worker (Tcl's silent is `expr {7**20000000}`, the same kind).
+    if check == "silent" { return "var b = 10n ** 300000n; Array(64).fill(b).join();" }
     // One 1 MiB print is one SAY frame, past the host's max_frame.
     if check == "oversize" { return "var s = 'x'; while (s.length < 1048576) s += s; print(s);" }
     return ""
+}
+
+// The worker in a contained child; with GHL_UNCONTAINED=1 (quickjs/sanitize.sh
+// only) in an uncontained one, where LeakSanitizer can run in it.
+fn start_worker(perms: sandbox.Grants, worker: string, args: ptr) -> (guest.Guest, string) {
+    if os.getenv("GHL_UNCONTAINED") == "1" {
+        return guest.launch_uncontained(perms, worker, args, "quickjs-worker", "")
+    }
+    return guest.launch(perms, worker, args, "quickjs-worker", "")
 }
 
 fn run_child(spec: string, check: string, expect: string) {
@@ -130,7 +147,8 @@ fn run_child(spec: string, check: string, expect: string) {
     }
     perms = policy.grants(spec)
     args = list.new()
-    g, err = guest.launch(perms, worker, args, "quickjs-worker", "")
+    g, err = start_worker(perms, worker, args)
+    list.free(args)
     if err != "" {
         println("host: guest.launch: ${err}")
         exit(1)
@@ -178,7 +196,8 @@ fn run_child(spec: string, check: string, expect: string) {
     if host_checked == 1 {
         verdict_line = "${check}: ${last.kind} (${guest.printable(last.text)})"
         ok = 0
-        if (check == "silent" || check == "spin") && last.kind == "KILLED" && string.contains(last.text, "no answer to CANCEL") == 1 { ok = 1 }
+        if check == "spin" && last.kind == "ERROR" && string.contains(last.text, "cancelled by host") == 1 { ok = 1 }
+        if check == "silent" && last.kind == "KILLED" && string.contains(last.text, "no answer to CANCEL") == 1 { ok = 1 }
         if check == "oversize" && last.kind == "KILLED" && string.contains(last.text, "frame refused") == 1 { ok = 1 }
         if ok == 1 {
             println("${verdict_line} - host-checked: PASS")

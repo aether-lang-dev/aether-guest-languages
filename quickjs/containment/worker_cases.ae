@@ -1,0 +1,183 @@
+// quickjs-worker's own cases, beside the shared boundary tests
+// (tests/boundary.py, which every worker runs): what is particular to how
+// this worker hears a CANCEL and reports an error. test_worker.sh runs each.
+// Usage:
+//
+//   worker_cases <case>
+//
+// Starts the worker ($QUICKJS_WORKER) with std.guest's guest.launch under no
+// grants, mounts the case's host functions, sends its script, answers its
+// calls, and prints one line, "<case>: PASS (...)" or "<case>: FAIL (...)",
+// exiting 0 on a pass. The cases: a CANCEL heard inside a loop that the
+// script tries to catch (it cannot: the engine's interrupt is uncatchable), a
+// LOGLEVEL during a loop that the watcher must not take for a cancel, the
+// host's FAIL uncaught and the script's own error (each one ERROR frame with
+// the error's "Type: message"), a name the host did not mount, and the JSON
+// types of a host's answer as the script sees them (Number.isInteger and
+// the like, which the shared tests do not look at: they pass values back).
+
+import std.guest
+import std.sandbox
+import std.os
+import std.list
+import std.string
+
+extern exit(code: int)
+
+struct Seen {
+    says: string
+    end: string
+    text: string
+    calls: int
+}
+
+// The host's side of each call.
+fn serve(g: *guest.Guest, c: string, e: guest.Event, s: *Seen) {
+    s.calls = s.calls + 1
+    if e.name == "echo" {
+        guest.answer(g, e.text)
+        return
+    }
+    if e.name == "kinds" {
+        guest.answer(g, "{\"i\":7,\"f\":0.5,\"s\":\"t\\u00e9\\\"\",\"b\":false,\"n\":null,\"a\":[1,\"2\"],\"o\":{\"k\":[true]},\"big\":12345678901,\"neg\":-3}")
+        return
+    }
+    if e.name == "add" {
+        inner = string.substring(e.text, 1, string.length(e.text) - 1)
+        comma = string.index_of(inner, ",")
+        x, _xe = string.to_int(string.trim(string.substring(inner, 0, comma)))
+        y, _ye = string.to_int(string.trim(string.substring(inner, comma + 1, string.length(inner))))
+        guest.answer(g, "${x + y}")
+        return
+    }
+    if e.name == "refuse" {
+        guest.fail(g, "refused: not for you")
+        return
+    }
+    if e.name == "slow" {
+        // Not answered: the host cancels instead.
+        guest.cancel(g, "host says stop")
+        return
+    }
+    if e.name == "greet" {
+        guest.answer(g, guest.json_string("hello"))
+        return
+    }
+    guest.fail(g, "no host function ${e.name}")
+}
+
+fn script_of(c: string) -> string {
+    if c == "types" {
+        return "const v = [1, -2.5, 'é\"\\n\\u0001', true, false, null, [1, [2, [3]]], { a: { b: 'c' }, e: [] }, 2 ** 40, 0.1, -0, 1e300]; const r = echo(...v); if (JSON.stringify(r) !== JSON.stringify(v)) throw new Error('got ' + JSON.stringify(r)); print('ok', r.length);"
+    }
+    if c == "host-types" {
+        return "const k = kinds(); const ok = Number.isInteger(k.i) && k.i === 7 && k.f === 0.5 && k.s === 'té\"' && k.b === false && k.n === null && Array.isArray(k.a) && k.a[1] === '2' && k.o.k[0] === true && k.big === 12345678901 && k.neg === -3; print(ok ? 'ok' : 'bad ' + JSON.stringify(k));"
+    }
+    if c == "nested" {
+        return "let s = 0; for (let i = 0; i < 100; i++) s += add(i, 1); print(add(add(1, 2), add(3, 4)), s);"
+    }
+    if c == "fail-caught" {
+        return "try { refuse(); print('no throw'); } catch (e) { print(e instanceof Error, e.message); }"
+    }
+    if c == "fail-uncaught" { return "refuse();" }
+    if c == "script-error" { return "null.x;" }
+    if c == "cancel-loop" { return "print('looping'); for (;;) {}" }
+    if c == "cancel-catch" { return "try { for (;;) {} } catch (e) { print('caught', e); } print('escaped'); for (;;) {}" }
+    if c == "cancel-in-call" { return "try { slow(); } catch (e) { print('caught', e.message); } for (;;) {}" }
+    if c == "loglevel" { return "const t0 = Date.now(); while (Date.now() - t0 < 700) {} print(greet('x'));" }
+    if c == "unmounted" { return "try { nope(); } catch (e) { print(e.name); }" }
+    return ""
+}
+
+// What the case must have seen: the SAY lines (joined with |) and the end.
+fn check(c: string, s: *Seen) -> string {
+    if c == "types" { return expect(s, "ok 12", "DONE", "") }
+    if c == "host-types" { return expect(s, "ok", "DONE", "") }
+    if c == "nested" { return expect(s, "10 5050", "DONE", "") }
+    if c == "fail-caught" { return expect(s, "true refused: not for you", "DONE", "") }
+    if c == "fail-uncaught" { return expect(s, "", "ERROR", "Error: refused: not for you") }
+    if c == "script-error" { return expect(s, "", "ERROR", "TypeError: ") }
+    if c == "cancel-loop" { return expect(s, "looping", "ERROR", "cancelled by host: deadline of 500 ms passed") }
+    if c == "cancel-catch" { return expect(s, "", "ERROR", "cancelled by host: deadline") }
+    if c == "cancel-in-call" { return expect(s, "caught cancelled by host: host says stop", "ERROR", "cancelled by host: host says stop") }
+    if c == "loglevel" { return expect(s, "hello", "DONE", "") }
+    if c == "unmounted" { return expect(s, "ReferenceError", "DONE", "") }
+    return "no such case"
+}
+
+fn expect(s: *Seen, says: string, end: string, text: string) -> string {
+    if s.says != says { return "said \"${guest.printable(s.says)}\", not \"${says}\"" }
+    if s.end != end { return "ended ${s.end} (${guest.printable(s.text)}), not ${end}" }
+    if text != "" && string.starts_with(s.text, text) == 0 { return "ended ${end} \"${guest.printable(s.text)}\", not \"${text}...\"" }
+    return ""
+}
+
+// The worker in a contained child; with GHL_UNCONTAINED=1 (quickjs/sanitize.sh
+// only) in an uncontained one, where LeakSanitizer can run: the contained
+// child's seccomp filter refuses the fork it needs.
+fn start_worker(perms: sandbox.Grants, worker: string, args: ptr) -> (guest.Guest, string) {
+    if os.getenv("GHL_UNCONTAINED") == "1" {
+        return guest.launch_uncontained(perms, worker, args, "quickjs-worker", "")
+    }
+    return guest.launch(perms, worker, args, "quickjs-worker", "")
+}
+
+main() {
+    if os.args_count() != 2 {
+        println("usage: worker_cases <case>")
+        exit(2)
+    }
+    c = os.args_get(1)
+    worker = os.getenv("QUICKJS_WORKER")
+    if worker == "" {
+        println("host: QUICKJS_WORKER is not set (the path of quickjs-worker)")
+        exit(2)
+    }
+    perms = sandbox.new("worker-cases") {}
+    args = list.new()
+    g, err = start_worker(perms, worker, args)
+    list.free(args)
+    if err != "" {
+        println("host: guest.launch: ${err}")
+        exit(1)
+    }
+    guest.mount(&g, "echo", 0, 20)
+    guest.mount(&g, "kinds", 0, 0)
+    guest.mount(&g, "add", 2, 2)
+    guest.mount(&g, "refuse", 0, 0)
+    guest.mount(&g, "slow", 0, 0)
+    guest.mount(&g, "greet", 1, 1)
+    g.deadline_ms = 500
+    g.grace_ms = 2000
+    if c == "loglevel" { g.deadline_ms = 3000 }
+    guest.start(&g, script_of(c))
+    if c == "loglevel" { guest.log_level(&g, 2) }
+    s = heap.new(Seen)
+    s.says = ""
+    s.end = ""
+    s.text = ""
+    s.calls = 0
+    going = 1
+    while going == 1 {
+        e = guest.next(&g)
+        if e.kind == "SAY" {
+            if s.says == "" { s.says = e.text } else { s.says = "${s.says}|${e.text}" }
+        } else if e.kind == "CALL" {
+            serve(&g, c, e, s)
+        } else if e.kind == "LOG" {
+        } else {
+            s.end = e.kind
+            s.text = e.text
+            going = 0
+        }
+    }
+    guest.close(&g)
+    why = check(c, s)
+    line = "${c}: PASS (${s.calls} calls; ended ${s.end} ${guest.printable(s.text)})"
+    if why != "" { line = "${c}: FAIL (${why})" }
+    heap.free(s)
+    sandbox.free(perms)
+    println(line)
+    if why == "" { exit(0) }
+    exit(1)
+}

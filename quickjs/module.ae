@@ -7,19 +7,49 @@
 // release, so there is one copy of QuickJS and one pin, aether's. Nothing is
 // loaded at run time and nothing needs installing.
 //
-//   import quickjs
+// Two tiers, as the Lua, Python, Duktape and Tcl bridges have:
 //
-//   quickjs.run("print((2 + 3) * 7)")
+//  1. Fire-and-forget: a script in a fresh VM (32 MB heap cap, 5 s limit),
+//     0 or -1, the error on stderr.
 //
-//   worker = sandbox.new("worker") { grant_env("HOME") }
-//   quickjs.run_sandboxed(worker, "print(1 + 1)")
+//         quickjs.run("print((2 + 3) * 7)")
+//         worker = sandbox.new("worker") { grant_env("HOME") }
+//         quickjs.run_sandboxed(worker, "print(1 + 1)")
 //
-// A script has `print` and `console.log` and no other way out: quickjs-libc
-// (the engine's own file, network and OS modules) is not compiled in. With
-// the shared map it also has aether_map_get and aether_map_put
-// (run_sandboxed_with_map). To give a script host functions held to the
-// grants, register them with the engine (`import contrib.quickjs as engine`,
-// engine.function) and run under sandbox.enforce.
+//  2. Two-way (#904's shape): a persistent VM the host owns, host functions
+//     by name the script calls mid-eval, globals, and a typed result.
+//
+//         vm = quickjs.vm_new()
+//         quickjs.vm_register(vm, "app.add", add_cb)     // add_cb is @c_callback
+//         quickjs.vm_set_global_int(vm, "BASE", 100)
+//         quickjs.vm_set_time_limit(vm, 1000, 1)
+//         if quickjs.vm_eval(vm, "app.add(2, 3) + BASE") == 0 {
+//             n = quickjs.vm_result_int(vm)                 // 105
+//         }
+//         quickjs.vm_pop_result(vm)
+//         quickjs.vm_free(vm)
+//
+//     A host function is a `@c_callback (vm: ptr) -> int` that reads its
+//     arguments with quickjs.arg_* (1-based) and pushes its result with
+//     quickjs.push_*: the last push is the value when it returns 1, and
+//     returning 0 gives undefined. `return quickjs.raise_error(vm, msg)`
+//     throws Error(msg) into the script after the callback has returned.
+//
+// Ownership: the caller owns the VM, from vm_new to vm_free, and nothing
+// else. vm_free's parameter is @frees, so a use of the local after it is a
+// compile error (E0903). Every engine handle is the VM's own (the result,
+// a callback's arguments and pushed value, the host functions' closures)
+// and the VM releases it. A string a reader returns is the VM's: a result's
+// until the next eval or pop_result, an argument's until the callback
+// returns; copy it to keep it. A std.bytes handle a reader returns is the
+// caller's to free; one given to push_bytes stays the caller's (it is
+// copied). A cell given to vm_set_cancel_cell stays the caller's.
+//
+// A script has `print` and `console.log` (stdout) and no other way out:
+// quickjs-libc (the engine's own file, network and OS modules) is not
+// compiled in. With the shared map it also has aether_map_get and
+// aether_map_put (run_sandboxed_with_map). Host functions are what the host
+// registers, and they check the grants themselves (sandbox.enforce).
 @source("aether_host_quickjs.c")
 
 import std.sandbox
@@ -29,12 +59,210 @@ import std.sandbox
 import contrib.quickjs as qjs_engine
 
 exports (
-    quickjs_run_sandboxed, quickjs_run_sandboxed_with_map,
-    quickjs_run, quickjs_init, quickjs_finalize
+    run, run_sandboxed, run_sandboxed_with_map, quickjs_init, quickjs_finalize,
+    // #904's two-way shape
+    vm_new, vm_new_capped, quickjs_vm_free, vm_register,
+    quickjs_vm_set_global_str, quickjs_vm_set_global_int, quickjs_vm_set_global_strlist,
+    quickjs_vm_eval, quickjs_vm_result_type, quickjs_vm_result_int, quickjs_vm_result_str,
+    quickjs_vm_result_bool, quickjs_vm_result_double, quickjs_vm_result_bytes,
+    quickjs_vm_pop_result, quickjs_vm_set_instruction_limit, quickjs_vm_set_time_limit,
+    quickjs_arg_count, quickjs_arg_type, quickjs_arg_str, quickjs_arg_int, quickjs_arg_bool,
+    quickjs_arg_double, quickjs_arg_bytes,
+    quickjs_push_int, quickjs_push_str, quickjs_push_bool, quickjs_push_nil, quickjs_push_double,
+    quickjs_push_bytes, quickjs_raise_error,
+    // QuickJS's beyond that shape
+    quickjs_vm_set_global_json, quickjs_vm_result_json, quickjs_arg_json, quickjs_push_json,
+    quickjs_vm_set_cancel_cell, quickjs_vm_set_user, quickjs_vm_user, quickjs_vm_busy,
+    // typed-value tags (returned by *_result_type / *_arg_type)
+    QJS_TNIL, QJS_TBOOL, QJS_TINT, QJS_TSTR, QJS_TTABLE, QJS_TERR, QJS_TOTHER,
+    QJS_TBYTES, QJS_TFLOAT
 )
 
-extern quickjs_run_sandboxed(perms: sandbox.Grants, code: string) -> int
-extern quickjs_run_sandboxed_with_map(perms: sandbox.Grants, code: string, map_token: long) -> int
-extern quickjs_run(code: string) -> int
+// --- Typed value tags (must match aether_host_quickjs.c AE_QJS_T*) ---------
+// Python's numbering (the first seven are Lua's and Duktape's too). undefined
+// and null are QJS_TNIL; a number with no fraction that fits 64 bits is
+// QJS_TINT, any other number QJS_TFLOAT (JavaScript has one number type, so
+// 2.0 is an int); an array or an object is QJS_TTABLE; a Uint8Array is
+// QJS_TBYTES; a BigInt, a symbol, a function, an Error value or a promise is
+// QJS_TOTHER.
+const QJS_TNIL   = 0
+const QJS_TBOOL  = 1
+const QJS_TINT   = 2
+const QJS_TSTR   = 3
+const QJS_TTABLE = 4
+const QJS_TERR   = 5
+const QJS_TOTHER = 6
+const QJS_TBYTES = 7
+const QJS_TFLOAT = 8
+
+// --- the C (aether_host_quickjs.c) -------------------------------------------
+extern qjsb_new(memory_kb: int) -> ptr
+extern qjsb_engine(vm: ptr) -> ptr
+extern qjsb_name_ok(name: string) -> int
+extern qjsb_leaf(name: string) -> string
+extern qjsb_install(vm: ptr, name: string, f: int) -> int
+extern qjsb_dispatch(vm: ptr, host_fn: ptr, this_h: int, args: int) -> int
+extern qjsb_print_fn() -> ptr
+extern qjsb_map_get_fn() -> ptr
+extern qjsb_map_put_fn() -> ptr
+extern qjsb_set_map(vm: ptr, token: long)
+extern qjsb_push_grants(perms: sandbox.Grants) -> int
+extern qjsb_pop_grants()
+extern qjsb_report(vm: ptr)
+
 extern quickjs_init() -> int
 extern quickjs_finalize()
+
+// --- Tier 2: the two-way VM ---------------------------------------------------
+
+// A VM on a runtime of its own (no heap cap), with print and console.log.
+// null when it cannot be made. Many may live at once, sharing nothing; each
+// is used by one thread at a time.
+vm_new() -> ptr { return vm_new_capped(0) }
+
+// The same with the heap capped at memory_kb (0: no cap). A script that
+// allocates past it fails with "InternalError: out of memory".
+vm_new_capped(memory_kb: int) -> ptr {
+    vm = qjsb_new(memory_kb)
+    if vm == null { return null }
+    _p = vm_register(vm, "print", qjsb_print_fn())
+    _c = vm_register(vm, "console.log", qjsb_print_fn())
+    return vm
+}
+
+// Frees the VM: its runtime, every value it holds and its host functions.
+// Refused (nothing happens) from inside one of its own evals, a callback
+// freeing the VM that called it: the eval's caller frees it.
+extern quickjs_vm_free(vm: @frees ptr)
+
+// Registers host_fn, a `@c_callback (vm: ptr) -> int` given as a ptr, as
+// the JavaScript function `name`. A dotted name makes (or reuses) objects on
+// the way ("app.math.add"); an empty part ("a..b", "a.") is refused, and so
+// is a part that is there and is not an object. 0, or -1. Registering a
+// name again replaces it.
+vm_register(vm: @keep ptr, name: string, host_fn: @keep ptr) -> int {
+    q = qjsb_engine(vm)
+    if q == null || host_fn == null || qjsb_name_ok(name) == 0 { return -1 }
+    f = qjs_engine.function(q, qjsb_leaf(name), 0, |q2: ptr, this_h: int, args: int| {
+        return qjsb_dispatch(vm, host_fn, this_h, args)
+    })
+    if f < 0 { return -1 }
+    return qjsb_install(vm, name, f)
+}
+
+// Globals, set on globalThis before (or between) evals.
+extern quickjs_vm_set_global_str(vm: ptr, name: string, value: string)
+// Exact to 2**53, as any JavaScript number.
+extern quickjs_vm_set_global_int(vm: ptr, name: string, value: long)
+// A std.list of strings, as an array.
+extern quickjs_vm_set_global_strlist(vm: ptr, name: string, items: ptr)
+// The value JSON text describes (array, object, number, bool, null): "" when
+// set, else the parse error.
+extern quickjs_vm_set_global_json(vm: ptr, name: string, json: string) -> string
+
+// Runs code at global level, then the promise jobs it queued. 0 with the
+// completion value as the result (statements give undefined: QJS_TNIL), or
+// -1 with the error as the result: QJS_TERR, result_str "TypeError: msg"
+// (String(e), without the stack). Nested evals (from a callback) are allowed.
+extern quickjs_vm_eval(vm: ptr, code: string) -> int
+extern quickjs_vm_result_type(vm: ptr) -> int
+// Numbers read either way: a float as an int truncates (saturating, NaN 0); a
+// bool reads 1 or 0; a BigInt that fits 64 bits reads as its value, a bigger
+// one 0 here and its nearest double below.
+extern quickjs_vm_result_int(vm: ptr) -> long
+extern quickjs_vm_result_double(vm: ptr) -> float
+// A string result, or an error's message; "" for other types.
+extern quickjs_vm_result_str(vm: ptr) -> string
+// 1 only for true.
+extern quickjs_vm_result_bool(vm: ptr) -> int
+// A Uint8Array result as a new std.bytes handle (caller frees); null otherwise.
+extern quickjs_vm_result_bytes(vm: ptr) -> ptr
+// JSON.stringify of the result ("" when it has no JSON form).
+extern quickjs_vm_result_json(vm: ptr) -> string
+extern quickjs_vm_pop_result(vm: ptr)
+// 1 while one of this VM's evals is running.
+extern quickjs_vm_busy(vm: ptr) -> int
+
+// Limits, per outermost eval (a nested eval neither renews nor removes it).
+// The time limit stops JavaScript with "InternalError: interrupted: time
+// limit exceeded", which a script cannot catch; ms <= 0 removes it; `every`
+// is not used. "" when set. QuickJS counts no instructions: the instruction
+// limit is reported unavailable (as Duktape's), never silently ignored.
+extern quickjs_vm_set_time_limit(vm: ptr, ms: long, every: int) -> string
+extern quickjs_vm_set_instruction_limit(vm: ptr, budget: long, every: int) -> string
+// A std.sync cell (sync.atomic_new) whose nonzero value, set from any
+// thread, stops the running JavaScript ("InternalError: interrupted:
+// cancelled", uncatchable). null for none. The cell stays the caller's.
+extern quickjs_vm_set_cancel_cell(vm: ptr, cell: ptr)
+// A pointer of the host's for its callbacks (they get only the VM).
+extern quickjs_vm_set_user(vm: ptr, p: ptr)
+extern quickjs_vm_user(vm: ptr) -> ptr
+
+// --- Callback side (used INSIDE a registered host function) -----------------
+// Arguments are 1..arg_count(vm), read like results; past the end they read
+// as nil. A string is never converted from another type (arg_str of 5 is "").
+extern quickjs_arg_count(vm: ptr) -> int
+extern quickjs_arg_type(vm: ptr, i: int) -> int
+extern quickjs_arg_str(vm: ptr, i: int) -> string
+extern quickjs_arg_int(vm: ptr, i: int) -> long
+extern quickjs_arg_bool(vm: ptr, i: int) -> int
+extern quickjs_arg_double(vm: ptr, i: int) -> float
+extern quickjs_arg_bytes(vm: ptr, i: int) -> ptr
+extern quickjs_arg_json(vm: ptr, i: int) -> string
+// The last push is the value; return 1 to return it, 0 for undefined.
+extern quickjs_push_int(vm: ptr, v: long)
+extern quickjs_push_str(vm: ptr, v: string)
+extern quickjs_push_bool(vm: ptr, v: int)
+extern quickjs_push_nil(vm: ptr)
+extern quickjs_push_double(vm: ptr, v: float)
+// `b` is a std.bytes handle; the bytes are copied into a Uint8Array.
+extern quickjs_push_bytes(vm: ptr, b: ptr)
+// The value JSON text describes; 0, or -1 (nothing pushed) for bad JSON.
+extern quickjs_push_json(vm: ptr, json: string) -> int
+// `return quickjs.raise_error(vm, msg)`: the script sees Error(msg), which
+// it can catch, after the callback has returned (so its defers run).
+extern quickjs_raise_error(vm: ptr, msg: string) -> int
+
+// --- Tier 1: fire-and-forget --------------------------------------------------
+
+// A script in a fresh VM: 32 MB heap cap, 5 s time limit. 0, or -1 with
+// "[js] <the error and its stack>" on stderr. Nothing carries over.
+run(code: string) -> int {
+    vm = vm_new_capped(32768)
+    if vm == null { return -1 }
+    _t = quickjs_vm_set_time_limit(vm, 5000, 1)
+    rc = quickjs_vm_eval(vm, code)
+    if rc != 0 { qjsb_report(vm) }
+    quickjs_vm_free(vm)
+    return rc
+}
+
+// run, with perms pushed as a sandbox level for its length (popped again
+// when the script throws).
+run_sandboxed(perms: sandbox.Grants, code: string) -> int {
+    if qjsb_push_grants(perms) != 0 { return -1 }
+    rc = run(code)
+    qjsb_pop_grants()
+    return rc
+}
+
+// run_sandboxed with the shared map (std.sandbox's, by token): the script
+// reads and writes it with aether_map_get(key) and aether_map_put(key,
+// value); the host's inputs are frozen first.
+run_sandboxed_with_map(perms: sandbox.Grants, code: string, map_token: long) -> int {
+    vm = vm_new_capped(32768)
+    if vm == null { return -1 }
+    _t = quickjs_vm_set_time_limit(vm, 5000, 1)
+    qjsb_set_map(vm, map_token)
+    _g = vm_register(vm, "aether_map_get", qjsb_map_get_fn())
+    _p = vm_register(vm, "aether_map_put", qjsb_map_put_fn())
+    if qjsb_push_grants(perms) != 0 {
+        quickjs_vm_free(vm)
+        return -1
+    }
+    rc = quickjs_vm_eval(vm, code)
+    qjsb_pop_grants()
+    if rc != 0 { qjsb_report(vm) }
+    quickjs_vm_free(vm)
+    return rc
+}

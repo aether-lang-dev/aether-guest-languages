@@ -1,0 +1,30 @@
+import quickjs
+import std.list
+
+// app.add(a, b): two ints, or an Error the script can catch.
+@c_callback
+add(vm: ptr) -> int {
+    if quickjs.arg_type(vm, 1) != quickjs.QJS_TINT || quickjs.arg_type(vm, 2) != quickjs.QJS_TINT {
+        return quickjs.raise_error(vm, "add takes two ints")
+    }
+    quickjs.push_int(vm, quickjs.arg_int(vm, 1) + quickjs.arg_int(vm, 2))
+    return 1
+}
+
+main() {
+    vm = quickjs.vm_new()
+    quickjs.vm_register(vm, "app.add", add)
+    keys = list.new()
+    list.add(keys, "k1")
+    quickjs.vm_set_global_strlist(vm, "KEYS", keys)
+    list.free(keys)
+    quickjs.vm_set_global_int(vm, "BASE", 100)
+    quickjs.vm_set_time_limit(vm, 1000, 1)
+    if quickjs.vm_eval(vm, "app.add(2, 3) + BASE + KEYS.length") == 0 {
+        println(quickjs.vm_result_int(vm))              // 106
+    } else {
+        println(quickjs.vm_result_str(vm))              // "Error: add takes two ints", say
+    }
+    quickjs.vm_pop_result(vm)
+    quickjs.vm_free(vm)
+}

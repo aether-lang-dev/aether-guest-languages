@@ -4,7 +4,11 @@
 (quickjs-ng 0.18), an embeddable ES2023 engine. It is the bridge that was
 aether's `contrib.host.quickjs`, moved here ([PROVENANCE.md](PROVENANCE.md)):
 the same functions under the same names, `quickjs.run`,
-`quickjs.run_sandboxed` and `quickjs.run_sandboxed_with_map`.
+`quickjs.run_sandboxed` and `quickjs.run_sandboxed_with_map`, and the
+two-way VM the Lua, Python, Duktape and Tcl bridges have, with the same
+names and meanings: make and free an interpreter, register host functions by
+name, set globals, evaluate with a typed result ([The two-way
+VM](#the-two-way-vm)).
 
 It sits beside [`duktape`](../duktape/README.md), the other JavaScript engine
 here, under its own name (the engine's, not the language's). Choose by the
@@ -17,8 +21,8 @@ no `require`, no environment, no processes, no sockets, no way to load a
 library or call C. What a script can reach is what the host gives it. The
 bridge gives it `print` and `console.log` (stdout) and, in a run with the
 shared map, `aether_map_get` and `aether_map_put`; anything else is a host
-function you register through aether's engine module
-([Host functions](#host-functions)), which checks the grants itself.
+function you register on a VM (`quickjs.vm_register`), which checks the
+grants itself.
 
 ## The engine: aether's `contrib.quickjs`, not a copy
 
@@ -46,7 +50,7 @@ stay supported: pick by how far you trust the script, not by which is newest.
 | Where JavaScript runs | your process | your process | your process | its own process (`quickjs/worker`) |
 | What a script can reach | `print`, `console.log` | the same | the same | `print`, `console.log` (SAY) |
 | Your host functions | not checked | checked against the grants | checked against the grants | checked against the grants; each call is a message the host answers |
-| Time limit | 5 s per run | 5 s per run | 5 s per run | the host's deadline, then a kill |
+| Time limit | 5 s per run; a VM's own time limit and cancel cell | the same | the same | the host's deadline: its `CANCEL` stops a loop; a kill after the grace period |
 | Platforms | everywhere aether runs | same | Linux | Linux with Landlock; macOS refuses to start it |
 
 ### 1. Embed: QuickJS in your process, no containment
@@ -88,18 +92,26 @@ the machine goes; what it cannot hold is memory (a script can allocate up to
 the cap and then fail) and the wall clock (the limit is 5 s).
 
 For a script that calls back into the host, keeps state between runs, or
-returns a typed value, use aether's engine directly, `import contrib.quickjs
-as engine` (runtimes, handles, closures, values, promises, bytes; its README
-has the model). That is still this first way, in-process; hold its host
-functions to grants with `sandbox.enforce`.
+returns a typed value, make a VM ([The two-way VM](#the-two-way-vm)). That is
+still this first way, in-process; hold its host functions to grants with
+`sandbox.enforce` (way 2).
 
 ### 2. Embed inside a sandbox block
 
 ```aether
 import quickjs
-import contrib.quickjs as engine
 import std.sandbox
 import std.os
+
+// env(name): the variable, or undefined. os.getenv is held to the grants in
+// force, so a variable the block does not grant reads as unset.
+@c_callback
+host_env(vm: ptr) -> int {
+    v = os.getenv(quickjs.arg_str(vm, 1))
+    if v == "" { return 0 }
+    quickjs.push_str(vm, v)
+    return 1
+}
 
 main() {
     reader = sandbox.new("reader") { grant_env("HOME") }
@@ -107,27 +119,17 @@ main() {
     // The bridge's own run: a script that computes, and says so.
     if quickjs.run_sandboxed(reader, "print('computed', 6 * 7)") != 0 { println("js failed") }
 
-    // A host function is how a script reaches anything. This one is held to
-    // the grants in force, here by the std call it makes.
-    q = engine.runtime(8192, 0)
-    getenv = engine.function(q, "env", 1, |q2: ptr, this_h: int, args: int| {
-        v = os.getenv(engine.arg_string(q2, args, 0))
-        if v == "" { return engine.new_undefined(q2) }
-        return engine.new_string(q2, v)
-    })
-    engine.set_global(q, "env", getenv)
-    engine.release(q, getenv)
+    // A host function is how a script reaches anything.
+    vm = quickjs.vm_new()
+    quickjs.vm_register(vm, "env", host_env)
     sandbox.enforce(reader) callback {
-        v, e = engine.eval(q, "'HOME=' + env('HOME') + ' USER=' + env('USER')", "demo.js")
-        if e != "" {
-            println("js failed: ${e}")
+        if quickjs.vm_eval(vm, "'HOME=' + env('HOME') + ' USER=' + env('USER')") == 0 {
+            println(quickjs.vm_result_str(vm))
         } else {
-            text, _te = engine.to_string(q, v)
-            println(text)
-            engine.release(q, v)
+            println("js failed: ${quickjs.vm_result_str(vm)}")
         }
     }
-    engine.dispose(q)
+    quickjs.vm_free(vm)
 }
 ```
 
@@ -135,7 +137,8 @@ main() {
 the block's grants as a level for the length of the call and pops it again,
 also when the script throws. The script it runs has no way to ask for
 anything, so on its own it changes nothing a script can do: the grants matter
-for the host functions a script calls, which are checked on every platform.
+for the host functions a script calls, which are checked on every platform
+(here inside `sandbox.enforce`, around the VM's eval).
 The program prints
 
 ```
@@ -211,7 +214,9 @@ standard library on disk and no module loader, so there is **nothing to load
 before the lockdown**: the worker needs to read nothing after it starts, takes
 no arguments and needs no environment (Lua's and Python's workers have to
 load a library first; Duktape's loads libduktape). The host can cancel a
-script at a deadline and kills a worker that stops answering. On macOS, where
+script at a deadline, and the worker hears it inside a loop as well as in a
+call's reply ([In a contained child](#in-a-contained-child)); the host kills
+a worker that stops answering. On macOS, where
 nothing can contain the child, `guest.launch` refuses and starts nothing.
 Build the worker once with
 `ae build quickjs/worker/worker.ae -o build/quickjs-worker`; details under
@@ -283,7 +288,7 @@ The shared tests in `tests/boundary.py`, run in this language's worker (`tests/t
 | a call inside a call's argument (`nest`) | ok | |
 | an error answer (`FAIL`) to a call (`refuse`) | caught | |
 | a cancel while a call waits (`wait`) | heard at the call | |
-| a cancel inside a guest loop (`loop`) | not heard: killed | |
+| a cancel inside a guest loop (`loop`) | heard in a loop | |
 | a 100,000-byte argument (`big-up`) | refused, worker killed | |
 | a 100,000-byte answer (`big-down`) | refused: killed | |
 <!-- boundary:end -->
@@ -294,12 +299,12 @@ The top-level README's first table says it in a line; this is the detail, each
 claim with the spec that backs it.
 
 - **In-process transport.** the engine (quickjs-ng, Aether's `contrib.quickjs`) is compiled into your program: a direct call; no transport.
-- **Types.** this bridge exports only `run(str)`: nothing comes back but 0 or -1. A script has `print`, `console.log` and, in a run with the shared map, `aether_map_get` and `aether_map_put` (str values). The engine's own API (`contrib.quickjs`) has handles, JSON, typed readers and functions, and is not re-exported here.
-- **Duplex.** one way: the host runs a script and waits.
-- **Callbacks.** none through this bridge.
-- **Errors and state.** -1, and a `[js]` line on stderr; a fresh runtime per script, with a 5 s absolute deadline (an interrupt stops it; Array.find under it needs the patched engine, see "Array.find" below); no state between runs.
-- **Contained child.** Contained child: `std.guest` over a `std.ipc` socketpair, 4-byte length-prefixed frames, JSON arguments and values, a granted file as a descriptor, guest-initiated calls answered one at a time, no nesting (the top-level README lists the common part). the worker mounts host functions with the engine's API (JSON in, `JSON.parse` out; a `FAIL` throws); `print` is `SAY`; no deadline or interrupt inside the worker, so `CANCEL` is heard only in a call's reply and a loop is killed after the grace period.
-- **Tests.** `quickjs/test_quickjs_bridge.ae`: "a script has print and console.log", "a script has no file, environment or process API", "modern JavaScript runs (ES2023)"; `quickjs/test_quickjs_find_interrupt.ae`; the child: `callback-greet`, `callback-add`, `map-*` rows (`quickjs/containment/checks.js`), `quickjs/containment/test_find.sh`.
+- **Types.** in: str, int, strlist as globals, and any JSON value (`vm_set_global_json`); callbacks read str, int, bool, float, bytes (a `Uint8Array`), nil and any value as JSON. out: str, int, float, bool, bytes (length-aware, never a string), nil, an array or object as a tag (`QJS_TTABLE`) and as JSON (`vm_result_json`), a BigInt, function or symbol as `QJS_TOTHER`. JavaScript has one number type: a number with no fraction that fits 64 bits reads as an int (so `2.0` is an int), any other as a float; an int past 2**53 is not exact, as in any JavaScript. The tags are Python's numbering.
+- **Duplex.** host calls the guest, the guest calls back mid-eval, a callback may `eval` again (nested, tested), and the promise jobs an eval queues run before it returns.
+- **Callbacks.** registered by name (dotted ok, an empty part refused); they push int, str, bool, nil, double, bytes or JSON, the last push being the value, and return 1 to return it or 0 for undefined.
+- **Errors and state.** `vm_eval` returns -1 with `Type: message` (String(e), without the stack) as the result; `raise_error` is an `Error` the script can catch, thrown after the callback returns; an unregistered name is a `ReferenceError`; a time limit per outermost eval (nested evals and promise jobs included, uncatchable, removable) and a cancel cell any thread may set; the instruction limit is reported unavailable (QuickJS counts no operations); a heap cap (`vm_new_capped`); one runtime per VM, many VMs per process sharing nothing, each used by one thread at a time; `vm_free` is `@frees`, so a use of a freed VM is a compile error, and a VM freeing itself from its own callback is refused.
+- **Contained child.** Contained child: `std.guest` over a `std.ipc` socketpair, 4-byte length-prefixed frames, JSON arguments and values, a granted file as a descriptor, guest-initiated calls answered one at a time, no nesting (the top-level README lists the common part). the worker is the bridge's VM; mounted functions take and return any JSON value (`JSON.stringify` up, `JSON.parse` down); a `FAIL` throws an `Error` with the host's message; `print` is `SAY`; `CANCEL` heard inside a loop (a watcher thread sets the VM's cancel cell, which the script cannot catch) and in a call's reply.
+- **Tests.** `quickjs/test_host_quickjs_vm.ae` (the Lua, Python, Tcl and Duktape VM specs case for case, then QuickJS's own and the refusals): "each argument's tag and reading, as a callback sees it", "each pushed type, and the callback's return count", "results: numbers, sizes past 64 bits, tables", "bytes: length-aware both ways, never a string", "raise_error, caught and uncaught; a nested eval", "the time limit: stops a loop, cannot be caught, per eval, nested, removed", "two VMs share nothing: globals, host functions, definitions", "a cancel cell set from another thread stops a loop, uncatchably", "a VM freed from its own callback is refused, and frees afterwards"; `quickjs/containment/test_vm_free.sh` (a use after `vm_free` does not compile); the child: the shared boundary tests (`../tests/test_boundary.sh`) and `quickjs/containment/test_worker.sh` ("cancel-catch", "loglevel", "fail-uncaught", "script-error", "unmounted", "host-types").
 
 ## Array.find and the deadline
 
@@ -314,9 +319,11 @@ applied to the amalgamation by aether's fetch script), so nothing here copies or
 applies a patch: the engine is the patched one.
 `test_quickjs_find_interrupt.ae` has the write-up's repro (200,001 and 200,000
 objects, a 20 ms deadline, every element checked afterwards) and the bridge's
-own deadline; on the unpatched engine it aborts in `gc_decref_child`. The contained child's worker sets no deadline or interrupt, so a `find`
-in it is never stopped (`containment/test_find.sh` runs the loops to their end
-in the bridge and in the worker and checks every element).
+own deadline; on the unpatched engine it aborts in `gc_decref_child`. The
+contained child's worker sets no deadline, but its cancel cell stops a `find`
+when the host cancels, which on the patched engine is harmless
+(`containment/test_find.sh` runs the loops to their end in the bridge and in
+the worker and checks every element).
 
 ## Containment table
 
@@ -338,8 +345,8 @@ checked on macOS arm64 and on CachyOS x86_64, kernel 7.3 with Landlock
 | `callback-unregistered` | refused: a `ReferenceError` the script can catch | same | same |
 | `map-get`, `map-set` | work | work | work (the host's map) |
 | `map-overwrite-input` | refused (read back: still the host's value) | same | same |
-| `spin` (`for (;;) {}`) | stopped: the bridge's 5 s time limit (`InternalError: interrupted`) | same | killed: no answer to CANCEL within the grace period |
-| `silent` (`for (;;) {}`) | (child-only row) | (child-only row) | killed: no answer to CANCEL within the grace period |
+| `spin` (`for (;;) {}`) | stopped: the VM's time limit (`InternalError: interrupted: time limit exceeded`) | same | answered: the worker hears the deadline's `CANCEL` inside the loop and ends `ERROR cancelled by host` |
+| `silent` (one long native call: `Array(64).fill(10n ** 300000n).join()`) | (child-only row) | (child-only row) | killed: no answer to CANCEL within the grace period (the engine's interrupt cannot reach inside the call) |
 | `oversize` (one 1 MiB `print`) | (child-only row) | (child-only row) | killed: the frame is refused |
 | `open-etc-passwd`, `open-granted-file`, `write-granted-file` | left out: no file API; a file comes through a host function | | |
 | `getenv-home`, `env-cached` | left out: no environment API; a variable comes through a host function | | |
@@ -363,78 +370,179 @@ What the table says:
 - **The contained child holds every row it runs**, on Linux. Unlike Duktape's,
   its script is given no less than the in-process one is (there are no
   `env`/`readFile` bindings to take away), so no row is "stricter".
-- **A loop is ended by a time limit in-process and by a kill in the child.**
-  The bridge's 5 s limit per run ends `for (;;) {}` in a program (the engine's
-  interrupt handler); aether's `contrib.quickjs` offers that time limit but no
-  callback, so the worker has no hook to look for the host's CANCEL from inside
-  a loop. The host's deadline and grace period still end it, by killing the
-  worker: `spin` and `silent` come out the same in the child. A script that
-  calls the host, though, sees a CANCEL in the reply.
+- **A loop is ended by a time limit in-process and by the host's CANCEL in
+  the child.** A VM's time limit (the run's 5 s, or `vm_set_time_limit`) ends
+  `for (;;) {}` in a program, through the engine's interrupt handler. In the
+  child the worker's watcher thread sets the VM's cancel cell when the
+  deadline's `CANCEL` comes, and the same handler stops the loop where it is:
+  `spin` answers, as Lua's, Python's, Perl's, Ruby's and Tcl's do, and unlike
+  Duktape's, which has no such handler. What a script cannot do is catch it, or
+  switch it off (Lua's and Python's scripts can remove their hook, which is
+  their `silent`): QuickJS's `silent` is one native call long enough to
+  outlast the grace period, which the handler cannot reach inside (Tcl's is a
+  bignum `expr`, the same kind), and the host's kill ends it.
 - The tests hold these cells, including the gaps: an **escapes** or **not
   held** row would run expecting the call to succeed, so the day something
   stops being held this goes red. There are none to hold today.
 
-## Host functions
+## The two-way VM
 
-The bridge's `run_sandboxed_with_map(perms, code, map_token)` adds
-`aether_map_get(key)` and `aether_map_put(key, value)` to the script,
-bound to a shared map and freezing the host's inputs before it runs (a
-`put` to a frozen key is ignored). For anything else, register a function
-with aether's engine module:
+The VM is the shape the Lua, Python, Duktape and Tcl bridges have (aether's
+#904): the same function names after the prefix, the same meanings, and the
+tags in Python's numbering, so a host written against one reads the same
+against another. It is built on aether's `contrib.quickjs` and copies none of
+it: every value is a handle in the engine's table, and the VM releases each
+one it takes.
 
-```aether,fragment
-import contrib.quickjs as engine
+```aether
+import quickjs
+import std.list
 
-q = engine.runtime(8192, 0)
-read = engine.function(q, "read_file", 1, |q2: ptr, this_h: int, args: int| {
-    path = engine.arg_string(q2, args, 0)
-    text, err = fs.read(path)                       // checked against the grants in force
-    if err != "" { return engine.throw_error(q2, "Error", err) }
-    return engine.new_string(q2, text)
-})
-engine.set_global(q, "read_file", read)
-engine.release(q, read)
-sandbox.enforce(grants) callback { v, e = engine.eval(q, "read_file('/etc/hosts')", "x.js") }
+// app.add(a, b): two ints, or an Error the script can catch.
+@c_callback
+add(vm: ptr) -> int {
+    if quickjs.arg_type(vm, 1) != quickjs.QJS_TINT || quickjs.arg_type(vm, 2) != quickjs.QJS_TINT {
+        return quickjs.raise_error(vm, "add takes two ints")
+    }
+    quickjs.push_int(vm, quickjs.arg_int(vm, 1) + quickjs.arg_int(vm, 2))
+    return 1
+}
+
+main() {
+    vm = quickjs.vm_new()
+    quickjs.vm_register(vm, "app.add", add)
+    keys = list.new()
+    list.add(keys, "k1")
+    quickjs.vm_set_global_strlist(vm, "KEYS", keys)
+    list.free(keys)
+    quickjs.vm_set_global_int(vm, "BASE", 100)
+    quickjs.vm_set_time_limit(vm, 1000, 1)
+    if quickjs.vm_eval(vm, "app.add(2, 3) + BASE + KEYS.length") == 0 {
+        println(quickjs.vm_result_int(vm))              // 106
+    } else {
+        println(quickjs.vm_result_str(vm))              // "Error: add takes two ints", say
+    }
+    quickjs.vm_pop_result(vm)
+    quickjs.vm_free(vm)
+}
 ```
 
-This is aether's engine API and is documented there
-(`contrib/quickjs/README.md` in aether). `containment/host.ae` has the host
-functions the tests use, `read_file`, `getenv`, `greet` and `add`, checking
-the grants themselves with `aether_sandbox_check_slow`.
+([examples/vm.ae](examples/vm.ae).) Who owns what: the caller owns the VM,
+from `vm_new` to `vm_free`, and nothing else. `vm_free`'s parameter is
+`@frees`, so a use or a second free of the local afterwards does not compile
+(E0903; `containment/test_vm_free.sh`); there is no table of live VMs to look
+a handle up in. Every engine handle is the VM's: the held result (until the
+next eval or `vm_pop_result`), a callback's arguments (the engine's, for the
+call), a callback's pushed value (the engine's when the callback returns 1,
+released when it returns 0 or raises), the host functions' closures (freed
+with the runtime). The rest, call by call:
+
+| Call | What it does | Ownership |
+|---|---|---|
+| `vm_new()`, `vm_new_capped(kb)` | a VM on a runtime of its own, with `print` and `console.log`; the second caps the heap | the caller's VM; null if it cannot be made |
+| `vm_free(vm)` | frees the runtime, every value and host function | `@frees`: the caller's hold ends; refused from inside one of the VM's own evals (the caller of that eval frees it) |
+| `vm_register(vm, name, fn)` | a `@c_callback (vm: ptr) -> int` as the function `name`; dotted names make objects; 0 or -1 | `fn` is a code address, not owned; the closure is the VM's |
+| `vm_set_global_str`, `_int`, `_strlist`, `_json` | `globalThis[name] = ...` | the value is copied in; `_strlist`'s list stays the caller's; `_json` returns "" or the parse error |
+| `vm_eval(vm, code)` | runs code and the promise jobs it queues; 0 or -1 | the result is the VM's, released by the next eval or `vm_pop_result` |
+| `vm_result_type`, `_int`, `_double`, `_bool` | the result, read | nothing handed out |
+| `vm_result_str`, `vm_result_json` | the result as a string (a string, or an error's message), or as JSON | the VM's text, valid until the next eval or `vm_pop_result` |
+| `vm_result_bytes` | a `Uint8Array` result | a new `std.bytes` handle, the caller's to free |
+| `vm_pop_result(vm)` | releases the result | |
+| `vm_set_time_limit(vm, ms, every)` | per outermost eval; "" when set | |
+| `vm_set_instruction_limit(...)` | reported unavailable | the message is the bridge's |
+| `vm_set_cancel_cell(vm, cell)` | a `std.sync` cell that stops the script when nonzero, set from any thread | the cell stays the caller's: free it after `vm_free` or after setting null |
+| `vm_set_user(vm, p)`, `vm_user(vm)` | a pointer of the host's for its callbacks | the pointer stays the caller's |
+| `vm_busy(vm)` | 1 while one of its evals runs | |
+| `arg_count`, `arg_type`, `arg_int`, `arg_double`, `arg_bool` | a callback's arguments (1-based) | nothing handed out |
+| `arg_str`, `arg_json` | a string argument, or any as JSON | the VM's text, valid until the callback returns |
+| `arg_bytes` | a `Uint8Array` argument | a new `std.bytes` handle, the caller's to free |
+| `push_int`, `_str`, `_bool`, `_nil`, `_double`, `_json` | the callback's value (the last push) | copied in; `push_json` returns 0, or -1 for bad JSON |
+| `push_bytes(vm, b)` | a `Uint8Array` of a copy of `b` | `b` stays the caller's |
+| `raise_error(vm, msg)` | `return` it: the script sees `Error(msg)` after the callback returns | a push before it is dropped |
+
+How it compares with the four, function for function (`yes` is the same call
+and meaning, `-` is none):
+
+| | Lua | Python | Duktape | Tcl | QuickJS |
+|---|---|---|---|---|---|
+| `vm_new`, `vm_free`, `vm_register`, `vm_eval`, `vm_pop_result` | yes | yes | yes | yes | yes (`vm_free` is `@frees`) |
+| `vm_set_global_str`, `_int`, `_strlist` | yes | yes | yes | yes | yes |
+| `vm_result_type`, `_int`, `_str`, `_bool` | yes | yes | yes | yes | yes |
+| `vm_result_double` | - | yes | - | yes | yes |
+| `vm_result_bytes`, `arg_bytes`, `push_bytes` | - | yes | - | - | yes (a `Uint8Array`) |
+| `arg_count`, `arg_type`, `arg_str`, `arg_int`, `arg_bool` | yes | yes | yes | yes | yes |
+| `arg_double` | - | yes | - | yes | yes |
+| `push_int`, `_str`, `_bool`, `_nil`, `_double`, `raise_error` | yes | yes | yes | yes | yes |
+| instruction limit | yes | yes | unavailable | yes (commands) | unavailable |
+| time limit (`vm_set_time_limit`) | - | - | - | yes | yes |
+| a table from a callback | table builder | - | - | - | `push_json` |
+| `vm_set_global_json`, `vm_result_json`, `arg_json`, `push_json` | - | - | - | - | yes |
+| `vm_set_cancel_cell` (any thread) | - | - | - | - | yes |
+| `vm_set_user`, `vm_user`, `vm_busy`, `vm_new_capped` | - | - | - | - | yes |
+| tags | 0-6 | 0-8 | 0-6 | 0-7 (`TFLOAT` is 7) | 0-8, Python's |
+
+Where the four differ, QuickJS follows the richest, Python: the last push is
+the value (Lua returns a count), `arg_str` converts nothing (`arg_str` of 5 is
+""), `arg_bool` and `result_bool` are 1 only for `true`, a number that does
+not fit reads saturated, and an error's text is `Type: message`.
+
+The bridge's `run_sandboxed_with_map(perms, code, map_token)` is a VM with
+two host functions, `aether_map_get(key)` and `aether_map_put(key, value)`,
+bound to the map by the VM's own state (not the process's) and freezing the
+host's inputs before it runs (a `put` to a frozen key is ignored).
+`containment/host.ae` has the host functions the tests use, `read_file`,
+`getenv`, `greet` and `add`, checking the grants themselves with
+`aether_sandbox_check_slow`.
 
 ## In a contained child
 
-`quickjs/worker/worker.ae` is a std.guest worker. In the script, `print` and
-`console.log` are `SAY` (arguments space-joined), and each function the host
-mounts is a global of the same name whose call is a `CALL` the host answers:
-the arguments go as a JSON array and the answer is `JSON.parse`d back (a
-granted file comes back as `{granted: true, text: ...}`). A `FAIL` throws an
-`Error` with the host's message (`refused: ...` when the grants said no); a
-`CANCEL` throws `cancelled by host: ...`, which the script can catch: the
-host's kill after its grace period is what holds it. The worker's runtime has
-a 64 MiB heap cap. [containment/child_host.ae](containment/child_host.ae) is a
-complete host.
+`quickjs/worker/worker.ae` is a std.guest worker on the bridge's VM. In the
+script, `print` and `console.log` are `SAY` (arguments String()'d and
+space-joined), and each function the host mounts is a global of the same
+name whose call is a `CALL` the host answers: the arguments go as a JSON
+array (`JSON.stringify`: strings, numbers, booleans, null, arrays, objects)
+and the answer is `JSON.parse`d back (a granted file comes back as
+`{granted: true, text: ...}`). A `FAIL` throws an `Error` with the host's
+message (`refused: ...` when the grants said no), which the script can catch;
+an error the script does not catch, its own or a `FAIL`, ends it with one
+`ERROR` frame, `Type: message`.
+
+A `CANCEL` is heard inside a loop: the worker runs a watcher thread
+(`worker/worker_support.c`) that waits on the socket while the script runs.
+The host speaks unasked only to cancel or to set the log level, so when
+something other than a `LOGLEVEL` arrives outside a call, the watcher sets
+the VM's cancel cell, the engine's interrupt handler stops the JavaScript
+where it is (the script cannot catch it), and the worker reads the frame and
+ends with `ERROR cancelled by host: <the host's reason>`, as the Lua, Python,
+Perl, Ruby and Tcl workers do. The watcher only peeks; every frame is read by
+`std.guest.child` on the worker's own thread, and a call marks itself under
+the watcher's lock before its `CALL` goes out, so a reply is never taken for a
+cancel. A `CANCEL` that comes as a call's reply sets the cell too. One long
+native call (a regexp is not one: it is interrupted) runs to its end before
+the handler is consulted, and the host's kill after its grace period is what
+holds that. The worker's runtime has a 64 MiB heap cap.
+[containment/child_host.ae](containment/child_host.ae) is a complete host.
 
 ## Implementation notes
 
 - The bridge's `aether_host_quickjs.c` declares the engine's `qjs_*` C
-  functions by hand (`qjs_new`, `qjs_eval`, `qjs_function`, ...), matching
-  aether's `contrib/quickjs/aether_quickjs.c`; the closure passed to
-  `qjs_function` has the compiler's `{fn, env}` layout. It is compiled into
-  the importing program (`@source` in `module.ae`), together with the
-  engine's C (`import contrib.quickjs`).
-- Each `run` makes a runtime (32 MB heap cap, 5000 ms per entry), runs the
-  script and frees it. `run_sandboxed*` push and pop the grants level around
-  the run, also when the script throws.
-- `print`/`console.log` are the one addition to aether's copy of the bridge
+  functions by hand (`qjs_new`, `qjs_eval`, `qjs_get_index`, ...), matching
+  aether's `contrib/quickjs/aether_quickjs.c`. `vm_register` is Aether
+  (module.ae): it makes the engine's host function with a closure that
+  captures the VM and the callback's address and calls the bridge's dispatch,
+  so the closure's layout stays the compiler's business. The bridge is
+  compiled into the importing program (`@source` in `module.ae`), together
+  with the engine's C (`import contrib.quickjs`).
+- `run` is a VM (32 MB heap cap, 5 s time limit) made, run and freed.
+  `run_sandboxed*` push and pop the grants level around the run, also when the
+  script throws. `run_sandboxed_with_map`'s map token is on its VM, so two
+  runs on two threads at once each use their own map.
+- `print`/`console.log` are the bridge's addition to aether's copy
   (PROVENANCE.md): aether's scripts could only compute and write to the
   shared map.
-- Known, kept from aether's copy: `run_sandboxed_with_map` keeps the current
-  map token in a process-wide variable, so two such runs on different threads
-  at once would share it. The bridge is not safe for concurrent runs.
-- A thrown error is printed to stderr as `[js] ...` and the call returns `-1`;
-  there is no way to get the message back or to read a value out of a script.
-  That is what `contrib.quickjs` is for.
+- A thrown error from `run` is printed to stderr as `[js] ...` with its
+  stack and the call returns `-1`; a VM's `vm_result_str` has it without the
+  stack.
 
 ## Tests
 
@@ -444,10 +552,30 @@ complete host.
   grant stack is left as found, `init`/`finalize` are idempotent. Moved from
   aether but for the import and the file the host function reads
   (`/etc/hosts`: `/etc/hostname` is not on macOS).
+- [`test_host_quickjs_vm.ae`](test_host_quickjs_vm.ae): the two-way VM, case
+  for case with `lua/test_host_lua_vm.ae`, `python/test_host_python_vm.ae`,
+  `tcl/test_host_tcl_vm.ae` and `duktape/test_host_duktape_vm.ae` where QuickJS
+  has the thing (24 cases): typed arguments and results, bytes, JSON, errors
+  and `raise_error`, nested evals, the time limit, a cancel cell set from
+  another thread, two VMs that share nothing, memory flat over 10,000 rounds;
+  and the refusals: an unregistered name, bad names, wrong argument types, a
+  VM freed from its own callback, a null VM.
 - [`test_quickjs_bridge.ae`](test_quickjs_bridge.ae): `print` and
   `console.log`, the absence of `quickjs-libc`'s names, and ES2023.
-- `../tests/test_stunt_*.sh` and `../tests/test_catalogue.sh`: the containment
-  table above.
+- `containment/test_vm_free.sh`: a use or a second free of a freed VM does
+  not compile (E0903).
+- `containment/test_worker.sh` (contained child, Linux): the worker's own
+  cases beside the shared boundary tests: a cancel the script tries to catch,
+  a `LOGLEVEL` during a loop that is not a cancel, an uncaught `FAIL` and the
+  script's own error as `ERROR`, an unmounted name, the JSON types of a host's
+  answer.
+- `../tests/test_stunt_*.sh`, `../tests/test_catalogue.sh` and
+  `../tests/test_boundary.sh`: the containment table and the boundary grid
+  above.
+- [`sanitize.sh`](sanitize.sh) (Linux, clang): all of the above built with
+  AddressSanitizer and LeakSanitizer; the worker's cases a second time with
+  the worker uncontained, where LeakSanitizer can run (the child's seccomp
+  filter refuses the fork it needs).
 
 The specs skip when `contrib.quickjs` cannot be used (on GitHub Actions a skip
 is a failure). They assert on return codes, never on the interpreter's

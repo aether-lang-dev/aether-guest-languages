@@ -78,3 +78,17 @@ Here it is compiled into each program that imports it (`@source` in
 Nothing else in the file changed in the move.
 
 aether keeps its copy for a transition period; see the top-level README.
+
+## The two-way VM (2026-11-21)
+
+`aether_host_quickjs.c` was rewritten around a VM, the shape the Lua, Python,
+Duktape and Tcl bridges brought from aether (#904): `vm_new`, `vm_free`,
+`vm_register`, globals, `vm_eval` with a typed result, and the callback side's
+`arg_*`, `push_*` and `raise_error`, with Python's tag numbering. It is new
+code on aether's `contrib.quickjs` handle API, not copied from any of the
+four. `run`, `run_sandboxed` and `run_sandboxed_with_map` keep their names,
+return codes, 32 MB heap cap, 5 s limit and grants handling, and are now
+written in `module.ae` on the VM; the shared map's token moved from a
+process-wide variable onto the VM. The worker (`worker/worker.ae`) runs on the
+VM too, and hears a `CANCEL` inside a loop through a watcher thread
+(`worker/worker_support.c`) and the VM's cancel cell.

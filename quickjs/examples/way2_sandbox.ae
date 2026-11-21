@@ -1,7 +1,16 @@
 import quickjs
-import contrib.quickjs as engine
 import std.sandbox
 import std.os
+
+// env(name): the variable, or undefined. os.getenv is held to the grants in
+// force, so a variable the block does not grant reads as unset.
+@c_callback
+host_env(vm: ptr) -> int {
+    v = os.getenv(quickjs.arg_str(vm, 1))
+    if v == "" { return 0 }
+    quickjs.push_str(vm, v)
+    return 1
+}
 
 main() {
     reader = sandbox.new("reader") { grant_env("HOME") }
@@ -9,25 +18,15 @@ main() {
     // The bridge's own run: a script that computes, and says so.
     if quickjs.run_sandboxed(reader, "print('computed', 6 * 7)") != 0 { println("js failed") }
 
-    // A host function is how a script reaches anything. This one is held to
-    // the grants in force, here by the std call it makes.
-    q = engine.runtime(8192, 0)
-    getenv = engine.function(q, "env", 1, |q2: ptr, this_h: int, args: int| {
-        v = os.getenv(engine.arg_string(q2, args, 0))
-        if v == "" { return engine.new_undefined(q2) }
-        return engine.new_string(q2, v)
-    })
-    engine.set_global(q, "env", getenv)
-    engine.release(q, getenv)
+    // A host function is how a script reaches anything.
+    vm = quickjs.vm_new()
+    quickjs.vm_register(vm, "env", host_env)
     sandbox.enforce(reader) callback {
-        v, e = engine.eval(q, "'HOME=' + env('HOME') + ' USER=' + env('USER')", "demo.js")
-        if e != "" {
-            println("js failed: ${e}")
+        if quickjs.vm_eval(vm, "'HOME=' + env('HOME') + ' USER=' + env('USER')") == 0 {
+            println(quickjs.vm_result_str(vm))
         } else {
-            text, _te = engine.to_string(q, v)
-            println(text)
-            engine.release(q, v)
+            println("js failed: ${quickjs.vm_result_str(vm)}")
         }
     }
-    engine.dispose(q)
+    quickjs.vm_free(vm)
 }

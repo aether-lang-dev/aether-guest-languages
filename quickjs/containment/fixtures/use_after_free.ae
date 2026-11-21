@@ -1,0 +1,9 @@
+// Must not compile: the VM is used after vm_free, whose parameter is @frees
+// (test_vm_free.sh checks that ae refuses it with E0903).
+import quickjs
+
+main() {
+    vm = quickjs.vm_new()
+    quickjs.vm_free(vm)
+    quickjs.vm_eval(vm, "1 + 1")
+}

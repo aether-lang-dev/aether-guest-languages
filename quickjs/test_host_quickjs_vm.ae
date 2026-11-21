@@ -1,0 +1,697 @@
+// The bridge's two-way tier (#904's shape) through `import quickjs`, as a
+// program uses it: the cases of lua/test_host_lua_vm.ae,
+// python/test_host_python_vm.ae, tcl/test_host_tcl_vm.ae and
+// duktape/test_host_duktape_vm.ae, case for case where QuickJS has the
+// thing, so the five stay comparable; then what QuickJS has beyond them
+// (JSON in and out, a cancel cell, a user pointer, promise jobs); then the
+// negative cases (refusals, wrong types, errors that leave the VM usable,
+// two VMs that share nothing, a VM freed from its own callback). The
+// callbacks are Aether @c_callback functions, so module.ae's externs and the
+// @source build are covered too. test_support.c holds what Aether cannot say
+// directly (a cell set from another thread, the resident size).
+//
+// Asserts on return codes and on values read back from JavaScript, never on
+// the interpreter's stdout.
+
+@source("test_support.c")
+
+import quickjs
+import std.spec
+import std.bytes
+import std.list
+import std.os
+import std.string
+import std.sync
+
+extern ghl_t_cancel_later(cell: ptr, ms: int) -> ptr
+extern ghl_t_join(t: ptr)
+extern ghl_t_rss_kb() -> long
+extern ghl_t_i64_max() -> long
+extern ghl_t_i64_min() -> long
+extern ghl_t_isinf(d: float) -> int
+
+// host.double(n): 2n, an int in and an int out (Lua's host.double).
+@c_callback
+cb_double(vm: ptr) -> int {
+    quickjs.push_int(vm, quickjs.arg_int(vm, 1) * 2)
+    return 1
+}
+
+// host.ping(): { ok: "PONG" } (Lua's tagged table, as JSON).
+@c_callback
+cb_ping(vm: ptr) -> int {
+    _r = quickjs.push_json(vm, "{\"ok\":\"PONG\"}")
+    return 1
+}
+
+// host.echo(s, ...): its string argument and the count of arguments.
+@c_callback
+cb_echo(vm: ptr) -> int {
+    quickjs.push_str(vm, "${quickjs.arg_str(vm, 1)}/${quickjs.arg_count(vm)}")
+    return 1
+}
+
+@c_callback
+cb_add(vm: ptr) -> int {
+    quickjs.push_int(vm, quickjs.arg_int(vm, 1) + quickjs.arg_int(vm, 2))
+    return 1
+}
+
+@c_callback
+cb_sub(vm: ptr) -> int {
+    quickjs.push_int(vm, quickjs.arg_int(vm, 1) - quickjs.arg_int(vm, 2))
+    return 1
+}
+
+// host.strict_add(a, b): two ints, or a TypeError-like refusal.
+@c_callback
+cb_strict_add(vm: ptr) -> int {
+    if quickjs.arg_count(vm) != 2 || quickjs.arg_type(vm, 1) != quickjs.QJS_TINT || quickjs.arg_type(vm, 2) != quickjs.QJS_TINT {
+        return quickjs.raise_error(vm, "strict_add takes two ints")
+    }
+    quickjs.push_int(vm, quickjs.arg_int(vm, 1) + quickjs.arg_int(vm, 2))
+    return 1
+}
+
+@c_callback
+cb_echo_str(vm: ptr) -> int {
+    quickjs.push_str(vm, quickjs.arg_str(vm, 1))
+    return 1
+}
+
+@c_callback
+cb_echo_bool(vm: ptr) -> int {
+    quickjs.push_bool(vm, quickjs.arg_bool(vm, 1))
+    return 1
+}
+
+@c_callback
+cb_echo_nil(vm: ptr) -> int {
+    quickjs.push_nil(vm)
+    return 1
+}
+
+@c_callback
+cb_echo_double(vm: ptr) -> int {
+    quickjs.push_double(vm, quickjs.arg_double(vm, 1) * 2.0)
+    return 1
+}
+
+@c_callback
+cb_pi(vm: ptr) -> int {
+    quickjs.push_double(vm, 3.14159)
+    return 1
+}
+
+@c_callback
+cb_echo_bytes(vm: ptr) -> int {
+    b = quickjs.arg_bytes(vm, 1)
+    quickjs.push_bytes(vm, b)
+    if b != null { bytes.free(b) }
+    return 1
+}
+
+// The tags of all its arguments, as "t1,t2,...".
+@c_callback
+cb_types(vm: ptr) -> int {
+    out = ""
+    n = quickjs.arg_count(vm)
+    i = 1
+    while i <= n {
+        if i > 1 { out = "${out}," }
+        out = "${out}${quickjs.arg_type(vm, i)}"
+        i = i + 1
+    }
+    quickjs.push_str(vm, out)
+    return 1
+}
+
+// The JSON of its first argument, pushed back as JSON.
+@c_callback
+cb_echo_json(vm: ptr) -> int {
+    j = quickjs.arg_json(vm, 1)
+    if quickjs.push_json(vm, j) != 0 { return quickjs.raise_error(vm, "not JSON: ${j}") }
+    return 1
+}
+
+// Pushes text that is not JSON: nothing is pushed, and it says so.
+@c_callback
+cb_bad_json(vm: ptr) -> int {
+    rc = quickjs.push_json(vm, "{not json")
+    quickjs.push_int(vm, rc)
+    return 1
+}
+
+// Pushes, then returns 0: the script gets undefined.
+@c_callback
+cb_push_then_zero(vm: ptr) -> int {
+    quickjs.push_int(vm, 99)
+    return 0
+}
+
+// Pushes nothing and returns 0 (Duktape's host.nothing).
+@c_callback
+cb_nothing(vm: ptr) -> int {
+    return 0
+}
+
+// A push before a raise is dropped.
+@c_callback
+cb_raise_err(vm: ptr) -> int {
+    quickjs.push_int(vm, 1)
+    return quickjs.raise_error(vm, quickjs.arg_str(vm, 1))
+}
+
+// A nested eval on the same VM, which calls another host function. The
+// argument is read after it: without the per-call state saved and restored
+// around the inner call, arg 1 would be the inner call's 2.
+@c_callback
+cb_nested_eval(vm: ptr) -> int {
+    long inner = -1000
+    if quickjs.vm_eval(vm, "app.math.add(2, 4)") == 0 { inner = quickjs.vm_result_int(vm) }
+    quickjs.vm_pop_result(vm)
+    quickjs.push_int(vm, quickjs.arg_int(vm, 1) + inner)
+    return 1
+}
+
+// A nested eval that spins: the outer eval's time limit stops it. Records
+// what the nested eval saw as the global NESTED.
+@c_callback
+cb_nested_spin(vm: ptr) -> int {
+    rc = quickjs.vm_eval(vm, "for (;;) {}")
+    quickjs.vm_set_global_str(vm, "NESTED", "${rc}:${quickjs.vm_result_type(vm)}:${quickjs.vm_result_str(vm)}")
+    quickjs.vm_pop_result(vm)
+    return 0
+}
+
+// A callback freeing the VM that called it: refused, the VM goes on.
+@c_callback
+cb_free_me(vm: ptr) -> int {
+    quickjs.push_int(vm, quickjs.vm_busy(vm))
+    // The last use of vm here: after the free the compiler refuses one (E0903).
+    quickjs.vm_free(vm)
+    return 1
+}
+
+// The host's own pointer, read back: the length of the string list behind it.
+@c_callback
+cb_user(vm: ptr) -> int {
+    quickjs.push_int(vm, list.size(quickjs.vm_user(vm)))
+    return 1
+}
+
+// Sets the cancel cell kept as the user pointer: the script's next loop stops.
+@c_callback
+cb_cancel_self(vm: ptr) -> int {
+    sync.atomic_store(quickjs.vm_user(vm), 1)
+    return 0
+}
+
+// Runs `code` and holds its result for the reads that follow.
+fn ev(vm: ptr, code: string) -> int {
+    quickjs.vm_pop_result(vm)
+    return quickjs.vm_eval(vm, code)
+}
+
+fn churn(vm: ptr, rounds: int) {
+    i = 0
+    while i < rounds {
+        quickjs.vm_set_global_str(vm, "LOOP_VAR", "a string long enough to show if each round keeps one")
+        quickjs.vm_eval(vm, "host.echo_str(LOOP_VAR + host.echo('x', 1))")
+        _s = quickjs.vm_result_str(vm)
+        quickjs.vm_pop_result(vm)
+        quickjs.vm_eval(vm, "host.echo_bytes(new Uint8Array([1, 0, 2, 0, 3, 0, 4, 0]))")
+        b = quickjs.vm_result_bytes(vm)
+        if b != null { bytes.free(b) }
+        quickjs.vm_pop_result(vm)
+        quickjs.vm_eval(vm, "try { host.raise_err('boom') } catch (e) { e.message }")
+        quickjs.vm_pop_result(vm)
+        quickjs.vm_eval(vm, "host.echo_json({ a: [1, 2.5, 'x'], b: null })")
+        // not popped: the next eval must release it
+        i = i + 1
+    }
+    quickjs.vm_pop_result(vm)
+}
+
+main() {
+    fw = spec.init()
+
+    vm = quickjs.vm_new()
+    have_qjs = 0
+    if vm != null { have_qjs = 1 }
+    reason = "contrib.quickjs cannot make a runtime"
+    flat_ok = have_qjs
+    flat_reason = reason
+    if os.getenv("GHL_SANITIZER") == "1" {
+        flat_ok = 0
+        flat_reason = "built with AddressSanitizer, whose quarantine holds freed memory"
+    }
+
+    if have_qjs == 1 {
+        quickjs.vm_register(vm, "host.double", cb_double)
+        quickjs.vm_register(vm, "host.ping", cb_ping)
+        quickjs.vm_register(vm, "host.echo", cb_echo)
+        quickjs.vm_register(vm, "host.strict_add", cb_strict_add)
+        quickjs.vm_register(vm, "host.echo_str", cb_echo_str)
+        quickjs.vm_register(vm, "host.echo_bool", cb_echo_bool)
+        quickjs.vm_register(vm, "host.echo_nil", cb_echo_nil)
+        quickjs.vm_register(vm, "host.echo_double", cb_echo_double)
+        quickjs.vm_register(vm, "host.pi", cb_pi)
+        quickjs.vm_register(vm, "host.echo_bytes", cb_echo_bytes)
+        quickjs.vm_register(vm, "host.types", cb_types)
+        quickjs.vm_register(vm, "host.echo_json", cb_echo_json)
+        quickjs.vm_register(vm, "host.bad_json", cb_bad_json)
+        quickjs.vm_register(vm, "host.push_then_zero", cb_push_then_zero)
+        quickjs.vm_register(vm, "host.nothing", cb_nothing)
+        quickjs.vm_register(vm, "host.raise_err", cb_raise_err)
+        quickjs.vm_register(vm, "host.nested_eval", cb_nested_eval)
+        quickjs.vm_register(vm, "host.nested_spin", cb_nested_spin)
+        quickjs.vm_register(vm, "host.free_me", cb_free_me)
+        quickjs.vm_set_global_int(vm, "BASE", 100)
+        keys = list.new()
+        list.add(keys, "k1")
+        list.add(keys, "k 2")
+        quickjs.vm_set_global_strlist(vm, "KEYS", keys)
+        list.free(keys)
+        quickjs.vm_set_global_str(vm, "WHO", "aether")
+    }
+
+    spec.describe(fw, "quickjs vm (#904)") {
+        // lua: "a host callback's int result and injected globals"
+        spec.it_when(have_qjs, "a host callback's int result and injected globals", reason) callback {
+            rc = ev(vm, "var d = host.double(21); var p = host.ping(); if (p.ok !== 'PONG') throw new Error('ping'); if (KEYS.length !== 2 || KEYS[0] !== 'k1') throw new Error('KEYS'); d + BASE")
+            spec.assert_eq(rc, 0, "the script ran")
+            spec.assert_eq(quickjs.vm_result_type(vm), quickjs.QJS_TINT, "an int came back")
+            spec.assert_eq_long(quickjs.vm_result_int(vm), 142, "42 from the host plus BASE")
+            quickjs.vm_pop_result(vm)
+        }
+
+        // lua: "a typed string result"; tcl and python: non-ASCII both ways
+        spec.it_when(have_qjs, "a typed string result, non-ASCII both ways", reason) callback {
+            spec.assert_eq(ev(vm, "'hello ' + KEYS[1] + ' from ' + WHO"), 0, "the script ran")
+            spec.assert_eq(quickjs.vm_result_type(vm), quickjs.QJS_TSTR, "a string came back")
+            spec.assert_str_eq(quickjs.vm_result_str(vm), "hello k 2 from aether", "its text")
+            quickjs.vm_set_global_str(vm, "GSTR", "héllo €")
+            ev(vm, "host.echo_str(GSTR)")
+            spec.assert_str_eq(quickjs.vm_result_str(vm), "héllo €", "non-ASCII through a global and a callback")
+            ev(vm, "GSTR.length")
+            spec.assert_eq_long(quickjs.vm_result_int(vm), 7, "seven characters to JavaScript")
+            quickjs.vm_pop_result(vm)
+        }
+
+        // lua: "a callback reads its string argument and the argument count"
+        spec.it_when(have_qjs, "a callback reads its string argument and the argument count", reason) callback {
+            spec.assert_eq(ev(vm, "host.echo('x', 2, 3)"), 0, "the script ran")
+            spec.assert_str_eq(quickjs.vm_result_str(vm), "x/3", "the first argument and the count")
+            quickjs.vm_pop_result(vm)
+        }
+
+        // python: "dotted registration, globals, and state kept between evals"
+        spec.it_when(have_qjs, "dotted registration, globals, and state kept between evals", reason) callback {
+            spec.assert_eq(quickjs.vm_register(vm, "app.math.add", cb_add), 0, "register dotted")
+            spec.assert_eq(quickjs.vm_register(vm, "app.math.sub", cb_sub), 0, "register into an existing namespace")
+            quickjs.vm_set_global_int(vm, "GINT", 100)
+            spec.assert_eq(ev(vm, "var x = app.math.add(2, 3); x += GINT;"), 0, "statements run")
+            spec.assert_eq(ev(vm, "x + 5"), 0, "an expression after them")
+            spec.assert_eq(quickjs.vm_result_type(vm), quickjs.QJS_TINT, "an int")
+            spec.assert_eq_long(quickjs.vm_result_int(vm), 110, "x kept between evals")
+            ev(vm, "app.math.sub(9, 4) * 10 + app.math.add(1, 1)")
+            spec.assert_eq_long(quickjs.vm_result_int(vm), 52, "both functions in app.math")
+            ev(vm, "Array.isArray(KEYS) && KEYS.join('|') === 'k1|k 2'")
+            spec.assert_eq(quickjs.vm_result_type(vm), quickjs.QJS_TBOOL, "a bool")
+            spec.assert_eq(quickjs.vm_result_bool(vm), 1, "the strlist global is an array of strings")
+            ev(vm, "var q = 1;")
+            spec.assert_eq(quickjs.vm_result_type(vm), quickjs.QJS_TNIL, "a statement gives undefined, nil")
+            quickjs.vm_pop_result(vm)
+        }
+
+        // python: "each argument's tag and reading, as a callback sees it";
+        // duktape: "a callback reads its arguments' count and types"
+        spec.it_when(have_qjs, "each argument's tag and reading, as a callback sees it", reason) callback {
+            ev(vm, "host.types(null, true, 7, 2.5, 's', new Uint8Array([1]), [1], {}, 2n ** 64n, Symbol('x'), undefined, () => 1, 2 ** 64, NaN)")
+            spec.assert_str_eq(quickjs.vm_result_str(vm), "0,1,2,8,3,7,4,4,6,6,0,6,8,8", "the tags")
+            ev(vm, "host.echo_double(3)")
+            spec.assert_eq(quickjs.vm_result_type(vm), quickjs.QJS_TINT, "6.0 is an integral number: an int")
+            spec.assert_true(quickjs.vm_result_double(vm) == 6.0, "an int argument reads as a double")
+            ev(vm, "host.echo_double(1.25)")
+            spec.assert_eq(quickjs.vm_result_type(vm), quickjs.QJS_TFLOAT, "2.5 is a float")
+            spec.assert_true(quickjs.vm_result_double(vm) == 2.5, "reads as 2.5")
+            ev(vm, "app.math.add(2.9, -1.9)")
+            spec.assert_eq_long(quickjs.vm_result_int(vm), 1, "a float argument reads as a truncated int")
+            ev(vm, "host.echo_bool(true) === true && host.echo_bool(1) === false && host.echo_bool('yes') === false")
+            spec.assert_eq(quickjs.vm_result_bool(vm), 1, "arg_bool reads only a bool")
+            ev(vm, "host.echo_str(5)")
+            spec.assert_eq(quickjs.vm_result_type(vm), quickjs.QJS_TSTR, "a string back")
+            spec.assert_str_eq(quickjs.vm_result_str(vm), "", "arg_str does not convert a number")
+            ev(vm, "host.echo('only')")
+            spec.assert_str_eq(quickjs.vm_result_str(vm), "only/1", "one argument")
+            ev(vm, "app.math.add(5)")
+            spec.assert_eq_long(quickjs.vm_result_int(vm), 5, "an argument past the end reads as nothing (0)")
+            ev(vm, "app.math.add(2n ** 40n, 1)")
+            spec.assert_eq_long(quickjs.vm_result_int(vm), 1099511627777, "a BigInt that fits reads as its value")
+            quickjs.vm_pop_result(vm)
+        }
+
+        // python: "each pushed type, and the callback's return count";
+        // duktape: "a callback pushes a double, or nothing"
+        spec.it_when(have_qjs, "each pushed type, and the callback's return count", reason) callback {
+            ev(vm, "host.echo_bool(true)")
+            spec.assert_eq(quickjs.vm_result_type(vm), quickjs.QJS_TBOOL, "a bool result")
+            spec.assert_eq(quickjs.vm_result_bool(vm), 1, "true")
+            ev(vm, "host.echo_nil() === null")
+            spec.assert_eq(quickjs.vm_result_bool(vm), 1, "push_nil is null")
+            ev(vm, "host.echo_nil()")
+            spec.assert_eq(quickjs.vm_result_type(vm), quickjs.QJS_TNIL, "a nil result")
+            ev(vm, "host.pi() > 3.14 && host.pi() < 3.15")
+            spec.assert_eq(quickjs.vm_result_bool(vm), 1, "the double reads back")
+            ev(vm, "typeof host.push_then_zero()")
+            spec.assert_str_eq(quickjs.vm_result_str(vm), "undefined", "returning 0 returns undefined, whatever was pushed")
+            ev(vm, "typeof host.nothing()")
+            spec.assert_str_eq(quickjs.vm_result_str(vm), "undefined", "pushing nothing is undefined")
+            ev(vm, "host.double(2 ** 40) === 2 ** 41")
+            spec.assert_eq(quickjs.vm_result_bool(vm), 1, "an int past 32 bits both ways")
+            quickjs.vm_pop_result(vm)
+        }
+
+        // python: "results: numbers, sizes past 64 bits, tables, ..."; tcl:
+        // "typed results"
+        spec.it_when(have_qjs, "results: numbers, sizes past 64 bits, tables", reason) callback {
+            ev(vm, "5")
+            spec.assert_eq(quickjs.vm_result_bool(vm), 0, "an int is not a bool")
+            spec.assert_str_eq(quickjs.vm_result_str(vm), "", "nor a string")
+            ev(vm, "-7.9")
+            spec.assert_eq(quickjs.vm_result_type(vm), quickjs.QJS_TFLOAT, "a float")
+            spec.assert_eq_long(quickjs.vm_result_int(vm), -7, "reads as a truncated int")
+            ev(vm, "1e300")
+            spec.assert_eq_long(quickjs.vm_result_int(vm), ghl_t_i64_max(), "a huge float saturates")
+            ev(vm, "-1e300")
+            spec.assert_eq_long(quickjs.vm_result_int(vm), ghl_t_i64_min(), "and a huge negative one")
+            ev(vm, "2 ** 64")
+            spec.assert_eq(quickjs.vm_result_type(vm), quickjs.QJS_TFLOAT, "2**64 is past 64 bits")
+            spec.assert_true(quickjs.vm_result_double(vm) == 18446744073709551616.0, "and its double")
+            ev(vm, "-(2 ** 63)")
+            spec.assert_eq(quickjs.vm_result_type(vm), quickjs.QJS_TINT, "-2**63 fits")
+            spec.assert_eq_long(quickjs.vm_result_int(vm), ghl_t_i64_min(), "as INT64_MIN")
+            ev(vm, "NaN")
+            spec.assert_eq(quickjs.vm_result_type(vm), quickjs.QJS_TFLOAT, "NaN is a float")
+            spec.assert_eq_long(quickjs.vm_result_int(vm), 0, "that reads 0 as an int")
+            ev(vm, "10n ** 400n")
+            spec.assert_eq(quickjs.vm_result_type(vm), quickjs.QJS_TOTHER, "a BigInt is other")
+            spec.assert_eq_long(quickjs.vm_result_int(vm), 0, "past 64 bits it reads 0, not a wrapped value")
+            spec.assert_eq(ghl_t_isinf(quickjs.vm_result_double(vm)), 1, "and inf as a double")
+            ev(vm, "[1, 2, 3]")
+            spec.assert_eq(quickjs.vm_result_type(vm), quickjs.QJS_TTABLE, "an array")
+            ev(vm, "({ k: 'v' })")
+            spec.assert_eq(quickjs.vm_result_type(vm), quickjs.QJS_TTABLE, "an object")
+            ev(vm, "(function () {})")
+            spec.assert_eq(quickjs.vm_result_type(vm), quickjs.QJS_TOTHER, "a function")
+            ev(vm, "new Error('as a value')")
+            spec.assert_eq(quickjs.vm_result_type(vm), quickjs.QJS_TOTHER, "an Error returned is a value, not an error result")
+            ev(vm, "true")
+            spec.assert_eq_long(quickjs.vm_result_int(vm), 1, "true reads 1 as an int")
+            ev(vm, "undefined")
+            spec.assert_eq(quickjs.vm_result_type(vm), quickjs.QJS_TNIL, "undefined is nil")
+            ev(vm, "null")
+            spec.assert_eq(quickjs.vm_result_type(vm), quickjs.QJS_TNIL, "null is nil")
+            quickjs.vm_pop_result(vm)
+        }
+
+        // python: "bytes: length-aware both ways, never a str"
+        spec.it_when(have_qjs, "bytes: length-aware both ways, never a string", reason) callback {
+            ev(vm, "new Uint8Array([97, 0, 98])")
+            spec.assert_eq(quickjs.vm_result_type(vm), quickjs.QJS_TBYTES, "a bytes result")
+            b = quickjs.vm_result_bytes(vm)
+            spec.assert_not_null(b, "read as a std.bytes handle")
+            spec.assert_eq(bytes.length(b), 3, "its embedded zero kept")
+            spec.assert_eq(bytes.get(b, 1), 0, "the zero")
+            spec.assert_eq(bytes.get(b, 2), 98, "and what follows it")
+            bytes.free(b)
+            ev(vm, "host.echo_bytes(new Uint8Array([120, 0, 121, 0]))")
+            b2 = quickjs.vm_result_bytes(vm)
+            spec.assert_eq(quickjs.vm_result_type(vm), quickjs.QJS_TBYTES, "bytes through a callback")
+            spec.assert_eq(bytes.length(b2), 4, "all four")
+            spec.assert_eq(bytes.get(b2, 3), 0, "the trailing zero")
+            bytes.free(b2)
+            ev(vm, "host.echo_bytes(new Uint8Array(0))")
+            b3 = quickjs.vm_result_bytes(vm)
+            spec.assert_eq(quickjs.vm_result_type(vm), quickjs.QJS_TBYTES, "empty bytes stay bytes")
+            spec.assert_eq(bytes.length(b3), 0, "of length 0")
+            bytes.free(b3)
+            ev(vm, "host.echo_bytes('text')")
+            spec.assert_eq(quickjs.vm_result_type(vm), quickjs.QJS_TNIL, "a string is not bytes")
+            ev(vm, "'text'")
+            spec.assert_true(quickjs.vm_result_bytes(vm) == null, "a string result does not read as bytes")
+            ev(vm, "new Uint16Array([1])")
+            spec.assert_eq(quickjs.vm_result_type(vm), quickjs.QJS_TTABLE, "a Uint16Array is not bytes")
+            quickjs.vm_pop_result(vm)
+        }
+
+        // python: "definitions persist; exceptions, then a clean eval"; tcl:
+        // "errors"; duktape: "a syntax error is an error result"
+        spec.it_when(have_qjs, "definitions persist; exceptions, then a clean eval", reason) callback {
+            spec.assert_eq(ev(vm, "function foo(n) { return n * 3 }"), 0, "a function declaration")
+            ev(vm, "foo(14)")
+            spec.assert_eq_long(quickjs.vm_result_int(vm), 42, "foo(14)")
+            spec.assert_not_eq(ev(vm, "null.x"), 0, "an exception fails the eval")
+            spec.assert_eq(quickjs.vm_result_type(vm), quickjs.QJS_TERR, "and is the result")
+            spec.assert_true(string.starts_with(quickjs.vm_result_str(vm), "TypeError: ") == 1, "its type and message: ${quickjs.vm_result_str(vm)}")
+            spec.assert_true(string.contains(quickjs.vm_result_str(vm), "\n") == 0, "without the stack")
+            spec.assert_eq(ev(vm, "100 + 200"), 0, "the next eval is clean")
+            spec.assert_eq_long(quickjs.vm_result_int(vm), 300, "300")
+            spec.assert_not_eq(ev(vm, "function ("), 0, "a syntax error fails")
+            spec.assert_eq(quickjs.vm_result_type(vm), quickjs.QJS_TERR, "as an error result")
+            spec.assert_true(string.starts_with(quickjs.vm_result_str(vm), "SyntaxError: ") == 1, "a SyntaxError")
+            spec.assert_not_eq(ev(vm, "throw new RangeError('out')"), 0, "a thrown RangeError")
+            spec.assert_str_eq(quickjs.vm_result_str(vm), "RangeError: out", "type and message")
+            spec.assert_not_eq(ev(vm, "throw 'bare'"), 0, "a thrown string")
+            spec.assert_str_eq(quickjs.vm_result_str(vm), "bare", "is its text")
+            ev(vm, "var counter = 0")
+            ev(vm, "counter += 1; throw new Error('x')")
+            ev(vm, "counter")
+            spec.assert_eq_long(quickjs.vm_result_int(vm), 1, "a failing statement block ran once")
+            quickjs.vm_pop_result(vm)
+        }
+
+        // python: "raise_error, caught and uncaught; a nested eval"; lua: "a
+        // callback's raise_error is a Lua error the script can catch"
+        spec.it_when(have_qjs, "raise_error, caught and uncaught; a nested eval", reason) callback {
+            spec.assert_eq(ev(vm, "var caught; try { host.raise_err('deliberate') } catch (e) { caught = (e instanceof Error) + ':' + e.message }"), 0, "a raise is catchable")
+            ev(vm, "caught")
+            spec.assert_str_eq(quickjs.vm_result_str(vm), "true:deliberate", "an Error with the host's message")
+            spec.assert_not_eq(ev(vm, "host.raise_err('uncaught')"), 0, "uncaught, it fails the eval")
+            spec.assert_eq(quickjs.vm_result_type(vm), quickjs.QJS_TERR, "an error result")
+            spec.assert_str_eq(quickjs.vm_result_str(vm), "Error: uncaught", "as an Error")
+            spec.assert_eq(ev(vm, "host.nested_eval(40)"), 0, "a nested eval from inside a callback")
+            spec.assert_eq_long(quickjs.vm_result_int(vm), 46, "both results come back")
+            spec.assert_eq(ev(vm, "host.nested_eval(1) + host.nested_eval(2)"), 0, "twice in one expression")
+            spec.assert_eq_long(quickjs.vm_result_int(vm), 15, "7 + 8")
+            quickjs.vm_pop_result(vm)
+        }
+
+        // tcl: "the command limit and the time limit"; python: "the
+        // instruction limit: caught, nested, per eval, disarmed"
+        spec.it_when(have_qjs, "the time limit: stops a loop, cannot be caught, per eval, nested, removed", reason) callback {
+            spec.assert_str_eq(quickjs.vm_set_time_limit(vm, 200, 1), "", "set the time limit")
+            spec.assert_eq(ev(vm, "for (;;) {}"), -1, "a loop is stopped")
+            spec.assert_str_eq(quickjs.vm_result_str(vm), "InternalError: interrupted: time limit exceeded", "by the time limit")
+            spec.assert_eq(ev(vm, "var survived = 0; try { for (;;) {} } catch (e) {} survived = 1"), -1, "the limit cannot be caught")
+            ev(vm, "survived")
+            spec.assert_eq_long(quickjs.vm_result_int(vm), 0, "nothing after the catch ran")
+            round = 0
+            while round < 3 {
+                spec.assert_eq(ev(vm, "var s = 0; for (var i = 0; i < 2000; i++) s += i; s"), 0, "each eval has its own budget")
+                spec.assert_eq_long(quickjs.vm_result_int(vm), 1999000, "and gets its answer")
+                round = round + 1
+            }
+            spec.assert_eq(ev(vm, "for (;;) host.nested_eval(1)"), -1, "a nested eval neither renews nor removes it")
+            spec.assert_true(string.contains(quickjs.vm_result_str(vm), "time limit") == 1, "it is the limit that stops it")
+            spec.assert_eq(ev(vm, "host.nested_spin(); for (;;) {}"), -1, "the limit reached inside a callback's nested eval")
+            ev(vm, "NESTED")
+            spec.assert_str_eq(quickjs.vm_result_str(vm), "-1:5:InternalError: interrupted: time limit exceeded", "the nested eval saw it")
+            quickjs.vm_set_time_limit(vm, 0, 1)
+            spec.assert_eq(ev(vm, "var t0 = Date.now(); while (Date.now() - t0 < 300) {} 1"), 0, "removed, a 300 ms loop finishes")
+            quickjs.vm_pop_result(vm)
+        }
+
+        // duktape: "an execution limit is reported unavailable, not silently
+        // ignored"
+        spec.it_when(have_qjs, "an instruction limit is reported unavailable, not silently ignored", reason) callback {
+            msg = quickjs.vm_set_instruction_limit(vm, 1000, 10)
+            spec.assert_true(string.contains(msg, "instruction limit unavailable") == 1, "the message says so")
+            spec.assert_eq(ev(vm, "1 + 1"), 0, "and the VM runs on")
+            quickjs.vm_pop_result(vm)
+        }
+
+        // tcl: "two VMs share nothing"; python: "two VMs"
+        spec.it_when(have_qjs, "two VMs share nothing: globals, host functions, definitions", reason) callback {
+            vm2 = quickjs.vm_new()
+            spec.assert_not_null(vm2, "a second VM")
+            quickjs.vm_set_global_str(vm, "VM1_ONLY", "secret")
+            ev(vm, "var vm1_var = 1; function vm1_fn() {}")
+            spec.assert_eq(quickjs.vm_eval(vm2, "[typeof VM1_ONLY, typeof host, typeof app, typeof BASE, typeof vm1_var, typeof vm1_fn].join()"), 0, "eval on the second")
+            spec.assert_str_eq(quickjs.vm_result_str(vm2), "undefined,undefined,undefined,undefined,undefined,undefined", "nothing of the first")
+            quickjs.vm_register(vm2, "host.double", cb_add)
+            quickjs.vm_eval(vm2, "host.double(2, 3)")
+            spec.assert_eq_long(quickjs.vm_result_int(vm2), 5, "the same name is the second's own function there")
+            ev(vm, "host.double(2, 3)")
+            spec.assert_eq_long(quickjs.vm_result_int(vm), 4, "and still the first's here")
+            quickjs.vm_pop_result(vm2)
+            quickjs.vm_free(vm2)
+            quickjs.vm_pop_result(vm)
+        }
+
+        // tcl: "memory stays flat over many rounds"; python: "flat
+        // refcounts, gc objects and memory over many rounds"
+        // Not under AddressSanitizer, whose quarantine keeps freed memory
+        // (quickjs/sanitize.sh sets GHL_SANITIZER=1; LeakSanitizer checks the
+        // same thing there, exactly).
+        spec.it_when(flat_ok, "memory stays flat over many rounds", flat_reason) callback {
+            churn(vm, 2000)
+            a = ghl_t_rss_kb()
+            churn(vm, 10000)
+            b = ghl_t_rss_kb()
+            churn(vm, 10000)
+            c = ghl_t_rss_kb()
+            g1 = b - a
+            g2 = c - b
+            g = g1
+            if g2 < g1 { g = g2 }
+            spec.assert_true(g < 256, "memory flat over 10000 rounds (${g1} kB, then ${g2} kB)")
+        }
+    }
+
+    spec.describe(fw, "quickjs vm: beyond the common shape") {
+        spec.it_when(have_qjs, "JSON in and out: globals, arguments, pushes and results", reason) callback {
+            spec.assert_str_eq(quickjs.vm_set_global_json(vm, "CFG", "{\"n\": 2.5, \"list\": [1, \"two\", null, true], \"big\": 12345678901}"), "", "a JSON global")
+            ev(vm, "CFG.n * 2 + CFG.list.length + (CFG.list[3] ? 1 : 0) + (CFG.big === 12345678901 ? 1 : 0)")
+            spec.assert_true(quickjs.vm_result_double(vm) == 11.0, "its numbers, arrays, booleans and a number past 32 bits")
+            spec.assert_true(quickjs.vm_set_global_json(vm, "BAD", "{oops") != "", "bad JSON is refused with the parse error")
+            ev(vm, "typeof BAD")
+            spec.assert_str_eq(quickjs.vm_result_str(vm), "undefined", "and nothing is set")
+            ev(vm, "JSON.stringify(host.echo_json({ a: [1, 2.5, 'x\"y', null, { deep: [true] }], u: 'é' }))")
+            spec.assert_str_eq(quickjs.vm_result_str(vm), "{\"a\":[1,2.5,\"x\\\"y\",null,{\"deep\":[true]}],\"u\":\"é\"}", "a nested value through a callback")
+            ev(vm, "({ a: [1, { b: 2 }], c: 'd' })")
+            spec.assert_str_eq(quickjs.vm_result_json(vm), "{\"a\":[1,{\"b\":2}],\"c\":\"d\"}", "a table result as JSON")
+            ev(vm, "undefined")
+            spec.assert_str_eq(quickjs.vm_result_json(vm), "", "undefined has no JSON")
+            ev(vm, "host.bad_json()")
+            spec.assert_eq_long(quickjs.vm_result_int(vm), -1, "push_json of bad JSON says -1 and pushes nothing")
+            quickjs.vm_pop_result(vm)
+        }
+
+        spec.it_when(have_qjs, "a cancel cell set from another thread stops a loop, uncatchably", reason) callback {
+            cell = sync.atomic_new(0)
+            vm3 = quickjs.vm_new()
+            quickjs.vm_set_cancel_cell(vm3, cell)
+            t = ghl_t_cancel_later(cell, 100)
+            rc = quickjs.vm_eval(vm3, "var n = 0; try { for (;;) n++ } catch (e) {} 'caught'")
+            ghl_t_join(t)
+            spec.assert_eq(rc, -1, "the loop is stopped")
+            spec.assert_str_eq(quickjs.vm_result_str(vm3), "InternalError: interrupted: cancelled", "by the cancel, which the script could not catch")
+            sync.atomic_store(cell, 0)
+            spec.assert_eq(quickjs.vm_eval(vm3, "n > 0"), 0, "cleared, the VM runs again")
+            spec.assert_eq(quickjs.vm_result_bool(vm3), 1, "and the loop had run")
+            // A callback can set it too: the script's next step stops.
+            quickjs.vm_set_user(vm3, cell)
+            quickjs.vm_register(vm3, "cancel_self", cb_cancel_self)
+            spec.assert_eq(quickjs.vm_eval(vm3, "cancel_self(); for (;;) {}"), -1, "set from a callback")
+            spec.assert_str_eq(quickjs.vm_result_str(vm3), "InternalError: interrupted: cancelled", "cancelled")
+            quickjs.vm_set_cancel_cell(vm3, null)
+            quickjs.vm_free(vm3)
+            sync.atomic_free(cell)
+        }
+
+        spec.it_when(have_qjs, "a callback reaches the host's own state through the VM's user pointer", reason) callback {
+            vm4 = quickjs.vm_new()
+            items = list.new()
+            list.add(items, "a")
+            list.add(items, "b")
+            list.add(items, "c")
+            quickjs.vm_set_user(vm4, items)
+            quickjs.vm_register(vm4, "count", cb_user)
+            quickjs.vm_eval(vm4, "count()")
+            spec.assert_eq_long(quickjs.vm_result_int(vm4), 3, "the host's list, through the VM")
+            quickjs.vm_free(vm4)
+            list.free(items)
+        }
+
+        spec.it_when(have_qjs, "promise jobs run before eval returns", reason) callback {
+            spec.assert_eq(ev(vm, "var settled = 0; Promise.resolve(5).then(v => { settled = v * 2 }); (async () => { await null; settled += 1 })(); 'queued'"), 0, "the eval")
+            ev(vm, "settled")
+            spec.assert_eq_long(quickjs.vm_result_int(vm), 11, "the then and the await both ran")
+            quickjs.vm_set_time_limit(vm, 200, 1)
+            spec.assert_eq(ev(vm, "Promise.resolve().then(() => { for (;;) {} }); 'queued'"), -1, "a job that loops is stopped by the eval's time limit")
+            spec.assert_str_eq(quickjs.vm_result_str(vm), "InternalError: interrupted: time limit exceeded", "the limit")
+            quickjs.vm_set_time_limit(vm, 0, 1)
+            quickjs.vm_pop_result(vm)
+        }
+
+        spec.it_when(have_qjs, "a heap cap: a script past it fails, and the VM runs on", reason) callback {
+            vm5 = quickjs.vm_new_capped(4096)
+            spec.assert_not_null(vm5, "a capped VM")
+            spec.assert_eq(quickjs.vm_eval(vm5, "var a = []; for (;;) a.push('x'.repeat(1000) + a.length)"), -1, "allocating past 4 MB fails")
+            spec.assert_true(string.contains(quickjs.vm_result_str(vm5), "out of memory") == 1, "out of memory: ${quickjs.vm_result_str(vm5)}")
+            quickjs.vm_eval(vm5, "a = null; 1 + 1")
+            spec.assert_eq_long(quickjs.vm_result_int(vm5), 2, "and evaluates after")
+            quickjs.vm_free(vm5)
+        }
+    }
+
+    spec.describe(fw, "quickjs vm: refusals") {
+        spec.it_when(have_qjs, "an unregistered name is a ReferenceError the script can catch", reason) callback {
+            spec.assert_not_eq(ev(vm, "nope()"), 0, "calling it fails the eval")
+            spec.assert_str_eq(quickjs.vm_result_str(vm), "ReferenceError: nope is not defined", "as a ReferenceError")
+            ev(vm, "try { host.nope() } catch (e) { e.constructor.name }")
+            spec.assert_str_eq(quickjs.vm_result_str(vm), "TypeError", "an unregistered member is not a function")
+            quickjs.vm_pop_result(vm)
+        }
+
+        spec.it_when(have_qjs, "bad names and missing functions are refused at registration", reason) callback {
+            spec.assert_not_eq(quickjs.vm_register(vm, "bad..name", cb_add), 0, "an empty name part is refused")
+            spec.assert_not_eq(quickjs.vm_register(vm, "trailing.", cb_add), 0, "an empty leaf is refused")
+            spec.assert_not_eq(quickjs.vm_register(vm, ".lead", cb_add), 0, "an empty first part is refused")
+            spec.assert_not_eq(quickjs.vm_register(vm, "", cb_add), 0, "an empty name is refused")
+            spec.assert_not_eq(quickjs.vm_register(vm, "nofn", null), 0, "no function is refused")
+            quickjs.vm_set_global_str(vm, "SCALAR", "s")
+            spec.assert_not_eq(quickjs.vm_register(vm, "SCALAR.f", cb_add), 0, "a part that is a string is not replaced")
+            ev(vm, "SCALAR")
+            spec.assert_str_eq(quickjs.vm_result_str(vm), "s", "and is left as it was")
+            ev(vm, "typeof bad")
+            spec.assert_str_eq(quickjs.vm_result_str(vm), "undefined", "a refused name made nothing")
+            quickjs.vm_pop_result(vm)
+        }
+
+        spec.it_when(have_qjs, "wrong argument types: the callback refuses, the script can catch it", reason) callback {
+            ev(vm, "host.strict_add(2, 3)")
+            spec.assert_eq_long(quickjs.vm_result_int(vm), 5, "two ints")
+            ev(vm, "[['a', 1], [1.5, 1], [1], [null, 2]].map(a => { try { return host.strict_add(...a) } catch (e) { return e.message } }).join('|')")
+            spec.assert_str_eq(quickjs.vm_result_str(vm), "strict_add takes two ints|strict_add takes two ints|strict_add takes two ints|strict_add takes two ints", "each refused")
+            spec.assert_eq(ev(vm, "host.strict_add(40, 2)"), 0, "the VM is usable after")
+            spec.assert_eq_long(quickjs.vm_result_int(vm), 42, "42")
+            quickjs.vm_pop_result(vm)
+        }
+
+        spec.it_when(have_qjs, "a VM freed from its own callback is refused, and frees afterwards", reason) callback {
+            vm6 = quickjs.vm_new()
+            quickjs.vm_register(vm6, "free_me", cb_free_me)
+            spec.assert_eq(quickjs.vm_eval(vm6, "free_me() + free_me()"), 0, "the eval goes on")
+            spec.assert_eq_long(quickjs.vm_result_int(vm6), 2, "the VM was busy both times")
+            spec.assert_eq(quickjs.vm_busy(vm6), 0, "and is not now")
+            // Freed with a result held and host functions registered.
+            quickjs.vm_free(vm6)
+        }
+
+        spec.it("a null VM is refused by every call") callback {
+            spec.assert_eq(quickjs.vm_eval(null, "1"), -1, "eval")
+            spec.assert_eq(quickjs.vm_register(null, "f", cb_add), -1, "register")
+            spec.assert_eq(quickjs.vm_result_type(null), quickjs.QJS_TNIL, "result_type")
+            spec.assert_str_eq(quickjs.vm_result_str(null), "", "result_str")
+            spec.assert_eq(quickjs.arg_count(null), 0, "arg_count")
+            quickjs.vm_free(null)
+        }
+    }
+
+    _rc = spec.run_summary(fw)
+    if have_qjs == 1 { quickjs.vm_free(vm) }
+    return _rc
+}

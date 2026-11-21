@@ -1,0 +1,11 @@
+// Must compile: a local bound to a fresh VM after the free is clean again
+// (test_vm_free.sh: the refusal is about the freed VM, not the name).
+import quickjs
+
+main() {
+    vm = quickjs.vm_new()
+    quickjs.vm_free(vm)
+    vm = quickjs.vm_new()
+    quickjs.vm_eval(vm, "1 + 1")
+    quickjs.vm_free(vm)
+}
