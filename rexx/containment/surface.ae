@@ -1,0 +1,320 @@
+// surface: RexxAE's whole guest surface, held to reaching nothing.
+//
+//   surface <RexxAE checkout>
+//
+// The stunt rows a Rexx script "cannot express" (rexx/containment/lang.sh)
+// are a claim about every name a script could reach for, not about one
+// spelling. This holds the claim over all of them, from RexxAE's own
+// inventories at the pinned commit:
+//
+//   - every builtin and extension the engine has: tests/guest_functions.json
+//     (the reviewed surface tools/check_containment.py pins: 71 RexxJS
+//     functions, 8 RexxAE extensions), each called with arguments that name
+//     a file, a variable, a program, an address, a cron expression. Each
+//     call must end without asking the host for anything (no FUNCTION or
+//     COMMAND event; a LOG event only from the LOG_* extensions, which a host
+//     receives and nothing else does) and without the runtime making a single
+//     permission check (std.audit), inside sandbox.enforce with no grants;
+//   - every other function name RexxJS has, docs/function-inventory.json's
+//     core list (386 names, RexxJS's 79 host-effect functions, FILE_READ,
+//     GETENV, HTTP_GET, ..., and its 20 date and time ones among them), and
+//     classic Rexx's own (STREAM, LINEIN, LINEOUT, CHARIN, CHAROUT, VALUE,
+//     DATE, TIME, ...): each not implemented must be an unknown function, an
+//     error before anything is asked of anyone;
+//   - ADDRESS, under every environment name a script might try: always a
+//     COMMAND event, a request this host answers (RC 1), never anything run
+//     by the engine; and REQUIRE and INTERPRET, which load or make code:
+//     REQUIRE is a request to a resolver the host must mount (none here),
+//     INTERPRET is not supported.
+//
+// Prints one line per finding and a summary, and exits 1 on any failure.
+// test_surface.sh runs it plain and, on Linux, under libaether_sandbox.so
+// with denials logged to stderr, where none may appear.
+
+import rexxae
+import std.sandbox
+import std.audit
+import std.fs
+import std.json
+import std.list
+import std.os
+import std.string
+
+extern exit(code: int)
+extern aether_sandbox_depth() -> int
+extern fopen(path: string, mode: string) -> ptr
+extern fclose(f: ptr) -> int
+
+// The result of one script: how it ended, and what it asked for on the way.
+struct Ran {
+    end: string       // DONE, ERROR, or STUCK when it did not end
+    text: string      // the error's text
+    asked: string     // FUNCTION <name> / COMMAND <address> it raised, space-joined
+    logs: int         // LOG events
+    checks: int       // permission checks the runtime made meanwhile
+}
+
+fn run(source: string, address_answers: int) -> Ran {
+    out = list.new()
+    nothing = sandbox.new("nothing") {}
+    audit.clear()
+    sandbox.enforce(nothing) callback {
+        ctx = rexxae.rexxae_create(source)
+        rexxae.rexxae_set_log_level(ctx, 0)
+        end = "STUCK"
+        text = ""
+        asked = ""
+        logs = 0
+        n = 0
+        while n < 1000 {
+            st = rexxae.rexxae_step(ctx, 100000)
+            if st == 0 {
+                end = "DONE"
+                n = 1000
+            } else if st == -1 {
+                end = "ERROR"
+                text = string.from_cstr(rexxae.rexxae_error(ctx))
+                n = 1000
+            } else if st == 2 {
+                asked = "${asked} COMMAND:${string.from_cstr(rexxae.rexxae_address(ctx))}"
+                rexxae.rexxae_reply(ctx, 1, "", "not mounted")
+            } else if st == 4 {
+                asked = "${asked} FUNCTION:${string.from_cstr(rexxae.rexxae_function(ctx))}"
+                rexxae.rexxae_reply_value(ctx, "null", "not mounted")
+            } else if st == 5 {
+                logs = logs + 1
+            }
+            n = n + 1
+        }
+        rexxae.rexxae_destroy(ctx)
+        list.add(out, end)
+        list.add(out, text)
+        list.add(out, asked)
+        list.add(out, "${logs}")
+    }
+    checks = audit.count()
+    sandbox.free(nothing)
+    e, _1 = list.get_string(out, 0)
+    t, _2 = list.get_string(out, 1)
+    a, _3 = list.get_string(out, 2)
+    l, _4 = list.get_string(out, 3)
+    li, _5 = string.to_int(l)
+    return Ran { end: e, text: t, asked: a, logs: li, checks: checks }
+}
+
+fn read_json(path: string) -> ptr {
+    text, err = fs.read(path)
+    if err != "" {
+        println("surface: cannot read ${path}: ${err}")
+        exit(2)
+    }
+    v, perr = json.parse(text)
+    if perr != "" {
+        println("surface: ${path}: ${perr}")
+        exit(2)
+    }
+    return v
+}
+
+// The strings of a JSON array under `key` of an object, added to `into`.
+fn add_names(into: ptr, obj: ptr, key: string) {
+    arr, err = json.object_get(obj, key)
+    if err != "" || arr == null {
+        println("surface: no ${key} array")
+        exit(2)
+    }
+    n = json.json_array_size(arr)
+    i = 0
+    while i < n {
+        item, _e = json.array_get(arr, i)
+        s, _se = json.get_string(item)
+        list.add(into, s)
+        i = i + 1
+    }
+}
+
+fn has(names: ptr, name: string) -> int {
+    n = list.size(names)
+    i = 0
+    while i < n {
+        s, _e = list.get_string(names, i)
+        if s == name { return 1 }
+        i = i + 1
+    }
+    return 0
+}
+
+// Argument lists a call is tried with: none, a file, a variable, a program
+// and its arguments, an address and port, a stream's open, a cron
+// expression with an instant.
+fn arg_sets() -> ptr {
+    a = list.new()
+    list.add(a, "")
+    list.add(a, "'/etc/passwd'")
+    list.add(a, "'HOME'")
+    list.add(a, "'/bin/sh', '-c', 'exit 0'")
+    list.add(a, "'192.0.2.1', 443")
+    list.add(a, "'/etc/passwd', 'c', 'open read'")
+    list.add(a, "'*/5 * * * *', 0")
+    return a
+}
+
+main() {
+    if os.args_count() != 2 && os.args_count() != 3 {
+        println("usage: surface <RexxAE checkout> [control-libc]")
+        exit(2)
+    }
+    src = os.args_get(1)
+    fails = 0
+
+    // ---- the engine's own surface ------------------------------------------
+    surface = read_json("${src}/tests/guest_functions.json")
+    engine_names = list.new()
+    add_names(engine_names, surface, "rexxjs")
+    n_rexxjs = list.size(engine_names)
+    add_names(engine_names, surface, "rexxae_extensions")
+    n_all = list.size(engine_names)
+    sets = arg_sets()
+    calls = 0
+    i = 0
+    while i < n_all {
+        name, _e = list.get_string(engine_names, i)
+        j = 0
+        while j < list.size(sets) {
+            args, _ae = list.get_string(sets, j)
+            r = run("LET r = ${name}(${args})\nSAY 'called'", 0)
+            calls = calls + 1
+            bad = ""
+            if r.asked != "" { bad = "asked the host:${r.asked}" }
+            if r.checks != 0 { bad = "${bad} made ${r.checks} permission check(s)" }
+            if r.end == "STUCK" { bad = "${bad} did not end" }
+            if r.logs > 0 && string.starts_with(name, "LOG_") == 0 { bad = "${bad} logged" }
+            if bad != "" {
+                println("  [FAIL] ${name}(${args}): ${bad}")
+                fails = fails + 1
+            }
+            j = j + 1
+        }
+        i = i + 1
+    }
+    println("  [PASS] engine: ${n_rexxjs} builtins and ${n_all - n_rexxjs} extensions (${src}/tests/guest_functions.json), ${calls} calls, none asked the host for anything (LOG_* excepted) or made a permission check")
+
+    // ---- every other name: RexxJS's, and classic Rexx's ----------------------
+    inv = read_json("${src}/docs/function-inventory.json")
+    core, _ce = json.object_get(inv, "core")
+    absent = list.new()
+    m = json.json_array_size(core)
+    k = 0
+    while k < m {
+        item, _ie = json.array_get(core, k)
+        nv, _ne = json.object_get(item, "name")
+        name, _se = json.get_string(nv)
+        if has(engine_names, name) == 0 && has(absent, name) == 0 { list.add(absent, name) }
+        k = k + 1
+    }
+    n_rexxjs_absent = list.size(absent)
+    for name in ["STREAM", "LINEIN", "LINEOUT", "LINES", "CHARIN", "CHAROUT", "CHARS",
+                 "VALUE", "DIRECTORY", "QUEUED", "USERID", "RANDOM", "DATE", "TIME",
+                 "SYSTEM", "POPEN", "SLEEP", "PUTENV", "FILESPEC", "ENVIRONMENT"] {
+        if has(engine_names, name) == 0 && has(absent, name) == 0 { list.add(absent, name) }
+    }
+    unknown = 0
+    other_errors = 0
+    computed = 0
+    q = 0
+    while q < list.size(absent) {
+        name, _e = list.get_string(absent, q)
+        r = run("LET r = ${name}('/etc/passwd')\nSAY 'called'", 0)
+        if r.asked != "" || r.checks != 0 || r.end == "STUCK" {
+            println("  [FAIL] ${name}: ended ${r.end}, asked:${r.asked}, ${r.checks} check(s): a name RexxAE does not list reached out")
+            fails = fails + 1
+        } else if r.end == "DONE" {
+            // Read as something that is not a call (NOT is an operator):
+            // it computed, and asked nothing.
+            println("  [NOTE] ${name}: not a function call here, and it computed without asking anything")
+            computed = computed + 1
+        } else if string.contains(r.text, "unknown or unavailable function: ${name}") == 1 {
+            unknown = unknown + 1
+        } else {
+            // A name the parser reads as something else (an instruction):
+            // still an error before anything was asked.
+            println("  [NOTE] ${name}: an error, not an unknown function: ${r.text}")
+            other_errors = other_errors + 1
+        }
+        q = q + 1
+    }
+    println("  [PASS] absent: ${list.size(absent)} names (${n_rexxjs_absent} from RexxJS's inventory, docs/function-inventory.json, the rest classic Rexx's): ${unknown} unknown functions, ${other_errors} other errors, ${computed} read as something other than a call; none asked the host for anything or made a permission check")
+
+    // ---- ADDRESS, REQUIRE, INTERPRET -----------------------------------------
+    for env in ["SYSTEM", "COMMAND", "SH", "BASH", "CMD", "PATH"] {
+        r = run("ADDRESS ${env} 'exit 0'\nSAY RC", 1)
+        if r.asked != " COMMAND:${string.to_lower(env)}" || r.end != "DONE" || r.checks != 0 {
+            println("  [FAIL] ADDRESS ${env}: ended ${r.end} (${r.text}), asked:${r.asked}, ${r.checks} check(s); expected one COMMAND request")
+            fails = fails + 1
+        }
+    }
+    println("  [PASS] ADDRESS: SYSTEM, COMMAND, SH, BASH, CMD and PATH are each one COMMAND request to the host, nothing run by the engine")
+    // A command with no ADDRESS in force: no environment is the default.
+    bare = run("'exit 0'\nSAY 'after'", 1)
+    if bare.checks != 0 || bare.end != "DONE" || (bare.asked != "" && string.starts_with(bare.asked, " COMMAND:") == 0) {
+        println("  [FAIL] a bare command: ended ${bare.end}, asked:${bare.asked}, ${bare.checks} check(s)")
+        fails = fails + 1
+    } else {
+        println("  [PASS] a bare command ('exit 0', no ADDRESS): ${bare.end}, asked:${bare.asked} (nothing run by the engine)")
+    }
+    rq = run("REQUIRE '/etc/passwd'\nSAY 'loaded'", 0)
+    if rq.end == "DONE" && rq.asked == "" {
+        println("  [FAIL] REQUIRE with no resolver mounted loaded something")
+        fails = fails + 1
+    } else {
+        println("  [PASS] REQUIRE: ${rq.end}${rq.asked} ${rq.text} (a request to a resolver the host mounts; none here)")
+    }
+    it = run("INTERPRET \"SAY 'made'\"", 0)
+    if it.end != "ERROR" {
+        println("  [FAIL] INTERPRET ran: ${it.end}")
+        fails = fails + 1
+    } else {
+        println("  [PASS] INTERPRET: ${it.text}")
+    }
+
+    // The controls: the instruments see what they are there to see. A std
+    // read inside the same no-grant block is a permission check the audit
+    // counts; with control-libc, a libc fopen there is one the preload
+    // refuses and logs (test_surface.sh looks for it).
+    nothing = sandbox.new("nothing") {}
+    audit.clear()
+    sandbox.enforce(nothing) callback {
+        _t, _e = fs.read("/etc/passwd")
+    }
+    if audit.count() == 0 {
+        println("  [FAIL] control: a std read under no grants made no check the audit saw")
+        fails = fails + 1
+    }
+    if os.args_count() == 3 {
+        opened = list.new()
+        sandbox.enforce(nothing) callback {
+            f = fopen("/etc/passwd", "r")
+            if f != null {
+                list.add(opened, "y")
+                fclose(f)
+            }
+        }
+        if list.size(opened) == 0 {
+            println("  [PASS] control: libc fopen of /etc/passwd under no grants was refused")
+        } else {
+            println("  [FAIL] control: libc fopen of /etc/passwd under no grants opened it")
+            fails = fails + 1
+        }
+    }
+    sandbox.free(nothing)
+
+    if aether_sandbox_depth() != 0 {
+        println("  [FAIL] a sandbox level was left in force")
+        fails = fails + 1
+    }
+    if fails > 0 {
+        println("  [FAIL] surface: ${fails} failure(s)")
+        exit(1)
+    }
+    exit(0)
+}

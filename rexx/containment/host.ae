@@ -1,0 +1,292 @@
+// The host the containment tests drive (tests/test_stunt_*.sh). Usage:
+//
+//   host inproc <policy> <check> <expectation>
+//
+// Runs one row of stunt's catalogue (aether contrib/host/stunt), written in
+// Rexx (checks.rexx beside this, or $REXX_CHECKS), on RexxAE in this
+// process, under the policy's grants, and prints stunt's line for it:
+//
+//   <check>: <outcome> (<detail>) - expected <expectation>: PASS|FAIL
+//
+// exiting 0 when it matched. RexxAE is Aether code (its binary library,
+// `import rexxae`), with no I/O of its own: nothing a script can write
+// reaches libc except through what this host answers, so there is nothing
+// for libaether_sandbox.so (LD_PRELOAD) to hold from the engine itself. What
+// a script reaches is the host requests below, which check the grants
+// themselves, as stunt's host does.
+//
+// Two entry points carry a row:
+//   - rexx.run_sandboxed_with_map, the bridge's own sandboxed run, for the
+//     shared-map rows (the line comes back through the map), and
+//     rexx.run_sandboxed for spin, which only the bridge's time limit ends;
+//   - RexxAE's stepping API (rexxae), inside sandbox.enforce, with the host
+//     functions READ_FILE, GETENV, GREET and ADD registered and an ADDRESS
+//     SYSTEM environment, for every other row.
+//
+// <policy> is "-" for no grants, or kind=pattern,... with kinds fs_read,
+// fs_write, exec, env, tcp (host:port), native, fork. "<outer>|<inner>"
+// runs the check inside sandbox.enforce(<outer>), so the run's level nests
+// in the block's. The policy grammar is in policy/module.ae; the contained
+// child's host is child_host.ae.
+
+@source("host_support.c")
+
+import rexx
+import rexxae
+import policy
+import std.sandbox
+import std.os
+import std.fs
+import std.list
+import std.string
+import std.time
+
+extern exit(code: int)
+extern aether_sandbox_depth() -> int
+// 1 when every level in force grants it (runtime/aether_sandbox.h).
+extern aether_sandbox_check_slow(category: string, resource: string) -> int
+extern ghl_map_new() -> long
+extern ghl_map_put(key: string, value: string)
+extern ghl_map_get(key: string) -> string
+extern ghl_stdin_null()
+
+fn arg(ctx: ptr, i: int) -> string {
+    p = rexxae.rexxae_argument_text(ctx, i)
+    if p == null { return "" }
+    return string.from_cstr(p)
+}
+
+// An answer as std.guest gives a file: {"granted":true,"text":...} or
+// {"granted":false,"why":...}.
+fn granted(text: string) -> string {
+    return "{\"granted\":true,\"text\":${rexx_json(text)}}"
+}
+fn not_granted(why: string) -> string {
+    return "{\"granted\":false,\"why\":${rexx_json(why)}}"
+}
+
+fn rexx_json(s: string) -> string {
+    hex = "0123456789abcdef"
+    out = "\""
+    run = 0
+    i = 0
+    n = string.length(s)
+    while i < n {
+        c = string.char_at(s, i)
+        if c == 34 || c == 92 || (c >= 0 && c < 32) {
+            out = string.concat(out, string.substring(s, run, i))
+            if c == 34 {
+                out = string.concat(out, "\\\"")
+            } else if c == 92 {
+                out = string.concat(out, "\\\\")
+            } else if c == 10 {
+                out = string.concat(out, "\\n")
+            } else {
+                hi = c / 16
+                lo = c % 16
+                out = string.concat(out, "\\u00${string.substring(hex, hi, hi + 1)}${string.substring(hex, lo, lo + 1)}")
+            }
+            run = i + 1
+        }
+        i = i + 1
+    }
+    out = string.concat(out, string.substring(s, run, n))
+    return string.concat(out, "\"")
+}
+
+// ---- host requests the guest makes -------------------------------------------
+//
+// A function call (REXXAE_FUNCTION): the grants are checked here, as stunt's
+// host functions check them, with aether_sandbox_check_slow.
+fn answer_function(ctx: ptr) {
+    name = string.from_cstr(rexxae.rexxae_function(ctx))
+    if name == "READ_FILE" {
+        path = arg(ctx, 0)
+        if aether_sandbox_check_slow("fs_read", path) == 0 {
+            rexxae.rexxae_reply_value(ctx, not_granted("refused: fs_read ${path}"), "")
+            return
+        }
+        text, err = fs.read(path)
+        if err != "" {
+            rexxae.rexxae_reply_value(ctx, not_granted(err), "")
+            return
+        }
+        rexxae.rexxae_reply_value(ctx, granted(text), "")
+        return
+    }
+    if name == "GETENV" {
+        vname = arg(ctx, 0)
+        if aether_sandbox_check_slow("env", vname) == 0 {
+            rexxae.rexxae_reply_value(ctx, not_granted("refused: env ${vname}"), "")
+            return
+        }
+        v = os.getenv(vname)
+        if v == "" {
+            rexxae.rexxae_reply_value(ctx, not_granted("${vname} is unset"), "")
+            return
+        }
+        rexxae.rexxae_reply_value(ctx, granted(v), "")
+        return
+    }
+    if name == "GREET" {
+        rexxae.rexxae_reply_value(ctx, rexx_json("hello, ${arg(ctx, 0)}"), "")
+        return
+    }
+    if name == "ADD" {
+        x, xe = string.to_int(arg(ctx, 0))
+        y, ye = string.to_int(arg(ctx, 1))
+        if xe == "" && ye == "" {
+            rexxae.rexxae_reply_value(ctx, "${x + y}", "")
+        } else {
+            rexxae.rexxae_reply_value(ctx, "null", "ADD takes two ints")
+        }
+        return
+    }
+    rexxae.rexxae_reply_value(ctx, "null", "no host function ${name}")
+}
+
+// An ADDRESS command (REXXAE_COMMAND). This host provides one environment,
+// SYSTEM, a shell: the command runs as `/bin/sh -c <command>` when the grants
+// cover exec of /bin/sh, and is refused (RC 1, ERRORTEXT "refused: ...")
+// when they do not. Any other environment is not mounted.
+fn answer_command(ctx: ptr) {
+    address = string.to_upper(string.from_cstr(rexxae.rexxae_address(ctx)))
+    command = string.from_cstr(rexxae.rexxae_text(ctx))
+    if address != "SYSTEM" {
+        rexxae.rexxae_reply(ctx, 1, "", "ADDRESS ${address} is not mounted")
+        return
+    }
+    if aether_sandbox_check_slow("exec", "/bin/sh") == 0 {
+        rexxae.rexxae_reply(ctx, 1, "", "refused: exec /bin/sh")
+        return
+    }
+    av = list.new()
+    list.add(av, "-c")
+    list.add(av, command)
+    rc = os.run("/bin/sh", av, null)
+    if rc < 0 {
+        rexxae.rexxae_reply(ctx, rc, "", "/bin/sh did not start (os.run ${rc})")
+        return
+    }
+    rexxae.rexxae_reply(ctx, rc, "", "")
+}
+
+// ---- the rows ---------------------------------------------------------------
+
+// A row run on RexxAE's stepping API, inside sandbox.enforce(g). The line is
+// the script's last SAY, or for a script that ends in an error the host's
+// judgement of that end (policy.ended_in_error).
+fn run_engine(g: sandbox.Grants, check: string, expect: string, source: string) -> string {
+    box = list.new()
+    sandbox.enforce(g) callback {
+        ctx = rexxae.rexxae_create(source)
+        for name in ["READ_FILE", "GETENV", "GREET"] {
+            rexxae.rexxae_register_function(ctx, name, 1, 1)
+        }
+        rexxae.rexxae_register_function(ctx, "ADD", 2, 2)
+        deadline = time.now_ms() + 5000
+        line = ""
+        going = 1
+        while going == 1 {
+            st = rexxae.rexxae_step(ctx, 10000)
+            if st == 0 {
+                going = 0
+            } else if st == -1 {
+                line = policy.ended_in_error(check, expect, string.from_cstr(rexxae.rexxae_error(ctx)))
+                going = 0
+            } else if st == 1 {
+                line = string.from_cstr(rexxae.rexxae_text(ctx))
+            } else if st == 2 {
+                answer_command(ctx)
+            } else if st == 4 {
+                answer_function(ctx)
+            }
+            if going == 1 && time.now_ms() > deadline {
+                line = "${check}: the script did not end within 5 s - expected ${expect}: FAIL"
+                going = 0
+            }
+        }
+        rexxae.rexxae_destroy(ctx)
+        if line == "" { line = "${check}: the script said nothing - expected ${expect}: FAIL" }
+        list.add(box, line)
+    }
+    out, _e = list.get_string(box, 0)
+    return out
+}
+
+// A shared-map row, through the bridge's run_sandboxed_with_map.
+fn run_bridge(g: sandbox.Grants, check: string, expect: string, source: string) -> string {
+    token = ghl_map_new()
+    ghl_map_put("input", "stunt-in")
+    rc = rexx.run_sandboxed_with_map(g, "${source}\nLET put = AETHER_MAP_PUT('line', line)", token)
+    line = ghl_map_get("line")
+    if rc != 0 || line == "" {
+        return "${check}: the script failed (run_sandboxed_with_map returned ${rc}) - expected ${expect}: FAIL"
+    }
+    return line
+}
+
+// spin: a loop only the bridge's time limit can end (rexx.TIME_LIMIT_MS).
+// It must end with an error, and not at once.
+fn run_spin(g: sandbox.Grants) -> string {
+    t0 = time.now_ms()
+    rc = rexx.run_sandboxed(g, "DO FOREVER\nEND")
+    ms = time.now_ms() - t0
+    if rc != 0 && ms >= 4000 && ms < 30000 {
+        return "spin: stopped at the time limit (rc ${rc} after ${ms} ms) - host-checked: PASS"
+    }
+    return "spin: rc ${rc} after ${ms} ms - host-checked: FAIL"
+}
+
+fn run_row(g: sandbox.Grants, check: string, expect: string, source: string) -> string {
+    if check == "spin" { return run_spin(g) }
+    if string.starts_with(check, "map-") == 1 { return run_bridge(g, check, expect, source) }
+    return run_engine(g, check, expect, source)
+}
+
+fn finish(line: string, before: int, check: string) {
+    after = aether_sandbox_depth()
+    if after != before {
+        println("host: ${check}: the run left ${after - before} level(s) in force")
+        exit(1)
+    }
+    println(line)
+    exit(policy.verdict(line))
+}
+
+fn run_inproc(spec: string, check: string, expect: string) {
+    // Read before any grants are in force: the checks' path is in the
+    // environment, and the file outside the policy's paths.
+    source = policy.script(check, expect)
+    bar = string.index_of(spec, "|")
+    if bar < 0 {
+        before = aether_sandbox_depth()
+        finish(run_row(policy.grants(spec), check, expect, source), before, check)
+        return
+    }
+    outer = policy.grants(string.substring(spec, 0, bar))
+    inner = policy.grants(string.substring(spec, bar + 1, string.length(spec)))
+    sandbox.enforce(outer) callback {
+        if aether_sandbox_depth() != 1 {
+            println("host: the enforce block is not one level deep")
+            exit(1)
+        }
+        before = aether_sandbox_depth()
+        finish(run_row(inner, check, expect, source), before, check)
+    }
+}
+
+main() {
+    if os.args_count() != 5 {
+        println("usage: host inproc <policy> <check> <expectation>")
+        exit(2)
+    }
+    mode = os.args_get(1)
+    if mode == "inproc" {
+        ghl_stdin_null()
+        run_inproc(os.args_get(2), os.args_get(3), os.args_get(4))
+    } else {
+        println("host: unknown mode ${mode}")
+        exit(2)
+    }
+}

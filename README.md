@@ -16,8 +16,9 @@ for you. Every way stays supported; they differ in how much they contain
 [tinygo/README.md](tinygo/README.md#four-ways-to-run-go-from-aether),
 [go/README.md](go/README.md#four-ways-to-run-go-from-aether),
 [java/README.md](java/README.md#four-ways-to-run-java-from-aether),
-[factor/README.md](factor/README.md#four-ways-to-run-factor-from-aether) and
-[racket/README.md](racket/README.md#four-ways-to-run-racket-from-aether)
+[factor/README.md](factor/README.md#four-ways-to-run-factor-from-aether),
+[racket/README.md](racket/README.md#four-ways-to-run-racket-from-aether) and
+[rexx/README.md](rexx/README.md#four-ways-to-run-rexx-from-aether)
 each show all four, with examples. Go and Java as child processes are never
 in your process, so their first three ways are a child process with less and
 more around it. Three fourths do not work on Linux today, and each README
@@ -102,6 +103,7 @@ worker's JSON reader but no test sends them, so no cell claims them.
 | Java, as a JVM child | `import java` | `run(classpath, main)`: starts a JVM; out: its exit status; the shared map through `AETHER_MAP_SHM` | none; a class that is not there is the JVM's 1, no JVM is -1 | a worker over `std.guest` in Java; the JVM does not start inside the preload on Linux today | [java](java/README.md#what-crosses-the-boundary) |
 | Factor (experimental fork) | `import factor` | `eval(str)` returns what the script printed; `run(str)`; `set` and `get` a string key in the VM's global namespace; shared map by FFI words | none: the bridge has no host-function API; a stack-effect error comes back as text in the output, not as -1; one persistent VM per process | mounted functions work; no `CANCEL` hook; cannot start on ae 0.889.0 and later: the preload refuses its executable memory | [factor](factor/README.md#what-crosses-the-boundary) |
 | Racket CS (and Rhombus) | `import racket`, `import rhombus` | `evaluate(str)` returns what was printed; `run(str)`; `set` and `get` string keys. Rhombus: the same calls on the same VM, module body in | by name (`register`); args int, str, typed by tag; returns int, str, bool, nil; `raise_error`; error is `error: <message>` text from `evaluate`, -1 from `run`, `last_error()`; definitions persist; one VM per process; nothing stops a run that does not end | none: Chez Scheme cannot run in the contained child (`racket/worker` is written and fails) | [racket](racket/README.md#what-crosses-the-boundary) |
+| Rexx, RexxAE (an engine written in Aether, from its own repository) | `import rexx`, over RexxAE's binary library (`import rexxae`) | `run(str)` returns 0, the `EXIT` code or -1; a fresh context per script with a 5 s limit. On RexxAE's API, values cross as JSON both ways: num, str, bool, null, arrays, objects | host functions by name and arity, called mid-expression: the engine suspends and resumes with the answer; `ADDRESS` commands are requests too (RC, RESULT, ERRORTEXT); a host's error answer ends the script (no `SIGNAL ON`); instruction budget per step, `rexxae_cancel` from any thread | the worker is RexxAE's own; a `FAIL` ends the script; the worker answers every `ADDRESS` itself (RC 1, not mounted); `CANCEL` heard every 1000 instructions, so a loop ends `ERROR cancelled by host` | [rexx](rexx/README.md#what-crosses-the-boundary) |
 <!-- language-boundary:end -->
 
 A guest that is written in Aether and lives in another repository (its engine
@@ -126,13 +128,15 @@ first cell, so adding one needs no change to the tests.
 | [Java, JVM child](java/README.md#four-ways-to-run-java-from-aether) | separate runtime process | the `java` command, JDK 21 or later | Ubuntu 24.04: OpenJDK 21 + child<br>macOS 15: JDK 21 (the runner's) | 21, 25 (README, undated) | stable; the JVM does not start in the preload on Linux | the child's deadline and kill | macOS: 9 of 10 tests have a row not held; Linux preload: runtime does not start; child: runtime does not start |
 | [Factor](factor/README.md#four-ways-to-run-factor-from-aether) | embedded in the host process | a fork of Factor with an embedding API, built from `aether-lang-dev/factor-language` at a pinned commit | Ubuntu 24.04: Factor embed-api fork + child | none beyond CI | experimental: a fork, and its child cannot start | none | macOS: not run; Linux preload: 1 of 10 tests have a row not held; child: runtime does not start |
 | [Racket CS, Rhombus](racket/README.md#four-ways-to-run-racket-from-aether) | embedded in the host process | a Racket CS installation (Linux: `libracketcs.so` made from the distribution's `.a`) | Ubuntu 24.04 arm64: Racket 8.10 (apt)<br>macOS 15: Racket 9.3 (cask), with Rhombus | 8.10, 9.3 (README, undated) | stable in-process; no contained child | none | macOS: 9 of 10 tests have a row not held; Linux preload: every row held; child: not run |
+| [Rexx, RexxAE](rexx/README.md#four-ways-to-run-rexx-from-aether) | Aether engine linked into the host (RexxAE's binary library); in the child, RexxAE's worker | RexxAE (`aether-lang-dev/RexxAE`, its own repository, no release tags), built from source at the commit `REXXAE_REF` pins | Ubuntu 24.04: RexxAE at REXXAE_REF + child<br>macOS 15: RexxAE at REXXAE_REF | none beyond CI | a working slice of Rexx (RexxAE: 71 RexxJS builtins, 8 extensions); no I/O of its own, by design | 5 s per script (in-process); instruction budget per step; a builtin's result capped at 1 MiB; in the child, `CANCEL` every 1000 instructions | macOS: every row held; Linux preload: every row held; child: every row held |
 <!-- language-facts:end -->
 
 ## Layout
 
 ```
-aether.toml            the package: exports every language directory (modules = "lua, python, duktape, tcl, perl, ruby, quickjs, tinygo, go, java, factor, racket, rhombus")
-ci/versions.env        toolchain pins (AE_PIN, AE_CHILD_PIN, AE_SPAWN_PIN, AEB_REF, AETHER_STUNT_REF)
+aether.toml            the package: exports every language directory (modules = "lua, python, duktape, tcl, perl, ruby, quickjs, tinygo, go, java, factor, racket, rhombus, rexx")
+ci/versions.env        toolchain pins (AE_PIN, AE_CHILD_PIN, AE_SPAWN_PIN, AEB_REF, AETHER_STUNT_REF),
+                       and the commits of outside engines (FACTOR_FORK_REF, REXXAE_REF)
 lua/
   module.ae            import lua: the bridge's API
   aether_host_lua.c    the bridge, compiled into the importing program (@source)
@@ -252,6 +256,15 @@ racket/
 rhombus/
   module.ae            import rhombus: Rhombus on racket's VM (the bridge's rhombus_* points)
   test_host_rhombus.ae the spec (only where the Racket has the rhombus collection)
+rexx/
+  module.ae            import rexx: run, run_sandboxed, run_sandboxed_with_map, over RexxAE's
+                       binary library (import rexxae); RexxAE itself is another repository,
+                       taken at REXXAE_REF and never copied (rexx/README.md, PROVENANCE.md)
+  test_host_rexx.ae    the bridge's spec, and the boundary on RexxAE's API
+  containment/         the containment hosts and checks.rexx, stunt's rows in Rexx;
+                       lang.sh; test_surface.sh and surface.ae, RexxAE's whole surface
+                       held to reaching nothing; the worker is RexxAE's own (no worker/ here)
+  PROVENANCE.md        where each file came from
 tests/
   run.sh               everything, every language (GUEST_LANG=<lang> for one)
   stunt_lib.sh         holds a language to stunt's catalogue, by name
@@ -267,7 +280,8 @@ tests/
                        duktape, tcl, perl, ruby), or for tinygo the go toolchain, which
                        builds the c-shared libraries the tests load
                        duktape, tcl, perl, ruby), or for go the toolchain and cgo;
-                       java_env.sh finds a JDK 21 or later (a JVM is started, not loaded)
+                       java_env.sh finds a JDK 21 or later (a JVM is started, not loaded);
+                       rexx_env.sh fetches RexxAE at REXXAE_REF and builds its library and worker
 ```
 
 ## Using a language from this repository
@@ -311,6 +325,11 @@ branch):
 `ae build` then prints `Overriding ... -> ../aether-guest-languages`. For a
 one-off without a manifest, `ae build app.ae --lib <checkout>` does the
 same, since the checkout's root holds each language's `<lang>/module.ae`.
+
+`import rexx` needs one more thing, because Rexx's engine is another
+repository: RexxAE's binary library, built from a RexxAE checkout (`make
+aether-lib`) and passed with `--lib <its build/aether>` (rexx/README.md,
+"Where RexxAE comes from").
 
 At run time the bridge `dlopen`s the language's library (all but QuickJS,
 whose engine is compiled into the program: nothing to find, nothing to set). Each bridge tries
@@ -387,6 +406,7 @@ GUEST_LANG=go sh tests/run.sh      # GO=/path/to/go to pick the go command
 GUEST_LANG=java sh tests/run.sh    # JAVA_HOME=/path/to/jdk to pick the JDK (21 or later)
 GUEST_LANG=factor sh tests/run.sh  # FACTOR_HOME=<the fork's checkout>; skips without it
 GUEST_LANG=racket sh tests/run.sh  # RACKET_HOME=/path/to/racket to pick the installation
+GUEST_LANG=rexx sh tests/run.sh    # REXXAE_SRC=/path/to/RexxAE instead of the pinned commit
 sh tests/run.sh --write-parity     # rewrite the parity tables' columns this host ran
 ```
 
@@ -430,6 +450,9 @@ known reason Factor cannot start there is named in `factor/containment/lang.sh`
 brings `libracketcs.a`; the jobs make `libracketcs.so` from it) and, on macOS,
 `brew install --cask racket` (9.3) with `raco pkg install rhombus`; the
 contained child is never required for it, since it cannot run.
+Rexx needs nothing installed: `tests/rexx_env.sh` fetches RexxAE at
+`REXXAE_REF` and builds it with the job's ae. It has two jobs, Linux
+(in-process and the contained child) and macOS, both on `AE_PIN`.
 
 ## Moving from `contrib.host.<lang>`
 

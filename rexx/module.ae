@@ -1,0 +1,185 @@
+// rexx: Rexx from an Aether program, on RexxAE (README.md).
+//
+// RexxAE is a Rexx engine written in Aether, in its own repository
+// (github.com/aether-lang-dev/RexxAE). This module is a thin layer over its
+// Aether binary library, `import rexxae`: build that library from RexxAE
+// (`make aether-lib`, or tests/rexx_env.sh here) and put the directory it is
+// in on the module search path (`ae build app.ae --lib <dir>`). There is no
+// C here and nothing is loaded at run time beyond that library.
+//
+//   import rexx
+//
+//   rexx.run("SAY 6 * 7")
+//
+//   worker = sandbox.new("worker") { grant_env("HOME") }
+//   rexx.run_sandboxed(worker, "SAY 1 + 1")
+//
+// A script has SAY (stdout) and nothing else of its own: RexxAE has no file,
+// stream, environment, process, network or library function, and ADDRESS
+// is a request to the host, never a shell. This module answers every
+// ADDRESS command RC 1 ("ADDRESS <env> is not mounted") and every
+// unregistered function by RexxAE's own error. With the shared map
+// (run_sandboxed_with_map) the script also has AETHER_MAP_GET(key) and
+// AETHER_MAP_PUT(key, value). For host functions of your own, use RexxAE's
+// stepping API directly (`import rexxae`: register, step, reply), as
+// containment/host.ae does.
+//
+// Each run is a fresh context, stepped 10000 instructions at a time, and
+// stopped at 5 s of wall clock (the time limit, as the other bridges here
+// have one).
+
+import rexxae
+import std.sandbox
+import std.io
+import std.list
+import std.string
+import std.time
+
+exports(run, run_sandboxed, run_sandboxed_with_map, TIME_LIMIT_MS)
+
+// The wall-clock limit of one run, in milliseconds.
+const TIME_LIMIT_MS = 5000
+// Instructions per step: how often a run looks at the clock.
+const BUDGET = 10000
+
+extern aether_shared_map_get_by_token(token: long, key: string) -> ptr
+extern aether_shared_map_put_by_token(token: long, key: string, value: string) -> int
+extern aether_shared_map_freeze_inputs_by_token(token: long)
+
+// A JSON string for s (the encoding std.guest's json_string uses).
+fn json_text(s: string) -> string {
+    hex = "0123456789abcdef"
+    out = "\""
+    run = 0
+    i = 0
+    n = string.length(s)
+    while i < n {
+        c = string.char_at(s, i)
+        if c == 34 || c == 92 || (c >= 0 && c < 32) {
+            out = string.concat(out, string.substring(s, run, i))
+            if c == 34 {
+                out = string.concat(out, "\\\"")
+            } else if c == 92 {
+                out = string.concat(out, "\\\\")
+            } else if c == 10 {
+                out = string.concat(out, "\\n")
+            } else {
+                hi = c / 16
+                lo = c % 16
+                out = string.concat(out, "\\u00${string.substring(hex, hi, hi + 1)}${string.substring(hex, lo, lo + 1)}")
+            }
+            run = i + 1
+        }
+        i = i + 1
+    }
+    out = string.concat(out, string.substring(s, run, n))
+    return string.concat(out, "\"")
+}
+
+fn arg(ctx: ptr, i: int) -> string {
+    p = rexxae.rexxae_argument_text(ctx, i)
+    if p == null { return "" }
+    return string.from_cstr(p)
+}
+
+// The map functions, the one host request a run with a map answers.
+fn answer_map(ctx: ptr, token: long) {
+    name = string.from_cstr(rexxae.rexxae_function(ctx))
+    if name == "AETHER_MAP_GET" {
+        v = aether_shared_map_get_by_token(token, arg(ctx, 0))
+        if v == null {
+            rexxae.rexxae_reply_value(ctx, "null", "")
+        } else {
+            rexxae.rexxae_reply_value(ctx, json_text(string.from_cstr(v)), "")
+        }
+        return
+    }
+    if name == "AETHER_MAP_PUT" {
+        // 1 when written, 0 when the key is one of the host's frozen inputs.
+        ok = aether_shared_map_put_by_token(token, arg(ctx, 0), arg(ctx, 1))
+        if ok == 0 { rexxae.rexxae_reply_value(ctx, "true", "") } else { rexxae.rexxae_reply_value(ctx, "false", "") }
+        return
+    }
+    rexxae.rexxae_reply_value(ctx, "null", "no host function ${name}")
+}
+
+// One run: 0 or the script's EXIT code when it ends, -1 on an error or at
+// the time limit (the reason on stderr as "[rexx] ...").
+fn run_with(code: string, token: long) -> int {
+    ctx = rexxae.rexxae_create(code)
+    if ctx == null {
+        io.stderr_write("[rexx] cannot make a context\n")
+        return -1
+    }
+    if token != 0 {
+        rexxae.rexxae_register_function(ctx, "AETHER_MAP_GET", 1, 1)
+        rexxae.rexxae_register_function(ctx, "AETHER_MAP_PUT", 2, 2)
+    }
+    deadline = time.now_ms() + TIME_LIMIT_MS
+    rc = -1
+    going = 1
+    while going == 1 {
+        st = rexxae.rexxae_step(ctx, BUDGET)
+        if st == 0 {
+            rc = rexxae.rexxae_exit_code(ctx)
+            going = 0
+        } else if st == -1 {
+            io.stderr_write("[rexx] ${string.from_cstr(rexxae.rexxae_error(ctx))} (line ${rexxae.rexxae_line(ctx)})\n")
+            going = 0
+        } else if st == 1 {
+            println(string.from_cstr(rexxae.rexxae_text(ctx)))
+        } else if st == 2 {
+            address = string.from_cstr(rexxae.rexxae_address(ctx))
+            rexxae.rexxae_reply(ctx, 1, "", "ADDRESS ${address} is not mounted")
+        } else if st == 4 {
+            if token != 0 {
+                answer_map(ctx, token)
+            } else {
+                rexxae.rexxae_reply_value(ctx, "null", "no host function")
+            }
+        }
+        if going == 1 && time.now_ms() > deadline {
+            io.stderr_write("[rexx] stopped at the time limit (${TIME_LIMIT_MS} ms)\n")
+            going = 0
+        }
+    }
+    rexxae.rexxae_destroy(ctx)
+    return rc
+}
+
+// The run's result, carried out of a sandbox.enforce block in a list.
+fn result_of(box: ptr) -> int {
+    text, err = list.get_string(box, 0)
+    if err != "" { return -1 }
+    rc, rerr = string.to_int(text)
+    if rerr != "" { return -1 }
+    return rc
+}
+
+// Run a script with nothing given to it.
+run(code: string) -> int {
+    return run_with(code, 0)
+}
+
+// Run a script under the grants: the run is inside sandbox.enforce(perms),
+// so a host function it reaches is checked against them. RexxAE itself asks
+// for nothing.
+run_sandboxed(perms: sandbox.Grants, code: string) -> int {
+    box = list.new()
+    sandbox.enforce(perms) callback {
+        list.add(box, "${run_with(code, 0)}")
+    }
+    return result_of(box)
+}
+
+// The same, with the shared map behind AETHER_MAP_GET and AETHER_MAP_PUT.
+// The host's inputs are frozen first: a put to one of them answers 0 and
+// leaves it as it was.
+run_sandboxed_with_map(perms: sandbox.Grants, code: string, map_token: long) -> int {
+    aether_shared_map_freeze_inputs_by_token(map_token)
+    box = list.new()
+    sandbox.enforce(perms) callback {
+        list.add(box, "${run_with(code, map_token)}")
+    }
+    return result_of(box)
+}

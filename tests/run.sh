@@ -51,6 +51,8 @@ esac
 langs="${GUEST_LANG:-$(for f in "$ROOT"/*/containment/lang.sh; do basename "$(dirname "$(dirname "$f")")"; done)}"
 for lang in $langs; do
     export GUEST_LANG="$lang"
+    # Set by a lang.sh whose programs import a library built elsewhere (Rexx).
+    LANG_LIB=""
     . "$ROOT/$lang/containment/lang.sh"
 
     if [ "$what" = all ] || [ "$what" = spec ]; then
@@ -74,7 +76,7 @@ for lang in $langs; do
         if type lang_spec_env > /dev/null 2>&1; then lang_spec_env || fails=$((fails + 1)); fi
         for spec in $LANG_SPECS; do
             bin="$ROOT/build/$(basename "$spec" .ae)"
-            if ! (cd "$ROOT" && ae build "$spec" -o "$bin") > "$ROOT/build/spec.log" 2>&1; then
+            if ! (cd "$ROOT" && ae build "$spec" ${LANG_LIB:+--lib "$LANG_LIB"} -o "$bin") > "$ROOT/build/spec.log" 2>&1; then
                 cat "$ROOT/build/spec.log"; fails=$((fails + 1)); continue
             fi
             out="$("$bin" 2>&1)"; rc=$?

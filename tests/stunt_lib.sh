@@ -144,9 +144,12 @@ stale() {   # stale <binary>: older than any source it is built from
     done
     return 1
 }
+# A language whose hosts import a library built elsewhere (Rexx: RexxAE's
+# binary library, built by tests/rexx_env.sh) names its directory in LANG_LIB,
+# added to the hosts' module search path.
 build() {   # build <source .ae> <binary>
     stale "$2" || return 0
-    (cd "$ROOT" && ae build "$1" --lib "$LANG_NAME/containment" -o "$2") > "$TMP/build.log" 2>&1 ||
+    (cd "$ROOT" && ae build "$1" --lib "$LANG_NAME/containment${LANG_LIB:+:$LANG_LIB}" -o "$2") > "$TMP/build.log" 2>&1 ||
         die "$1 did not build" "$TMP/build.log"
 }
 HOST="$BUILD/$LANG_NAME-host"

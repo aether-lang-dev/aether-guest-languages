@@ -1,0 +1,209 @@
+// Specs for rexx, the bridge over RexxAE's Aether binary library
+// (README.md), written against std.spec. Built by tests/run.sh with
+// AETHER_LIB_DIR naming the directory tests/rexx_env.sh built librexxae in.
+import rexx
+import rexxae
+import std.spec
+import std.sandbox
+import std.audit
+import std.string
+import std.mem
+import std.list
+import std.time
+
+@extern("malloc") c_malloc(size: int) -> ptr
+@extern("free") c_free(p: ptr)
+extern aether_sandbox_depth() -> int
+extern aether_sandbox_check_slow(category: string, resource: string) -> int
+
+main() {
+    fw = spec.init()
+
+    spec.describe(fw, "rexx") {
+        spec.it("rexx.run runs a script and returns its EXIT code") callback {
+            spec.assert_eq(rexx.run("LET a = 10\nLET b = 20\nIF a + b \\= 30 THEN EXIT 7"), 0, "a script that ends returns 0")
+            spec.assert_eq(rexx.run("EXIT 3"), 3, "EXIT 3 returns 3")
+        }
+
+        spec.it("an error in the script is -1, a syntax error too") callback {
+            spec.assert_eq(rexx.run("LET x = NOPE()"), -1, "an unknown function ends the run")
+            spec.assert_eq(rexx.run("IF THEN"), -1, "a syntax error is -1")
+        }
+
+        // RexxAE's ADDRESS is a request to the host; the bridge mounts no
+        // environment, so a command is answered RC 1 and runs nothing.
+        spec.it("ADDRESS is answered RC 1, not mounted, and runs nothing") callback {
+            spec.assert_eq(rexx.run("ADDRESS SYSTEM 'exit 0'\nIF RC \\= 1 THEN EXIT 9\nIF POS(ERRORTEXT, 'not mounted') = 0 THEN EXIT 8"), 0,
+                "RC 1 and 'not mounted'")
+        }
+
+        spec.it("a loop is stopped at the time limit") callback {
+            t0 = time.now_ms()
+            spec.assert_eq(rexx.run("DO FOREVER\nEND"), -1, "the loop is stopped")
+            ms = time.now_ms() - t0
+            spec.assert_true(ms >= rexx.TIME_LIMIT_MS - 100 && ms < rexx.TIME_LIMIT_MS + 5000, "at about the limit (${ms} ms)")
+        }
+
+        // The engine asks the sandbox for nothing: a run under a grant list
+        // with nothing in it makes no permission check at all.
+        spec.it("a sandboxed run makes no permission check of its own") callback {
+            nothing = sandbox.new("none") {}
+            defer sandbox.free(nothing)
+            audit.clear()
+            rc = rexx.run_sandboxed(nothing, "LET s = COPIES('ab', 3)\nLET j = JSON_STRINGIFY(JSON_PARSE('[1,2]'))\nSAY s j CRON_NEXT('@daily', 0)")
+            spec.assert_eq(rc, 0, "the script runs")
+            spec.assert_eq(audit.count(), 0, "no check was made (${audit.count()})")
+        }
+
+        spec.it("run_sandboxed_with_map round-trips values and keeps the inputs frozen") callback {
+            dummy = sandbox.new("dummy") {}
+            defer sandbox.free(dummy)
+            token_buf = c_malloc(8)
+            map = aether_shared_map_new(token_buf)
+            token = mem.get_long(token_buf, 0)
+            c_free(token_buf)
+            aether_shared_map_put(map, "user", "Alice")
+            aether_shared_map_put(map, "count", "5")
+
+            script = "LET u = AETHER_MAP_GET('user')\nLET c = AETHER_MAP_GET('count')\nLET ok = AETHER_MAP_PUT('reply', 'hello ' || u)\nLET ok = AETHER_MAP_PUT('doubled', c * 2)\nLET frozen = AETHER_MAP_PUT('user', 'Mallory')\nIF frozen THEN EXIT 5"
+            spec.assert_eq(rexx.run_sandboxed_with_map(dummy, script, token), 0, "the run returns 0 (an input write answers 0)")
+            spec.assert_str_eq(aether_shared_map_get(map, "reply"), "hello Alice", "reply")
+            spec.assert_str_eq(aether_shared_map_get(map, "doubled"), "10", "doubled")
+            spec.assert_str_eq(aether_shared_map_get(map, "user"), "Alice", "user is still the host's")
+            aether_shared_map_revoke_token(token)
+            aether_shared_map_free(map)
+        }
+
+        spec.it("run_sandboxed and run_sandboxed_with_map leave the grant stack as they found it") callback {
+            g = sandbox.new("g") { grant_env("TERM") }
+            defer sandbox.free(g)
+            before = aether_sandbox_depth()
+            spec.assert_eq(rexx.run_sandboxed(g, "LET ok = 1"), 0, "a good script runs")
+            spec.assert_eq(aether_sandbox_depth(), before, "depth restored after success")
+            spec.assert_eq(rexx.run_sandboxed(g, "LET x = NOPE()"), -1, "a failing script fails")
+            spec.assert_eq(aether_sandbox_depth(), before, "depth restored after an error")
+            token_buf = c_malloc(8)
+            map = aether_shared_map_new(token_buf)
+            token = mem.get_long(token_buf, 0)
+            c_free(token_buf)
+            spec.assert_eq(rexx.run_sandboxed_with_map(g, "LET x = NOPE()", token), -1, "a failing map script fails")
+            spec.assert_eq(aether_sandbox_depth(), before, "depth restored after a map script error")
+            aether_shared_map_revoke_token(token)
+            aether_shared_map_free(map)
+        }
+
+        // What a host function does is the host's, held to the grants in
+        // force: the engine suspends on the call and resumes with the answer.
+        spec.it("a host function is held to the grants in force, and the script resumes with its answer") callback {
+            env_ok = sandbox.new("env") { grant_env("HOME") }
+            defer sandbox.free(env_ok)
+            nothing = sandbox.new("none") {}
+            defer sandbox.free(nothing)
+            out = list.new()
+            sandbox.enforce(env_ok) callback { list.add(out, ask_home()) }
+            sandbox.enforce(nothing) callback { list.add(out, ask_home()) }
+            a, _e1 = list.get_string(out, 0)
+            b, _e2 = list.get_string(out, 1)
+            spec.assert_str_eq(a, "allowed", "granted HOME")
+            spec.assert_str_eq(b, "refused", "no grants")
+        }
+
+        // The boundary, on RexxAE's own API: typed JSON both ways, a script
+        // that suspends mid-expression on each call and resumes with the
+        // answer, and a cancel while a call waits.
+        spec.it("typed values cross both ways as JSON") callback {
+            said = converse("LET r = ECHO(JSON_PARSE('[1, \"two\", true, null, {\"k\": 2.5}]'))\nSAY JSON_STRINGIFY(r)", "", 0)
+            spec.assert_str_eq(said, "ARGS [[1,\"two\",true,null,{\"k\":2.5}]] SAY {\"echo\":[[1,\"two\",true,null,{\"k\":2.5}]]}", "an array with every JSON type, out and back")
+        }
+
+        spec.it("a script suspends on each call mid-expression and resumes with the answer") callback {
+            said = converse("SAY ADD(ADD(1, 2), ADD(3, 4)) * 2", "", 0)
+            spec.assert_str_eq(said, "CALL ADD CALL ADD CALL ADD SAY 20", "three calls, inner first, then the arithmetic")
+        }
+
+        spec.it("a cancel while a call waits ends the script, and the late answer is refused") callback {
+            said = converse("LET v = ASK('x')\nSAY 'not reached'", "", 1)
+            spec.assert_str_eq(said, "CANCELLED late=-1 ERROR cancelled by host: deadline", "cancelled")
+        }
+    }
+
+    _rc = spec.run_summary(fw)
+    return _rc
+}
+
+// Runs a script against a host with ECHO (answers {"echo": <its arguments>}),
+// ADD and ASK, and says what crossed: "ARGS <json>" for each ECHO, "CALL
+// <name>" for each other call, "SAY <text>", and with cancel 1, a cancel at
+// the first call, the answer given after it, and how the script ended.
+fn converse(source: string, _unused: string, cancel: int) -> string {
+    ctx = rexxae.rexxae_create(source)
+    rexxae.rexxae_register_function(ctx, "ECHO", 1, 1)
+    rexxae.rexxae_register_function(ctx, "ADD", 2, 2)
+    rexxae.rexxae_register_function(ctx, "ASK", 1, 1)
+    out = ""
+    n = 0
+    while n < 100 {
+        st = rexxae.rexxae_step(ctx, 1000)
+        if st == 4 {
+            name = string.from_cstr(rexxae.rexxae_function(ctx))
+            args = string.from_cstr(rexxae.rexxae_arguments_json(ctx))
+            if cancel == 1 {
+                rexxae.rexxae_cancel(ctx, "deadline")
+                st2 = rexxae.rexxae_step(ctx, 1000)
+                late = rexxae.rexxae_reply_value(ctx, "1", "")
+                out = "CANCELLED late=${late}"
+                if st2 == -1 { out = "${out} ERROR ${string.from_cstr(rexxae.rexxae_error(ctx))}" }
+                n = 100
+            } else if name == "ECHO" {
+                out = "${out}ARGS ${args} "
+                rexxae.rexxae_reply_value(ctx, "{\"echo\":${args}}", "")
+            } else if name == "ADD" {
+                out = "${out}CALL ADD "
+                a, _ae = string.to_int(string.from_cstr(rexxae.rexxae_argument_text(ctx, 0)))
+                b, _be = string.to_int(string.from_cstr(rexxae.rexxae_argument_text(ctx, 1)))
+                rexxae.rexxae_reply_value(ctx, "${a + b}", "")
+            } else {
+                rexxae.rexxae_reply_value(ctx, "null", "no ${name}")
+            }
+        } else if st == 1 {
+            out = "${out}SAY ${string.from_cstr(rexxae.rexxae_text(ctx))}"
+        } else if st == 0 || st == -1 {
+            n = 100
+        }
+        n = n + 1
+    }
+    rexxae.rexxae_destroy(ctx)
+    return out
+}
+
+// A script that asks its host for HOME, and says what it got.
+fn ask_home() -> string {
+    ctx = rexxae.rexxae_create("LET v = ASK('HOME')\nSAY v")
+    rexxae.rexxae_register_function(ctx, "ASK", 1, 1)
+    said = ""
+    n = 0
+    while n < 100 {
+        st = rexxae.rexxae_step(ctx, 1000)
+        if st == 4 {
+            name = string.from_cstr(rexxae.rexxae_argument_text(ctx, 0))
+            if aether_sandbox_check_slow("env", name) == 1 {
+                rexxae.rexxae_reply_value(ctx, "\"allowed\"", "")
+            } else {
+                rexxae.rexxae_reply_value(ctx, "\"refused\"", "")
+            }
+        } else if st == 1 {
+            said = string.from_cstr(rexxae.rexxae_text(ctx))
+        } else if st == 0 || st == -1 {
+            n = 100
+        }
+        n = n + 1
+    }
+    rexxae.rexxae_destroy(ctx)
+    return said
+}
+
+extern aether_shared_map_new(out_token: ptr) -> ptr
+extern aether_shared_map_put(map: ptr, key: string, val: string)
+extern aether_shared_map_get(map: ptr, key: string) -> string
+extern aether_shared_map_revoke_token(token: long)
+extern aether_shared_map_free(map: ptr)

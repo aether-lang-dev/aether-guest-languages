@@ -299,6 +299,48 @@ jobs:
       - name: Specs and containment rows
         run: GUEST_LANG=quickjs sh tests/run.sh
 
+  # Rexx: RexxAE, a Rexx engine written in Aether that lives in its own
+  # repository. Nothing to install: tests/rexx_env.sh fetches RexxAE at
+  # REXXAE_REF (ci/versions.env) and builds its binary library and its worker
+  # with the ae under test. Two jobs: Linux runs in-process under the preload
+  # and the contained child (the parity table's columns 3 and 4), macOS
+  # in-process (column 2). No older-ae job: RexxAE targets the current Aether.
+  linux-rexx:
+    name: Linux (in-process and contained child, RexxAE, ae AE_PIN)
+    runs-on: ubuntu-24.04
+    env:
+      GHL_CI_RUNTIME: "RexxAE at REXXAE_REF"
+      GHL_CI_RUNTIME_MATCH: "RexxAE"
+    steps:
+      - uses: actions/checkout@v4
+      - name: ae (AE_PIN)
+        run: |
+          . ci/versions.env
+          curl -fsSL "https://raw.githubusercontent.com/aether-lang-dev/aeb/$AEB_REF/get.sh" \
+            | AE_PIN="$AE_PIN" AEB_REF="$AEB_REF" sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - run: ae version
+      - name: Specs and containment rows, the child required
+        run: GUEST_LANG=rexx GHL_REQUIRE_CHILD=1 sh tests/run.sh
+
+  macos-rexx:
+    name: macOS (in-process, RexxAE)
+    runs-on: macos-15
+    env:
+      GHL_CI_RUNTIME: "RexxAE at REXXAE_REF"
+      GHL_CI_RUNTIME_MATCH: "RexxAE"
+    steps:
+      - uses: actions/checkout@v4
+      - name: ae (AE_PIN)
+        run: |
+          . ci/versions.env
+          curl -fsSL "https://raw.githubusercontent.com/aether-lang-dev/aeb/$AEB_REF/get.sh" \
+            | AE_PIN="$AE_PIN" AEB_REF="$AEB_REF" sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - run: ae version
+      - name: Specs and containment rows
+        run: GUEST_LANG=rexx sh tests/run.sh
+
   # Tcl: the runtime library only (libtcl8.6.so.0 from tcl8.6); no tcl-dev,
   # which the bridge does not need to build. The `tcl` package adds the
   # unversioned tclsh that tests/tcl_env.sh asks for Tcl's library directory.
