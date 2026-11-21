@@ -1,0 +1,105 @@
+// The shared boundary tests (tests/boundary.py) against QuickJS's in-process
+// bridge, through the API it really has: quickjs.vm_*, a callback's typed arg_*
+// readers and push_* writers. Usage: boundary_host (the script and the value to
+// give come from the environment; tests/lib/inproc says which).
+//
+// echo(v) prints what the typed readers say it received and answers with it;
+// give(id) builds the harness's value with the typed writers, as far as the
+// bridge has one (push_json and arg_json carry a table as JSON); refuse(m) raises an error. Nothing here widens the
+// bridge: a value it loses is the result, and a case it cannot express prints
+// NOAPI and reads n/a.
+
+import quickjs
+import inproc
+import std.json
+import std.string
+
+extern exit(code: int)
+
+fn render(vm: ptr, i: int) -> string {
+    t = quickjs.arg_type(vm, i)
+    if t == quickjs.QJS_TNIL { return "null" }
+    if t == quickjs.QJS_TBOOL {
+        if quickjs.arg_bool(vm, i) == 1 { return "true" }
+        return "false"
+    }
+    if t == quickjs.QJS_TINT { return "${quickjs.arg_int(vm, i)}" }
+    if t == quickjs.QJS_TFLOAT { return "${quickjs.arg_double(vm, i)}" }
+    if t == quickjs.QJS_TSTR { return inproc.quote(quickjs.arg_str(vm, i)) }
+    if t == quickjs.QJS_TTABLE { return quickjs.arg_json(vm, i) }
+    return "\"<other type ${t}>\""
+}
+
+@c_callback
+host_echo(vm: ptr) -> int {
+    n = quickjs.arg_count(vm)
+    out = "["
+    i = 1
+    while i <= n {
+        if i > 1 { out = "${out}," }
+        out = "${out}${render(vm, i)}"
+        i = i + 1
+    }
+    inproc.emit("WIRE", "${out}]")
+    if n < 1 { return 0 }
+    t = quickjs.arg_type(vm, 1)
+    if t == quickjs.QJS_TSTR { quickjs.push_str(vm, quickjs.arg_str(vm, 1)) }
+    else if t == quickjs.QJS_TINT { quickjs.push_int(vm, quickjs.arg_int(vm, 1)) }
+    else if t == quickjs.QJS_TBOOL { quickjs.push_bool(vm, quickjs.arg_bool(vm, 1)) }
+    else if t == quickjs.QJS_TFLOAT { quickjs.push_double(vm, quickjs.arg_double(vm, 1)) }
+    else if t == quickjs.QJS_TTABLE { _p = quickjs.push_json(vm, quickjs.arg_json(vm, 1)) }
+    else { quickjs.push_nil(vm) }
+    return 1
+}
+
+@c_callback
+host_refuse(vm: ptr) -> int {
+    inproc.emit("REFUSE", "")
+    return quickjs.raise_error(vm, "refused by the host")
+}
+
+@c_callback
+host_give(vm: ptr) -> int {
+    v, err = json.parse(inproc.give_text())
+    if err != "" {
+        inproc.emit("NOAPI", "the harness's value is not JSON: ${err}")
+        return 0
+    }
+    kind = json.type(v)
+    if kind == json.JSON_NULL { quickjs.push_nil(vm); return 1 }
+    if kind == json.JSON_BOOL { quickjs.push_bool(vm, json.json_get_bool(v)); return 1 }
+    if kind == json.JSON_STRING {
+        s, _x = json.get_string(v)
+        quickjs.push_str(vm, s)
+        return 1
+    }
+    if kind == json.JSON_NUMBER {
+        if json.json_is_integer(v) == 1 {
+            quickjs.push_int(vm, json.json_get_long(v))
+        } else {
+            quickjs.push_double(vm, json.json_get_number(v))
+        }
+        return 1
+    }
+    if quickjs.push_json(vm, inproc.give_text()) != 0 { inproc.emit("NOAPI", "push_json refused the value") ; return 0 }
+    return 1
+}
+
+main() {
+    vm = quickjs.vm_new()
+    if vm == null { println("no quickjs runtime"); exit(2) }
+    quickjs.vm_register(vm, "echo", host_echo)
+    quickjs.vm_register(vm, "give", host_give)
+    quickjs.vm_register(vm, "refuse", host_refuse)
+    if inproc.limited() == 1 {
+        why = quickjs.vm_set_time_limit(vm, 300, 1)
+        if why != "" {
+            inproc.emit("NOAPI", why)
+            exit(0)
+        }
+    }
+    rc = quickjs.vm_eval(vm, inproc.script())
+    if rc == 0 { inproc.emit("END", "DONE ") } else { inproc.emit("END", "ERROR ${quickjs.vm_result_str(vm)}") }
+    quickjs.vm_free(vm)
+    exit(0)
+}

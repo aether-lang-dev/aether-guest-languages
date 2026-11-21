@@ -74,9 +74,9 @@ exports (
 @extern("aether_perl_register") perl_register(name: string, host_fn: ptr) -> int
 // Inside a callback: the arguments, 1..arg_count.
 @extern("aether_perl_arg_count") perl_arg_count(ctx: ptr) -> int
-@extern("aether_perl_arg_str") perl_arg_str(ctx: ptr, i: int) -> string
+@extern("aether_perl_arg_str") perl_arg_str(ctx: ptr, i: int) -> string @heap
 @extern("aether_perl_arg_int") perl_arg_int(ctx: ptr, i: int) -> long
-@extern("aether_perl_push_str") perl_push_str(ctx: ptr, v: string)
+@extern("aether_perl_push_str") perl_push_str(ctx: ptr, v: @aether string)
 @extern("aether_perl_push_int") perl_push_int(ctx: ptr, v: long)
 // `return perl.raise_error(ctx, msg)`: the Perl sub dies with msg (and a
 // newline) after the callback has returned, so the callback's defers run.

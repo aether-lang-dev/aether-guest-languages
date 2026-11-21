@@ -80,6 +80,8 @@ static struct {
     // String coercion (real fn behind duk_safe_to_string).
     const char* (*duk_safe_to_lstring)(duk_context* ctx, duk_idx_t idx,
                                        duk_size_t* out_len);
+    const char* (*duk_get_lstring)(duk_context* ctx, duk_idx_t idx, duk_size_t* out_len);
+    const char* (*duk_push_lstring)(duk_context* ctx, const char* str, duk_size_t len);
     // Stack manipulation.
     duk_idx_t (*duk_get_top)(duk_context* ctx);
     void (*duk_pop)(duk_context* ctx);
@@ -134,6 +136,8 @@ static int resolve_duktape_symbols(void* h) {
     RESOLVE(duk_destroy_heap,          "duk_destroy_heap");
     RESOLVE(duk_eval_raw,              "duk_eval_raw");
     RESOLVE(duk_safe_to_lstring,       "duk_safe_to_lstring");
+    RESOLVE(duk_get_lstring,           "duk_get_lstring");
+    RESOLVE(duk_push_lstring,          "duk_push_lstring");
     RESOLVE(duk_get_top,               "duk_get_top");
     RESOLVE(duk_pop,                   "duk_pop");
     RESOLVE(duk_replace,               "duk_replace");
@@ -232,44 +236,50 @@ static const char* dh_safe_to_string(duk_context* c, duk_idx_t idx) {
     return g_duk.duk_safe_to_lstring(c, idx, NULL);
 }
 
-// What a string looks like from outside. Duktape keeps a character beyond the
-// BMP that came in as a surrogate pair (a JS source literal, String.fromCharCode,
-// JSON.stringify of one) as CESU-8: two three-byte halves, ED A0..AF xx ED B0..BF xx.
-// That is not UTF-8, and the host got six bytes that no decoder accepts. One that
-// came in as four UTF-8 bytes stays four. So a string handed out is joined: the
-// stack slot `idx` (which holds `s`) is replaced by a copy with each pair as its
-// four-byte form, and the pointer into that is returned, valid as long as the slot.
-// (A lone surrogate half has no UTF-8 form and is left as Duktape holds it.)
-static const char* dh_utf8_at(duk_context* c, duk_idx_t idx, const char* s) {
-    if (!s) return s;
+// What a string looks like from outside, and carrying its length. A Duktape
+// string holds a NUL as a byte like any other, and a C string cannot; what the
+// host reads (an argument, a result) is returned as an Aether string made from
+// the bytes and the length, and a string the host gives arrives as an Aether
+// string and is pushed with its length (aether_string_data and
+// aether_string_length read either shape).
+//
+// And Duktape keeps a character beyond the BMP that came in as a surrogate pair
+// (a JS source literal, String.fromCharCode, JSON.stringify of one) as CESU-8:
+// two three-byte halves, ED A0..AF xx ED B0..BF xx. That is not UTF-8, and the
+// host got six bytes that no decoder accepts. One that came in as four UTF-8
+// bytes stays four. So a string handed out has each pair joined into its
+// four-byte form. (A lone surrogate half has no UTF-8 form and is left as
+// Duktape holds it.)
+extern const char* aether_string_data(const void*);
+extern size_t aether_string_length(const void*);
+extern void* string_alloc_inline(size_t length);
+
+static int dh_is_pair(const unsigned char* p, size_t left) {
+    return left >= 6 && p[0] == 0xED && (p[1] & 0xF0) == 0xA0 && (p[2] & 0xC0) == 0x80 &&
+           p[3] == 0xED && (p[4] & 0xF0) == 0xB0 && (p[5] & 0xC0) == 0x80;
+}
+
+static const void* dh_out_string(const char* s, size_t n) {
     const unsigned char* p = (const unsigned char*)s;
-    int pairs = 0;
-    for (; *p; p++)
-        if (p[0] == 0xED && (p[1] & 0xF0) == 0xA0 && (p[2] & 0xC0) == 0x80 &&
-            p[3] == 0xED && (p[4] & 0xF0) == 0xB0 && (p[5] & 0xC0) == 0x80) { pairs++; p += 5; }
-    if (!pairs) return s;
-    char* out = (char*)malloc(strlen(s) + 1);
-    if (!out) return s;
-    char* o = out;
-    for (p = (const unsigned char*)s; *p; ) {
-        if (p[0] == 0xED && (p[1] & 0xF0) == 0xA0 && (p[2] & 0xC0) == 0x80 &&
-            p[3] == 0xED && (p[4] & 0xF0) == 0xB0 && (p[5] & 0xC0) == 0x80) {
-            unsigned hi = 0xD000u | ((p[1] & 0x3Fu) << 6) | (p[2] & 0x3Fu);
-            unsigned lo = 0xD000u | ((p[4] & 0x3Fu) << 6) | (p[5] & 0x3Fu);
+    size_t pairs = 0;
+    for (size_t i = 0; i < n; i++)
+        if (dh_is_pair(p + i, n - i)) { pairs++; i += 5; }
+    void* r = string_alloc_inline(n - 2 * pairs);
+    if (!r) return NULL;
+    unsigned char* o = (unsigned char*)aether_string_data(r);
+    for (size_t i = 0; i < n; ) {
+        if (dh_is_pair(p + i, n - i)) {
+            unsigned hi = 0xD000u | ((p[i+1] & 0x3Fu) << 6) | (p[i+2] & 0x3Fu);
+            unsigned lo = 0xD000u | ((p[i+4] & 0x3Fu) << 6) | (p[i+5] & 0x3Fu);
             unsigned cp = 0x10000u + (((hi & 0x3FFu) << 10) | (lo & 0x3FFu));
-            *o++ = (char)(0xF0 | (cp >> 18)); *o++ = (char)(0x80 | ((cp >> 12) & 0x3F));
-            *o++ = (char)(0x80 | ((cp >> 6) & 0x3F)); *o++ = (char)(0x80 | (cp & 0x3F));
-            p += 6;
+            *o++ = (unsigned char)(0xF0 | (cp >> 18)); *o++ = (unsigned char)(0x80 | ((cp >> 12) & 0x3F));
+            *o++ = (unsigned char)(0x80 | ((cp >> 6) & 0x3F)); *o++ = (unsigned char)(0x80 | (cp & 0x3F));
+            i += 6;
         } else {
-            *o++ = (char)*p++;
+            *o++ = p[i++];
         }
     }
-    *o = 0;
-    duk_idx_t abs = idx < 0 ? g_duk.duk_get_top(c) + idx : idx;
-    g_duk.duk_push_string(c, out);
-    g_duk.duk_replace(c, abs);
-    free(out);
-    return g_duk.duk_get_string(c, abs);
+    return r;
 }
 
 // --- bridge state (unchanged) ----------------------------------------------
@@ -593,10 +603,10 @@ int duktape_vm_register(void* c, const char* name, void* host_fn) {
     return 0;
 }
 
-void duktape_vm_set_global_str(void* c, const char* name, const char* value) {
+void duktape_vm_set_global_str(void* c, const char* name, const void* value) {
     if (!c || !name) return;
     duk_context* ctx_ptr = (duk_context*)c;
-    g_duk.duk_push_string(ctx_ptr, value ? value : "");
+    g_duk.duk_push_lstring(ctx_ptr, aether_string_data(value) ? aether_string_data(value) : "", aether_string_length(value));
     g_duk.duk_put_global_string(ctx_ptr, name);
 }
 
@@ -672,11 +682,13 @@ int64_t duktape_vm_result_int(void* c) {
     return duktape_number_to_i64(ctx_ptr, -1);
 }
 
-const char* duktape_vm_result_str(void* c) {
-    if (!c) return "";
+const void* duktape_vm_result_str(void* c) {
+    if (!c) return dh_out_string("", 0);
     duk_context* ctx_ptr = (duk_context*)c;
-    if (g_duk.duk_get_top(ctx_ptr) == 0) return "";
-    return dh_utf8_at(ctx_ptr, -1, dh_safe_to_string(ctx_ptr, -1));
+    if (g_duk.duk_get_top(ctx_ptr) == 0) return dh_out_string("", 0);
+    duk_size_t n = 0;
+    const char* s = g_duk.duk_safe_to_lstring(ctx_ptr, -1, &n);
+    return s ? dh_out_string(s, n) : dh_out_string("", 0);
 }
 
 int duktape_vm_result_bool(void* c) {
@@ -729,13 +741,14 @@ int duktape_arg_type(void* c, int i) {
     }
 }
 
-const char* duktape_arg_str(void* c, int i) {
-    if (!c || i < 1) return "";
+const void* duktape_arg_str(void* c, int i) {
+    if (!c || i < 1) return dh_out_string("", 0);
     duk_context* ctx_ptr = (duk_context*)c;
     duk_idx_t idx = (duk_idx_t)(i - 1);
-    if (idx >= g_duk.duk_get_top(ctx_ptr)) return "";
-    const char* s = dh_utf8_at(ctx_ptr, idx, g_duk.duk_get_string(ctx_ptr, idx));
-    return s ? s : "";
+    if (idx >= g_duk.duk_get_top(ctx_ptr)) return dh_out_string("", 0);
+    duk_size_t n = 0;
+    const char* s = g_duk.duk_get_lstring(ctx_ptr, idx, &n);
+    return s ? dh_out_string(s, n) : dh_out_string("", 0);
 }
 
 int64_t duktape_arg_int(void* c, int i) {
@@ -759,9 +772,9 @@ void duktape_push_int(void* c, int64_t v) {
     g_duk.duk_push_number((duk_context*)c, (double)v);
 }
 
-void duktape_push_str(void* c, const char* v) {
+void duktape_push_str(void* c, const void* v) {
     if (!c) return;
-    if (v) g_duk.duk_push_string((duk_context*)c, v);
+    if (v) g_duk.duk_push_lstring((duk_context*)c, aether_string_data(v) ? aether_string_data(v) : "", aether_string_length(v));
     else g_duk.duk_push_undefined((duk_context*)c);
 }
 
@@ -805,23 +818,23 @@ int duktape_run_sandboxed_with_map(void* perms, const char* code,
 void* duktape_vm_new(void) { duktape_init(); return NULL; }
 void duktape_vm_free(void* c) { (void)c; }
 int duktape_vm_register(void* c, const char* name, void* host_fn) { (void)c; (void)name; (void)host_fn; return -1; }
-void duktape_vm_set_global_str(void* c, const char* name, const char* value) { (void)c; (void)name; (void)value; }
+void duktape_vm_set_global_str(void* c, const char* name, const void* value) { (void)c; (void)name; (void)value; }
 void duktape_vm_set_global_int(void* c, const char* name, int64_t value) { (void)c; (void)name; (void)value; }
 void duktape_vm_set_global_strlist(void* c, const char* name, void* items) { (void)c; (void)name; (void)items; }
 int duktape_vm_eval(void* c, const char* code) { (void)c; (void)code; return -1; }
 int duktape_vm_result_type(void* c) { (void)c; return 0; }
 int64_t duktape_vm_result_int(void* c) { (void)c; return 0; }
-const char* duktape_vm_result_str(void* c) { (void)c; return ""; }
+const void* duktape_vm_result_str(void* c) { (void)c; return ""; }
 int duktape_vm_result_bool(void* c) { (void)c; return 0; }
 void duktape_vm_pop_result(void* c) { (void)c; }
 const char* duktape_vm_set_instruction_limit(void* c, int64_t budget, int every) { (void)c; (void)budget; (void)every; return "execution limit unavailable: libduktape built without DUK_USE_EXEC_TIMEOUT_CHECK"; }
 int duktape_arg_count(void* c) { (void)c; return 0; }
 int duktape_arg_type(void* c, int i) { (void)c; (void)i; return 0; }
-const char* duktape_arg_str(void* c, int i) { (void)c; (void)i; return ""; }
+const void* duktape_arg_str(void* c, int i) { (void)c; (void)i; return ""; }
 int64_t duktape_arg_int(void* c, int i) { (void)c; (void)i; return 0; }
 int duktape_arg_bool(void* c, int i) { (void)c; (void)i; return 0; }
 void duktape_push_int(void* c, int64_t v) { (void)c; (void)v; }
-void duktape_push_str(void* c, const char* v) { (void)c; (void)v; }
+void duktape_push_str(void* c, const void* v) { (void)c; (void)v; }
 void duktape_push_bool(void* c, int v) { (void)c; (void)v; }
 void duktape_push_nil(void* c) { (void)c; }
 void duktape_push_double(void* c, double v) { (void)c; (void)v; }

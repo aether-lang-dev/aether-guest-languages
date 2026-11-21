@@ -1,0 +1,41 @@
+// inproc: what every language's in-process boundary host shares (the host half
+// of the shared boundary tests, run against the bridge in this process;
+// tests/boundary.py judges the output). A language's own host
+// (<lang>/containment/boundary_host.ae) registers four functions through its
+// bridge's real API and runs one script; this module holds only what is not
+// about a language: the environment the harness passes in, and the output
+// lines, the same ones tests/lib/boundary prints for the contained child:
+//
+//   WIRE <n> <args as the host saw them, a JSON array>
+//   GIVE <n> ...   REFUSE <n> ...   SAY <n> ...   NOAPI <n> <why>
+//   END <n> <DONE|ERROR> <text>
+//
+// "What the host saw" is rendered by the host from the typed values its
+// bridge's accessors give it, never from a wire: a value the accessors lose
+// (a float read as an int, a table that is only a tag) shows as the lost value.
+// NOAPI says the bridge has no call that could express the case (it reads n/a).
+
+exports(emit, quote, script, give_text, limited, upper, direction)
+
+import std.os
+import std.string
+import std.guest
+
+// One output line, length-prefixed so that nothing the guest chose can forge
+// or split another: TAG, the text's length in bytes, then the text itself.
+emit(tag: string, t: string) {
+    println("${tag} ${string.length(t)} ${t}")
+}
+
+// A JSON string literal for `s`.
+quote(s: string) -> string { return guest.json_string(s) }
+
+script() -> string { return os.getenv("GHL_BOUNDARY_SCRIPT") }
+// The JSON text the harness wants the host to give the guest.
+give_text() -> string { return os.getenv("GHL_BOUNDARY_GIVE") }
+// 1 when the harness is running the loop case: the host sets its bridge's limit.
+limited() -> int { if os.getenv("GHL_BOUNDARY_LIMIT") == "1" { return 1 } return 0 }
+upper() -> int { if os.getenv("GHL_BOUNDARY_UPPER") == "1" { return 1 } return 0 }
+// "up" while the harness is judging a value the script sends to the host (the value to
+// give is then unused), "down" for one the host gives the script, "" otherwise.
+direction() -> string { return os.getenv("GHL_BOUNDARY_DIR") }

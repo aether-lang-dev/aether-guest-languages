@@ -261,6 +261,14 @@ main() {
             spec.assert_true(string.contains(tcl.vm_result_str(vm), "tcl_vm_set_global_str(BAD): the value: refused") == 1, "and names the global")
             spec.assert_eq(ev(vm, "info exists BAD"), 0, "the eval after that runs")
             spec.assert_eq_long(tcl.vm_result_int(vm), 0, "and the global was not set")
+            // a real NUL: an Aether string carries one, a C string would have been cut at it
+            tcl.vm_set_global_str(vm, "REAL", "a\0b")
+            spec.assert_eq(ev(vm, "expr 1"), -1, "a global set from a string with a real NUL: the next eval does not run")
+            spec.assert_true(string.contains(tcl.vm_result_str(vm), "tcl_vm_set_global_str(REAL): the value: refused") == 1, "and names the global")
+            spec.assert_eq(ev(vm, "info exists REAL"), 0, "the eval after that runs")
+            spec.assert_eq_long(tcl.vm_result_int(vm), 0, "and the global was not set (not set to a)")
+            spec.assert_eq(ev(vm, "a\0b"), -1, "a script with a real NUL in it")
+            spec.assert_true(string.contains(tcl.vm_result_str(vm), "the script: refused") == 1, "is refused, not run as the script a")
             spec.assert_eq(ev(vm, ghl_t_overlong_nul()), -1, "a script with C0 80 in it")
             spec.assert_true(string.contains(tcl.vm_result_str(vm), "the script: refused") == 1, "is refused")
             // nothing was changed on the way: a string without one still works

@@ -74,13 +74,13 @@ extern duktape_finalize()
 extern duktape_vm_new() -> ptr
 extern duktape_vm_free(vm: ptr)
 extern duktape_vm_register(vm: ptr, name: string, host_fn: ptr) -> int
-extern duktape_vm_set_global_str(vm: ptr, name: string, value: string)
+extern duktape_vm_set_global_str(vm: ptr, name: string, value: @aether string)
 extern duktape_vm_set_global_int(vm: ptr, name: string, value: long)
 extern duktape_vm_set_global_strlist(vm: ptr, name: string, items: ptr)
 extern duktape_vm_eval(vm: ptr, code: string) -> int
 extern duktape_vm_result_type(vm: ptr) -> int
 extern duktape_vm_result_int(vm: ptr) -> long
-extern duktape_vm_result_str(vm: ptr) -> string
+extern duktape_vm_result_str(vm: ptr) -> string @heap
 extern duktape_vm_result_bool(vm: ptr) -> int
 extern duktape_vm_pop_result(vm: ptr)
 extern duktape_vm_set_instruction_limit(vm: ptr, budget: long, every: int) -> string
@@ -88,11 +88,11 @@ extern duktape_vm_set_instruction_limit(vm: ptr, budget: long, every: int) -> st
 // --- Callback-side stack API (used INSIDE a registered host fn) ------------
 extern duktape_arg_count(vm: ptr) -> int
 extern duktape_arg_type(vm: ptr, i: int) -> int
-extern duktape_arg_str(vm: ptr, i: int) -> string
+extern duktape_arg_str(vm: ptr, i: int) -> string @heap
 extern duktape_arg_int(vm: ptr, i: int) -> long
 extern duktape_arg_bool(vm: ptr, i: int) -> int
 extern duktape_push_int(vm: ptr, v: long)
-extern duktape_push_str(vm: ptr, v: string)
+extern duktape_push_str(vm: ptr, v: @aether string)
 extern duktape_push_bool(vm: ptr, v: int)
 extern duktape_push_nil(vm: ptr)
 extern duktape_push_double(vm: ptr, v: float)

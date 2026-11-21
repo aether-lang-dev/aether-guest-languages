@@ -98,7 +98,9 @@ for lang in $langs; do
         done
         echo "== boundary table ($lang)"
         if command -v python3 > /dev/null 2>&1; then
-            if [ "$parity" = write ]; then python3 -I "$SCRIPT_DIR/boundary_table.py" write "$lang"; else python3 -I "$SCRIPT_DIR/boundary_table.py" check "$lang" || fails=$((fails + 1)); fi
+            for m in "" inproc; do
+                if [ "$parity" = write ]; then python3 -I "$SCRIPT_DIR/boundary_table.py" write "$lang" $m; else python3 -I "$SCRIPT_DIR/boundary_table.py" check "$lang" $m || fails=$((fails + 1)); fi
+            done
         fi
         echo "== parity ($lang)"
         # A language may say its README table is not for this host's build

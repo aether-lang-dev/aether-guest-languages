@@ -13,9 +13,9 @@ void aether_perl_finalize(void);
 const char* aether_perl_last_error(void);
 int aether_perl_register(const char* name, void* fn);
 int aether_perl_arg_count(void* ctx);
-const char* aether_perl_arg_str(void* ctx, int i);
+const void* aether_perl_arg_str(void* ctx, int i);
 int64_t aether_perl_arg_int(void* ctx, int i);
-void aether_perl_push_str(void* ctx, const char* v);
+void aether_perl_push_str(void* ctx, const void* v);
 void aether_perl_push_int(void* ctx, int64_t v);
 int aether_perl_raise_error(void* ctx, const char* msg);
 

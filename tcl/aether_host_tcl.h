@@ -14,10 +14,10 @@ void tcl_finalize(void);
 void* tcl_vm_new(void);
 void tcl_vm_free(void* vm);
 int tcl_vm_register(void* vm, const char* name, void* host_fn);
-void tcl_vm_set_global_str(void* vm, const char* name, const char* value);
+void tcl_vm_set_global_str(void* vm, const char* name, const void* value);
 void tcl_vm_set_global_int(void* vm, const char* name, int64_t value);
 void tcl_vm_set_global_strlist(void* vm, const char* name, void* items);
-int tcl_vm_eval(void* vm, const char* code);
+int tcl_vm_eval(void* vm, const void* code);
 int tcl_vm_result_type(void* vm);
 int64_t tcl_vm_result_int(void* vm);
 double tcl_vm_result_double(void* vm);
@@ -35,8 +35,8 @@ const char* tcl_arg_str(void* vm, int i);
 void tcl_push_int(void* vm, int64_t v);
 void tcl_push_double(void* vm, double v);
 void tcl_push_bool(void* vm, int v);
-void tcl_push_str(void* vm, const char* v);
+void tcl_push_str(void* vm, const void* v);
 void tcl_push_nil(void* vm);
-int tcl_raise_error(void* vm, const char* msg);
+int tcl_raise_error(void* vm, const void* msg);
 
 #endif

@@ -367,6 +367,33 @@ static const char* string_ptr(VALUE v) {
     return g_rb.rb_string_value_ptr(&s);
 }
 
+// Strings that cross carry their length, so a NUL inside one is not a
+// terminator: a Ruby String holds one, and a C string cannot. What the host
+// reads (an argument, a result) is returned as an Aether string made from the
+// String's bytes and byte length; a string the host gives arrives as an Aether
+// string and is built with its length (aether_string_data and
+// aether_string_length read either shape).
+extern size_t aether_string_length(const void*);
+extern void* string_alloc_inline(size_t length);
+// The String's byte length (a value that is not a String is read as its to_s first).
+static size_t string_len(VALUE v) {
+    volatile VALUE s = v;
+    if (g_rb.rb_obj_class(s) != *g_rb.rb_cString) {
+        int st = 0;
+        s = g_rb.rb_protect(as_string_thunk, s, &st);
+        if (st) { g_rb.rb_set_errinfo(bridge_qnil); return 0; }
+    }
+    VALUE n = g_rb.f_rb_funcall(s, g_rb.f_rb_intern("bytesize"), 0);
+    long l = (long)g_rb.rb_num2ll(n);
+    return l < 0 ? 0 : (size_t)l;
+}
+static const void* ae_rb_string(const char* p, size_t n) {
+    void* r = string_alloc_inline(n);
+    if (!r) return NULL;
+    if (n) memcpy((char*)aether_string_data(r), p, n);
+    return r;
+}
+
 // The pending exception's message, or NULL when there is none. With_class,
 // "Class: message". The result is malloc'd.
 static char* take_error(int with_class) {
@@ -575,18 +602,12 @@ int ruby_arg_type(void* ctx, int i) {
 
 // A string argument (to_s of other types; "" for nil), valid until the
 // callback returns.
-const char* ruby_arg_str(void* ctx, int i) {
+const void* ruby_arg_str(void* ctx, int i) {
     ae_rb_call* c = (ae_rb_call*)ctx;
     const VALUE* a = arg_at(c, i);
-    if (!a || *a == bridge_qnil) return "";
-    char* copy = strdup(string_ptr(*a));
-    if (!copy) return "";
-    struct ae_rb_strs* n = (struct ae_rb_strs*)malloc(sizeof *n);
-    if (!n) { free(copy); return ""; }
-    n->s = copy;
-    n->next = c->strs;
-    c->strs = n;
-    return copy;
+    if (!a || *a == bridge_qnil) return ae_rb_string("", 0);
+    size_t n = string_len(*a);
+    return ae_rb_string(string_ptr(*a), n);
 }
 
 typedef struct { VALUE v; long long i; double d; } num_box;
@@ -627,8 +648,8 @@ void ruby_push_int(void* ctx, int64_t v) { if (ctx) ((ae_rb_call*)ctx)->ret = g_
 void ruby_push_double(void* ctx, double v) { if (ctx) ((ae_rb_call*)ctx)->ret = g_rb.rb_float_new(v); }
 void ruby_push_bool(void* ctx, int v) { if (ctx) ((ae_rb_call*)ctx)->ret = v ? bridge_qtrue : bridge_qfalse; }
 void ruby_push_nil(void* ctx) { if (ctx) ((ae_rb_call*)ctx)->ret = bridge_qnil; }
-void ruby_push_str(void* ctx, const char* v) {
-    if (ctx) ((ae_rb_call*)ctx)->ret = g_rb.rb_utf8_str_new(v ? v : "", (long)strlen(v ? v : ""));
+void ruby_push_str(void* ctx, const void* v) {
+    if (ctx) ((ae_rb_call*)ctx)->ret = g_rb.rb_utf8_str_new(aether_string_data(v) ? aether_string_data(v) : "", (long)aether_string_length(v));
 }
 
 // `return ruby.raise_error(ctx, msg)`: the script sees RuntimeError(msg)
@@ -699,6 +720,7 @@ int ruby_register(const char* name, void* host_fn) {
 }
 
 static char* g_result = NULL;
+static size_t g_result_len = 0;
 
 // --- the instruction limit ---------------------------------------------------
 //
@@ -764,7 +786,7 @@ static void limit_leave(int entered) {
 int ruby_eval(const char* code) {
     free(g_result);
     g_result = NULL;
-    if (!code || ruby_init_host() != 0) { g_result = strdup("Ruby is not available"); return -1; }
+    if (!code || ruby_init_host() != 0) { g_result = strdup("Ruby is not available"); g_result_len = strlen(g_result); return -1; }
     int state = 0;
     int entered = limit_budget > 0;
     limit_enter();
@@ -773,13 +795,21 @@ int ruby_eval(const char* code) {
     if (state) {
         g_result = take_error(1);
         if (!g_result) g_result = strdup("error");
+        g_result_len = strlen(g_result);
         return -1;
     }
-    g_result = strdup(v == bridge_qnil ? "" : string_ptr(v));
+    if (v == bridge_qnil) {
+        g_result = strdup("");
+        g_result_len = 0;
+    } else {
+        size_t n = string_len(v);
+        g_result = (char*)malloc(n + 1);
+        if (g_result) { memcpy(g_result, string_ptr(v), n); g_result[n] = 0; g_result_len = n; }
+    }
     return 0;
 }
 
-const char* ruby_result_str(void) { return g_result ? g_result : ""; }
+const void* ruby_result_str(void) { return g_result ? ae_rb_string(g_result, g_result_len) : ae_rb_string("", 0); }
 
 #else
 #include <stdio.h>

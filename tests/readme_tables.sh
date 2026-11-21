@@ -129,6 +129,17 @@ def types_cell(res):
         return "both ways: " + one(up, upno)
     return "guest to host: %s<br>host to guest, passed back: %s" % (one(up, upno), one(dn, dnno))
 
+def inproc_has_calls(res):
+    return res.get(("nest", "-"), "n/a") != "n/a" or res.get(("refuse", "-"), "n/a") != "n/a"
+
+def duplex_inproc_cell(res):
+    loop = res.get(("loop", "-"), "n/a")
+    lim = "a limit stops a loop" if loop == "stopped by the limit" else ("nothing stops a loop (no limit)" if loop == "n/a" else "a limit on a loop: " + loop)
+    if not inproc_has_calls(res):
+        return "no host function: the script and the host exchange strings through the shared map; no cancel in-process; %s" % lim
+    nest = "calls nest in an expression" if res.get(("nest", "-")) == "ok" else "nested calls: " + res.get(("nest", "-"), "n/a")
+    return "the host calls the guest and the guest calls back mid-eval, one thread; %s; no cancel in-process; %s" % (nest, lim)
+
 def duplex_cell(res):
     if not any(v == "ok" for k, v in res.items() if k[0] in ("str", "int")):
         return "no host calls cross"
@@ -142,11 +153,25 @@ def duplex_cell(res):
         cancel = "cancel: loop %s, call %s" % (loop, wait)
     return "guest starts every exchange, host answers or cancels; %s; %s" % (nest, cancel)
 
-def callbacks_cell(res):
-    if not any(v == "ok" for k, v in res.items() if k[0] in ("str", "int")):
+def callbacks_cell(res, inproc=False):
+    if not inproc and not any(v == "ok" for k, v in res.items() if k[0] in ("str", "int")):
         return "none: no host function is called"
     r = res.get(("refuse", "-"), "n/a")
+    if inproc:
+        if not inproc_has_calls(res):
+            return "none: the host registers no function"
+        return "by name; argument and return types as in types; an error raised by the host function: " + r
     return "by name; argument and return types as in types; a `FAIL` answer: " + r
+
+def inproc_cells(lang):
+    """(transport, types, duplex, callbacks) from the Linux columns of the README's in-process grid, or None."""
+    text = open("%s/%s/README.md" % (root, lang)).read()
+    res = bt.parse_columns(text, bt.INPROC, 0)
+    if res is None:
+        return None
+    mac = bt.mac_differences(text)
+    transport = "direct call" + ("; macOS differs in: " + ", ".join(mac) if mac else "; macOS: the same")
+    return (transport, types_cell(res), duplex_inproc_cell(res), callbacks_cell(res, True))
 
 def transport_cell(res, extra):
     s60 = "a 60 KB str crosses" if res.get(("str-60k", "up")) == "ok" else "a 60 KB str does not cross"
@@ -232,6 +257,8 @@ bh = next(i for i in range(bb, be) if lines[i].startswith("| Language"))
 bcols = [c.strip() for c in lines[bh].strip("|").split("|")]
 gen = ["Child: transport (generated)", "Child: types (generated)", "Child: duplex (generated)", "Child: callbacks (generated)"]
 gi = [bcols.index(g) for g in gen]
+gen_in = ["In-process: transport (generated)", "In-process: types (generated)", "In-process: duplex (generated)", "In-process: callbacks (generated)"]
+gii = [bcols.index(g) for g in gen_in]
 for i in range(bh + 2, be):
     if not lines[i].startswith("|"):
         continue
@@ -249,6 +276,13 @@ for i in range(bh + 2, be):
             print("  [FAIL] readme tables: %s: the README table says its child does not start, and its parity table says otherwise" % lang)
             bad += 1
     for ix, w in zip(gi, want):
+        if cells[ix] != w:
+            if what == "check":
+                print("  [FAIL] readme tables: %s, column %r: the README says %r, the tests say %r" % (lang, bcols[ix], cells[ix], w))
+                bad += 1
+            cells[ix] = w
+    win = inproc_cells(lang) or ("not run: no in-process boundary host yet",) * 4
+    for ix, w in zip(gii, win):
         if cells[ix] != w:
             if what == "check":
                 print("  [FAIL] readme tables: %s, column %r: the README says %r, the tests say %r" % (lang, bcols[ix], cells[ix], w))

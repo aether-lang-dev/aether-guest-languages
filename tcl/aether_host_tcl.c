@@ -318,6 +318,22 @@ static Tcl_Obj* ae_tcl_new_str(const char* in, int* status) {
     return o;
 }
 
+extern const char* aether_string_data(const void*);
+extern size_t aether_string_length(const void*);
+
+/* A string the host gave, as an Aether string with its length: a NUL inside it
+ * (the length is more than the C string's) is refused here, since a C string
+ * would have been cut at it. */
+static Tcl_Obj* ae_tcl_new_host_str(const void* v, int* status) {
+    const char* d = aether_string_data(v);
+    if (!d) d = "";
+    if (v && aether_string_length(v) != strlen(d)) {
+        if (status) *status = AE_STR_NUL;
+        return NULL;
+    }
+    return ae_tcl_new_str(d, status);
+}
+
 /* A refusal as a message: "<what>: refused: it holds <reason>". */
 static void ae_tcl_refusal(char* buf, size_t n, const char* what, int status) {
     snprintf(buf, n, "%s: refused: it holds %s", what, ae_tcl_reason(status));
@@ -949,11 +965,11 @@ static void ae_tcl_set_global(AeTclVm* vm, const char* name, Tcl_Obj* value) {
     ae_tcl_decr(value);
 }
 
-void tcl_vm_set_global_str(void* p, const char* name, const char* value) {
+void tcl_vm_set_global_str(void* p, const char* name, const void* value) {
     AeTclVm* vm = (AeTclVm*)p;
     if (!vm || !name || !ae_tcl_on_owner(vm)) return;
     int st;
-    Tcl_Obj* o = ae_tcl_new_str(value, &st);
+    Tcl_Obj* o = ae_tcl_new_host_str(value, &st);
     if (!o) {
         char what[200];
         snprintf(what, sizeof what, "tcl_vm_set_global_str(%s): the value", name);
@@ -1066,7 +1082,8 @@ static int ae_tcl_return_code(Tcl_Interp* interp) {
  * its limits only inside compiled code, every few dozen instructions, so a
  * top-level `while 1 {incr i}` run as a string never reaches a check: each
  * pass of its body is a fresh compiled run too short to get there. */
-int tcl_vm_eval(void* p, const char* code) {
+int tcl_vm_eval(void* p, const void* codev) {
+    const char* code = aether_string_data(codev);
     AeTclVm* vm = (AeTclVm*)p;
     if (!vm) return -1;
     if (!ae_tcl_on_owner(vm)) {
@@ -1084,7 +1101,7 @@ int tcl_vm_eval(void* p, const char* code) {
         script = NULL;
         cst = -1;
     } else {
-        script = ae_tcl_new_str(code, &cst);
+        script = ae_tcl_new_host_str(codev, &cst);
     }
     if (!script) {
         char msg[600];
@@ -1252,10 +1269,10 @@ void tcl_push_double(void* p, double v) {
 void tcl_push_bool(void* p, int v) {
     if (ae_tcl_in_callback(p)) ae_tcl_push(p, g_tcl.Tcl_NewWideIntObj(v != 0));
 }
-void tcl_push_str(void* p, const char* v) {
+void tcl_push_str(void* p, const void* v) {
     if (!ae_tcl_in_callback(p)) return;
     int st;
-    Tcl_Obj* o = ae_tcl_new_str(v, &st);
+    Tcl_Obj* o = ae_tcl_new_host_str(v, &st);
     if (o) { ae_tcl_push(p, o); return; }
     /* The host's string cannot be given to the script as it is: the call fails
      * with the reason, in the script, instead of returning something else. */
@@ -1268,11 +1285,11 @@ void tcl_push_nil(void* p) {
     if (ae_tcl_in_callback(p)) ae_tcl_push(p, NULL);
 }
 
-int tcl_raise_error(void* p, const char* msg) {
+int tcl_raise_error(void* p, const void* msg) {
     AeTclVm* vm = (AeTclVm*)p;
     if (!vm || !vm->frame) return 0;
     int st;
-    Tcl_Obj* o = ae_tcl_new_str(msg ? msg : "error", &st);
+    Tcl_Obj* o = msg ? ae_tcl_new_host_str(msg, &st) : ae_tcl_new_str("error", &st);
     if (!o) {
         char m2[600];
         ae_tcl_refusal(m2, sizeof m2, "the error message the host raised", st);
@@ -1299,10 +1316,10 @@ int tcl_run_sandboxed_with_map(void* perms, const char* code, uint64_t token) {
 void* tcl_vm_new(void) { tcl_init(); return NULL; }
 void tcl_vm_free(void* vm) { (void)vm; }
 int tcl_vm_register(void* vm, const char* name, void* host_fn) { (void)vm; (void)name; (void)host_fn; return -1; }
-void tcl_vm_set_global_str(void* vm, const char* name, const char* value) { (void)vm; (void)name; (void)value; }
+void tcl_vm_set_global_str(void* vm, const char* name, const void* value) { (void)vm; (void)name; (void)value; }
 void tcl_vm_set_global_int(void* vm, const char* name, int64_t value) { (void)vm; (void)name; (void)value; }
 void tcl_vm_set_global_strlist(void* vm, const char* name, void* items) { (void)vm; (void)name; (void)items; }
-int tcl_vm_eval(void* vm, const char* code) { (void)vm; (void)code; return -1; }
+int tcl_vm_eval(void* vm, const void* code) { (void)vm; (void)code; return -1; }
 int tcl_vm_result_type(void* vm) { (void)vm; return 0; }
 int64_t tcl_vm_result_int(void* vm) { (void)vm; return 0; }
 double tcl_vm_result_double(void* vm) { (void)vm; return 0.0; }
@@ -1320,7 +1337,7 @@ const char* tcl_arg_str(void* vm, int i) { (void)vm; (void)i; return ""; }
 void tcl_push_int(void* vm, int64_t v) { (void)vm; (void)v; }
 void tcl_push_double(void* vm, double v) { (void)vm; (void)v; }
 void tcl_push_bool(void* vm, int v) { (void)vm; (void)v; }
-void tcl_push_str(void* vm, const char* v) { (void)vm; (void)v; }
+void tcl_push_str(void* vm, const void* v) { (void)vm; (void)v; }
 void tcl_push_nil(void* vm) { (void)vm; }
-int tcl_raise_error(void* vm, const char* msg) { (void)vm; (void)msg; return 0; }
+int tcl_raise_error(void* vm, const void* msg) { (void)vm; (void)msg; return 0; }
 #endif

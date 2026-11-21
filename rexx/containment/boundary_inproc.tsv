@@ -1,0 +1,15 @@
+# The shared boundary tests (tests/boundary.py), in-process, in this language: the bridge has only the shared map to pass values (the host puts the value under "in" and reads "out"), so up and down are map calls. @V@ is the value written here, @ID@ the case; a case with no line is one this bridge cannot express.
+up	LET put = AETHER_MAP_PUT('out', @V@)
+down	LET v = AETHER_MAP_GET('in')@NL@LET put = AETHER_MAP_PUT('out', v)
+loop	DO FOREVER@NL@END
+big-up	LET put = AETHER_MAP_PUT('out', copies('x', 100000))
+v:str	'hello'
+v:str-empty	''
+v:str-nonascii	'héllo ✓ 日本'
+v:str-astral	'a😀b 𝒳'
+v:str-60k	copies('x', 60000)
+v:int	42
+v:int-neg	-7
+v:int-max	9223372036854775807
+v:int-min	-9223372036854775808
+v:float	1.5

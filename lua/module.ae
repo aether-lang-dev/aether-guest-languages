@@ -92,7 +92,7 @@ extern lua_vm_free(vm: ptr)
 extern lua_vm_register(vm: ptr, name: string, host_fn: ptr) -> int
 
 // Inject globals before a run.
-extern lua_vm_set_global_str(vm: ptr, name: string, value: string)
+extern lua_vm_set_global_str(vm: ptr, name: string, value: @aether string)
 extern lua_vm_set_global_int(vm: ptr, name: string, value: long)
 extern lua_vm_set_global_strlist(vm: ptr, name: string, items: ptr)
 
@@ -103,7 +103,7 @@ extern lua_vm_eval(vm: ptr, code: string) -> int
 // Typed top-of-stack readers (the eval result).
 extern lua_vm_result_type(vm: ptr) -> int
 extern lua_vm_result_int(vm: ptr) -> long
-extern lua_vm_result_str(vm: ptr) -> string
+extern lua_vm_result_str(vm: ptr) -> string @heap
 extern lua_vm_result_bool(vm: ptr) -> int
 extern lua_vm_pop_result(vm: ptr)
 
@@ -115,11 +115,11 @@ extern lua_vm_set_instruction_limit(vm: ptr, budget: long, every: int)
 // Args are at 1..arg_count(vm); push results then return the count.
 extern lua_arg_count(vm: ptr) -> int
 extern lua_arg_type(vm: ptr, i: int) -> int
-extern lua_arg_str(vm: ptr, i: int) -> string
+extern lua_arg_str(vm: ptr, i: int) -> string @heap
 extern lua_arg_int(vm: ptr, i: int) -> long
 extern lua_arg_bool(vm: ptr, i: int) -> int
 extern lua_push_int(vm: ptr, v: long)
-extern lua_push_str(vm: ptr, v: string)
+extern lua_push_str(vm: ptr, v: @aether string)
 extern lua_push_bool(vm: ptr, v: int)
 extern lua_push_nil(vm: ptr)
 // A RESP3 Double — pushed as a Lua number (integral) or precise string.
@@ -141,10 +141,10 @@ extern lua_raise_error(vm: ptr, msg: string) -> int
 //   lua.table_finish(vm)                 // leave it on the stack
 //   return 1
 extern lua_table_begin(vm: ptr, narr: int, nrec: int)
-extern lua_table_seti_str(vm: ptr, i: int, v: string)
+extern lua_table_seti_str(vm: ptr, i: int, v: @aether string)
 extern lua_table_seti_int(vm: ptr, i: int, v: long)
 extern lua_table_seti_bool(vm: ptr, i: int, v: int)
-extern lua_table_set_str(vm: ptr, key: string, v: string)
+extern lua_table_set_str(vm: ptr, key: string, v: @aether string)
 extern lua_table_set_int(vm: ptr, key: string, v: long)
 extern lua_table_set_bool(vm: ptr, key: string, v: int)
 extern lua_table_end_seti(vm: ptr, i: int)

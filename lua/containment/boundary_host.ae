@@ -1,0 +1,157 @@
+// The shared boundary tests (tests/boundary.py) against Lua's in-process
+// bridge, through the API it really has: lua.vm_*, a callback's typed
+// arg_* readers and push_* writers, and the table builder. Usage:
+//
+//   boundary_host            (the script and the value to give come from the
+//                             environment, tests/lib/inproc says which)
+//
+// echo(v) prints what the typed readers say it received (a table is only a
+// tag; a float is whatever the readers make of it) and answers with it. give(id)
+// builds the harness's value with the typed writers, as far as the bridge has
+// one (the table builder has no float or nil; where that is the case it prints
+// NOAPI and the case reads n/a). refuse(m) raises an error. Nothing here widens
+// the bridge: a value it loses is the result.
+
+import lua
+import inproc
+import std.json
+import std.os
+import std.string
+
+extern exit(code: int)
+
+// The JSON text of the one argument as the typed readers give it.
+fn render(vm: ptr, i: int) -> string {
+    t = lua.arg_type(vm, i)
+    if t == lua.LUA_TNIL { return "null" }
+    if t == lua.LUA_TBOOL {
+        if lua.arg_bool(vm, i) == 1 { return "true" }
+        return "false"
+    }
+    if t == lua.LUA_TINT { return "${lua.arg_int(vm, i)}" }
+    if t == lua.LUA_TSTR { return inproc.quote(lua.arg_str(vm, i)) }
+    if t == lua.LUA_TTABLE { return "\"<a table>\"" }
+    return "\"<other type ${t}>\""
+}
+
+@c_callback
+host_echo(vm: ptr) -> int {
+    n = lua.arg_count(vm)
+    out = "["
+    i = 1
+    while i <= n {
+        if i > 1 { out = "${out}," }
+        out = "${out}${render(vm, i)}"
+        i = i + 1
+    }
+    inproc.emit("WIRE", "${out}]")
+    if n < 1 { return 0 }
+    t = lua.arg_type(vm, 1)
+    if t == lua.LUA_TSTR { lua.push_str(vm, lua.arg_str(vm, 1)) }
+    else if t == lua.LUA_TINT { lua.push_int(vm, lua.arg_int(vm, 1)) }
+    else if t == lua.LUA_TBOOL { lua.push_bool(vm, lua.arg_bool(vm, 1)) }
+    else { lua.push_nil(vm) }
+    return 1
+}
+
+@c_callback
+host_refuse(vm: ptr) -> int {
+    inproc.emit("REFUSE", "")
+    return lua.raise_error(vm, "refused by the host")
+}
+
+// Fills the table the builder has open from a JSON array or object. 0 when it
+// could, 1 when the builder has no way to put a value of that kind in (a
+// float, a null).
+fn fill(vm: ptr, v: ptr) -> int {
+    kind = json.type(v)
+    if kind == json.JSON_ARRAY {
+        n = json.array_size(v)
+        i = 0
+        while i < n {
+            ea, _ar = json.array_get(v, i)
+            k = json.type(ea)
+            if k == json.JSON_STRING { sa, _xa = json.get_string(ea); lua.table_seti_str(vm, i + 1, sa) }
+            else if k == json.JSON_BOOL { lua.table_seti_bool(vm, i + 1, json.json_get_bool(ea)) }
+            else if k == json.JSON_NUMBER {
+                if json.json_is_integer(ea) == 0 { return 1 }
+                lua.table_seti_int(vm, i + 1, json.json_get_long(ea))
+            } else if k == json.JSON_NULL { return 1 }
+            else {
+                lua.table_begin(vm, 0, 0)
+                if fill(vm, ea) == 1 { return 1 }
+                lua.table_end_seti(vm, i + 1)
+            }
+            i = i + 1
+        }
+        return 0
+    }
+    n = json.object_size(v)
+    i = 0
+    while i < n {
+        key, e, _er = json.object_entry(v, i)
+        k = json.type(e)
+        if k == json.JSON_STRING { s, _x = json.get_string(e); lua.table_set_str(vm, key, s) }
+        else if k == json.JSON_BOOL { lua.table_set_bool(vm, key, json.json_get_bool(e)) }
+        else if k == json.JSON_NUMBER {
+            if json.json_is_integer(e) == 0 { return 1 }
+            lua.table_set_int(vm, key, json.json_get_long(e))
+        } else if k == json.JSON_NULL { return 1 }
+        else {
+            lua.table_begin(vm, 0, 0)
+            if fill(vm, e) == 1 { return 1 }
+            lua.table_end_setfield(vm, key)
+        }
+        i = i + 1
+    }
+    return 0
+}
+
+@c_callback
+host_give(vm: ptr) -> int {
+    text = inproc.give_text()
+    v, err = json.parse(text)
+    if err != "" {
+        inproc.emit("NOAPI", "the harness's value is not JSON: ${err}")
+        return 0
+    }
+    kind = json.type(v)
+    if kind == json.JSON_NULL { lua.push_nil(vm); return 1 }
+    if kind == json.JSON_BOOL { lua.push_bool(vm, json.json_get_bool(v)); return 1 }
+    if kind == json.JSON_STRING {
+        // the length-aware read: a string with a NUL in it is the host's to hand over
+        s, _x = json.get_string(v)
+        lua.push_str(vm, s)
+        return 1
+    }
+    if kind == json.JSON_NUMBER {
+        if json.json_is_integer(v) == 1 {
+            // json parses a number past 2^53 exactly only through get_long
+            lua.push_int(vm, json.json_get_long(v))
+        } else {
+            lua.push_double(vm, json.json_get_number(v))
+        }
+        return 1
+    }
+    lua.table_begin(vm, 0, 0)
+    if fill(vm, v) == 1 {
+        inproc.emit("NOAPI", "the table builder has no float or nil")
+        lua.push_nil(vm)
+        return 1
+    }
+    lua.table_finish(vm)
+    return 1
+}
+
+main() {
+    vm = lua.vm_new()
+    if vm == null { println("no lua"); exit(2) }
+    lua.vm_register(vm, "echo", host_echo)
+    lua.vm_register(vm, "give", host_give)
+    lua.vm_register(vm, "refuse", host_refuse)
+    if inproc.limited() == 1 { lua.vm_set_instruction_limit(vm, 200000, 100) }
+    rc = lua.vm_eval(vm, inproc.script())
+    if rc == 0 { inproc.emit("END", "DONE ") } else { inproc.emit("END", "ERROR ${lua.vm_result_str(vm)}") }
+    lua.vm_free(vm)
+    exit(0)
+}

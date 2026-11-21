@@ -78,12 +78,12 @@ extern tcl_vm_free(vm: ptr)
 // `name`, taken verbatim: "app.add" is called `app.add 2 3`, and
 // "app::add" lands in the namespace ::app.
 extern tcl_vm_register(vm: ptr, name: string, host_fn: ptr) -> int
-extern tcl_vm_set_global_str(vm: ptr, name: string, value: string)
+extern tcl_vm_set_global_str(vm: ptr, name: string, value: @aether string)
 extern tcl_vm_set_global_int(vm: ptr, name: string, value: long)
 extern tcl_vm_set_global_strlist(vm: ptr, name: string, items: ptr)
 // Runs at global level; 0 on success, -1 on an error, which is then the
 // result (TCL_TERR, its message as the string).
-extern tcl_vm_eval(vm: ptr, code: string) -> int
+extern tcl_vm_eval(vm: ptr, code: @aether string) -> int
 extern tcl_vm_result_type(vm: ptr) -> int
 extern tcl_vm_result_int(vm: ptr) -> long
 extern tcl_vm_result_double(vm: ptr) -> float
@@ -105,10 +105,10 @@ extern tcl_arg_int(vm: ptr, i: int) -> long
 extern tcl_arg_double(vm: ptr, i: int) -> float
 extern tcl_arg_bool(vm: ptr, i: int) -> int
 extern tcl_push_int(vm: ptr, v: long)
-extern tcl_push_str(vm: ptr, v: string)
+extern tcl_push_str(vm: ptr, v: @aether string)
 extern tcl_push_bool(vm: ptr, v: int)
 extern tcl_push_nil(vm: ptr)
 extern tcl_push_double(vm: ptr, v: float)
 // `return tcl.raise_error(vm, msg)`: the command fails with msg after the
 // callback has returned, so the callback's defers run.
-extern tcl_raise_error(vm: ptr, msg: string) -> int
+extern tcl_raise_error(vm: ptr, msg: @aether string) -> int

@@ -1,0 +1,102 @@
+// The shared boundary tests (tests/boundary.py) against CRuby's in-process
+// bridge, through the API it really has: ruby.init_host, register and eval, a callback's typed arg_*
+// readers and push_* writers. Usage: boundary_host (the script and the value to
+// give come from the environment; tests/lib/inproc says which).
+//
+// echo(v) prints what the typed readers say it received and answers with it;
+// give(id) builds the harness's value with the typed writers, as far as the
+// bridge has one (no table builder); refuse(m) raises an error. Nothing here widens the
+// bridge: a value it loses is the result, and a case it cannot express prints
+// NOAPI and reads n/a.
+
+import ruby
+import inproc
+import std.json
+import std.string
+
+extern exit(code: int)
+
+fn render(vm: ptr, i: int) -> string {
+    t = ruby.arg_type(vm, i)
+    if t == ruby.RB_TNIL { return "null" }
+    if t == ruby.RB_TBOOL {
+        if ruby.arg_bool(vm, i) == 1 { return "true" }
+        return "false"
+    }
+    if t == ruby.RB_TINT { return "${ruby.arg_int(vm, i)}" }
+    if t == ruby.RB_TFLOAT { return "${ruby.arg_double(vm, i)}" }
+    if t == ruby.RB_TSTR { return inproc.quote(ruby.arg_str(vm, i)) }
+    if t == ruby.RB_TOTHER { return "\"<a table or other object>\"" }
+    return "\"<other type ${t}>\""
+}
+
+@c_callback
+host_echo(vm: ptr) -> int {
+    n = ruby.arg_count(vm)
+    out = "["
+    i = 1
+    while i <= n {
+        if i > 1 { out = "${out}," }
+        out = "${out}${render(vm, i)}"
+        i = i + 1
+    }
+    inproc.emit("WIRE", "${out}]")
+    if n < 1 { return 0 }
+    t = ruby.arg_type(vm, 1)
+    if t == ruby.RB_TSTR { ruby.push_str(vm, ruby.arg_str(vm, 1)) }
+    else if t == ruby.RB_TINT { ruby.push_int(vm, ruby.arg_int(vm, 1)) }
+    else if t == ruby.RB_TBOOL { ruby.push_bool(vm, ruby.arg_bool(vm, 1)) }
+    else if t == ruby.RB_TFLOAT { ruby.push_double(vm, ruby.arg_double(vm, 1)) }
+    else { ruby.push_nil(vm) }
+    return 1
+}
+
+@c_callback
+host_refuse(vm: ptr) -> int {
+    inproc.emit("REFUSE", "")
+    return ruby.raise_error(vm, "refused by the host")
+}
+
+@c_callback
+host_give(vm: ptr) -> int {
+    v, err = json.parse(inproc.give_text())
+    if err != "" {
+        inproc.emit("NOAPI", "the harness's value is not JSON: ${err}")
+        return 0
+    }
+    kind = json.type(v)
+    if kind == json.JSON_NULL { ruby.push_nil(vm); return 1 }
+    if kind == json.JSON_BOOL { ruby.push_bool(vm, json.json_get_bool(v)); return 1 }
+    if kind == json.JSON_STRING {
+        s, _x = json.get_string(v)
+        ruby.push_str(vm, s)
+        return 1
+    }
+    if kind == json.JSON_NUMBER {
+        if json.json_is_integer(v) == 1 {
+            ruby.push_int(vm, json.json_get_long(v))
+        } else {
+            ruby.push_double(vm, json.json_get_number(v))
+        }
+        return 1
+    }
+    inproc.emit("NOAPI", "the bridge has no way to push a list or a hash")
+    return 0
+}
+
+main() {
+    if ruby.init_host() != 0 { println("no ruby runtime"); exit(2) }
+    ruby.register("echo", host_echo)
+    ruby.register("give", host_give)
+    ruby.register("refuse", host_refuse)
+    if inproc.limited() == 1 {
+        why = ruby.set_instruction_limit(200000)
+        if why != "" {
+            inproc.emit("NOAPI", why)
+            exit(0)
+        }
+    }
+    rc = ruby.eval(inproc.script())
+    if rc == 0 { inproc.emit("END", "DONE ") } else { inproc.emit("END", "ERROR ${ruby.result_str()}") }
+    exit(0)
+}

@@ -228,6 +228,7 @@ typedef struct {
     char** argv;        // decoded, NUL-terminated copies
     size_t* argl;
     char* result;       // the last push, or NULL
+    size_t result_len;
     char* error;        // raise_error's message, or NULL
 } PerlCall;
 
@@ -359,13 +360,13 @@ static int call_get(PerlInterpreter* p, SV* sv, MAGIC* mg) {
         c.argv = calloc((size_t)(c.argc > 0 ? c.argc : 1), sizeof(char*));
         c.argl = calloc((size_t)(c.argc > 0 ? c.argc : 1), sizeof(size_t));
         for (int i = 0; i < c.argc; i++) { c.argv[i] = dup_item(it[i + 2], ln[i + 2]); c.argl[i] = ln[i + 2]; }
-        c.result = NULL; c.error = NULL;
+        c.result = NULL; c.result_len = 0; c.error = NULL;
         int rc = fn(&c);
         if (rc == AE_PERL_RAISE || c.error) {
             const char* e = c.error ? c.error : "error";
             set_answer(p, sv, 'E', e, strlen(e));
         } else if (rc == 1 && c.result) {
-            set_answer(p, sv, 'O', c.result, strlen(c.result));
+            set_answer(p, sv, 'O', c.result, c.result_len);
         } else {
             set_answer(p, sv, 'N', "", 0);
         }
@@ -589,21 +590,38 @@ int aether_perl_register(const char* name, void* fn) {
 
 int aether_perl_arg_count(void* ctx) { return ctx ? ((PerlCall*)ctx)->argc : 0; }
 
-const char* aether_perl_arg_str(void* ctx, int i) {
+// Strings that cross carry their length, so a NUL inside one is not a
+// terminator: a Perl string holds one, and a C string cannot. What the host
+// reads (an argument) is returned as an Aether string made from the argument's
+// bytes and length, and a string the host pushes arrives as an Aether string and
+// is kept with its length (aether_string_data and aether_string_length read
+// either shape).
+extern const char* aether_string_data(const void*);
+extern size_t aether_string_length(const void*);
+extern void* string_alloc_inline(size_t length);
+
+const void* aether_perl_arg_str(void* ctx, int i) {
     PerlCall* c = (PerlCall*)ctx;
-    if (!c || i < 1 || i > c->argc) return "";
-    return c->argv[i - 1];
+    size_t n = (c && i >= 1 && i <= c->argc) ? c->argl[i - 1] : 0;
+    void* r = string_alloc_inline(n);
+    if (r && n) memcpy((char*)aether_string_data(r), c->argv[i - 1], n);
+    return r;
 }
 
 int64_t aether_perl_arg_int(void* ctx, int i) {
-    return strtoll(aether_perl_arg_str(ctx, i), NULL, 10);
+    PerlCall* c = (PerlCall*)ctx;
+    if (!c || i < 1 || i > c->argc) return 0;
+    return strtoll(c->argv[i - 1], NULL, 10);
 }
 
-void aether_perl_push_str(void* ctx, const char* v) {
+void aether_perl_push_str(void* ctx, const void* v) {
     PerlCall* c = (PerlCall*)ctx;
     if (!c) return;
     free(c->result);
-    c->result = strdup(v ? v : "");
+    size_t n = aether_string_length(v);
+    const char* d = aether_string_data(v);
+    c->result = (char*)malloc(n + 1);
+    if (c->result) { if (n) memcpy(c->result, d, n); c->result[n] = 0; c->result_len = n; }
 }
 
 void aether_perl_push_int(void* ctx, int64_t v) {
@@ -642,9 +660,9 @@ int aether_perl_run_sandboxed_with_map(void* perms, const char* code,
 int aether_perl_register(const char* name, void* fn) { (void)name; (void)fn; return aether_perl_init(); }
 const char* aether_perl_last_error(void) { return ""; }
 int aether_perl_arg_count(void* ctx) { (void)ctx; return 0; }
-const char* aether_perl_arg_str(void* ctx, int i) { (void)ctx; (void)i; return ""; }
+const void* aether_perl_arg_str(void* ctx, int i) { (void)ctx; (void)i; return ""; }
 int64_t aether_perl_arg_int(void* ctx, int i) { (void)ctx; (void)i; return 0; }
-void aether_perl_push_str(void* ctx, const char* v) { (void)ctx; (void)v; }
+void aether_perl_push_str(void* ctx, const void* v) { (void)ctx; (void)v; }
 void aether_perl_push_int(void* ctx, int64_t v) { (void)ctx; (void)v; }
 int aether_perl_raise_error(void* ctx, const char* msg) { (void)ctx; (void)msg; return -1; }
 #endif

@@ -1,0 +1,52 @@
+// The shared boundary tests (tests/boundary.py) against Rexx's in-process
+// bridge, through the API it really has: rexx.run_sandboxed_with_map (import rexx). A script can pass values to the
+// host and take them from it only as strings in the shared map, so that is what
+// this host uses: it puts the value to give under "in", runs the script, and
+// reads what the script put under "out" (what the host saw). There is no host
+// function to call, so the cases that need one (a call inside a call, an error
+// raised by the host) read n/a. Usage: boundary_host (the script and the value
+// to give come from the environment; tests/lib/inproc says which).
+
+@source("host_support.c")
+
+import rexx
+import policy
+import inproc
+import std.json
+import std.string
+
+extern exit(code: int)
+extern ghl_map_new() -> long
+extern ghl_map_put(key: string, value: string)
+extern ghl_map_get(key: string) -> string
+extern aether_shared_map_get_by_token(token: long, key: string) -> ptr
+
+main() {
+    token = ghl_map_new()
+    v, err = json.parse(inproc.give_text())
+    if inproc.direction() == "down" && err == "" {
+        kind = json.type(v)
+        if kind == json.JSON_STRING {
+            s, _x = json.get_string(v)
+            ghl_map_put("in", s)
+        } else if kind == json.JSON_NUMBER {
+            if json.json_is_integer(v) == 1 {
+                ghl_map_put("in", "${json.json_get_long(v)}")
+            } else {
+                ghl_map_put("in", "${json.json_get_number(v)}")
+            }
+        } else {
+            // Not a string or a number: the map holds strings, and which text stands for a
+            // null, a boolean or a table would be this host's invention, not the bridge's.
+            inproc.emit("NOAPI", "the shared map holds strings")
+            exit(0)
+        }
+    }
+    rc = rexx.run_sandboxed_with_map(policy.grants("-"), inproc.script(), token)
+    // What the script put under "out": the key is absent when it never did (the host's own
+    // keys are frozen against the script, so "out" is not put before the run).
+    p = aether_shared_map_get_by_token(token, "out")
+    if p != null { inproc.emit("WIRE", "[${inproc.quote(string.from_cstr(p))}]") }
+    if rc == 0 { inproc.emit("END", "DONE ") } else { inproc.emit("END", "ERROR run returned ${rc}") }
+    exit(0)
+}

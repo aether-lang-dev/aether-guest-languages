@@ -85,7 +85,7 @@ extern python_vm_free(vm: ptr)
 // Registers an Aether `@c_callback (vm: ptr) -> int` as a Python function.
 // "app.math.add" makes (or reuses) the modules app and app.math.
 extern python_vm_register(vm: ptr, name: string, host_fn: ptr) -> int
-extern python_vm_set_global_str(vm: ptr, name: string, value: string)
+extern python_vm_set_global_str(vm: ptr, name: string, value: @aether string)
 extern python_vm_set_global_int(vm: ptr, name: string, value: long)
 extern python_vm_set_global_strlist(vm: ptr, name: string, items: ptr)
 // An expression gives its value, statements give None. 0 on success, -1 on
@@ -98,7 +98,7 @@ extern python_vm_result_type(vm: ptr) -> int
 extern python_vm_result_int(vm: ptr) -> long
 extern python_vm_result_double(vm: ptr) -> float
 // A str result, or an error's message; "" for other types.
-extern python_vm_result_str(vm: ptr) -> string
+extern python_vm_result_str(vm: ptr) -> string @heap
 // 1 only for True.
 extern python_vm_result_bool(vm: ptr) -> int
 // A bytes result as a new std.bytes handle (caller frees); null otherwise.
@@ -115,13 +115,13 @@ extern python_vm_set_instruction_limit(vm: ptr, budget: long, every: int) -> str
 // callback's return value; return 1 to return it, 0 to return None.
 extern python_arg_count(vm: ptr) -> int
 extern python_arg_type(vm: ptr, i: int) -> int
-extern python_arg_str(vm: ptr, i: int) -> string
+extern python_arg_str(vm: ptr, i: int) -> string @heap
 extern python_arg_int(vm: ptr, i: int) -> long
 extern python_arg_bool(vm: ptr, i: int) -> int
 extern python_arg_double(vm: ptr, i: int) -> float
 extern python_arg_bytes(vm: ptr, i: int) -> ptr
 extern python_push_int(vm: ptr, v: long)
-extern python_push_str(vm: ptr, v: string)
+extern python_push_str(vm: ptr, v: @aether string)
 extern python_push_bool(vm: ptr, v: int)
 extern python_push_nil(vm: ptr)
 extern python_push_double(vm: ptr, v: float)

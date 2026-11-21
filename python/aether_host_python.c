@@ -46,6 +46,19 @@
 #endif
 
 #if AETHER_HAS_PYTHON
+// Strings that cross carry their length, so a NUL inside one is not a
+// terminator: a Python str holds one, and a C string cannot. What the host
+// reads (an argument, a result) is returned as an Aether string made from
+// Python's bytes and length, and a string the host gives arrives as an Aether
+// string and is built with its length (aether_string_data and
+// aether_string_length read either shape).
+// (declared by aether_string.h, which this file includes)
+static const void* ae_py_string(const char* p, size_t n) {
+    void* r = string_alloc_inline(n);
+    if (!r) return NULL;
+    if (n) memcpy((char*)aether_string_data(r), p, n);
+    return r;
+}
 #include "python_abi.h"
 #include <dlfcn.h>
 #include <stdio.h>
@@ -114,6 +127,7 @@ static struct {
     PyObject*     (*PyBool_FromLong)(long);
     // Strings & Bytes.
     PyObject*     (*PyUnicode_FromString)(const char*);
+    PyObject*     (*PyUnicode_FromStringAndSize)(const char*, Py_ssize_t);
     const char*   (*PyUnicode_AsUTF8AndSize)(PyObject*, Py_ssize_t*);
     PyObject*     (*PyBytes_FromStringAndSize)(const char*, Py_ssize_t);
     int           (*PyBytes_AsStringAndSize)(PyObject*, char**, Py_ssize_t*);
@@ -196,6 +210,7 @@ static int resolve_python_symbols(void* h) {
     RESOLVE(PyFloat_FromDouble,          "PyFloat_FromDouble");
     RESOLVE(PyBool_FromLong,             "PyBool_FromLong");
     RESOLVE(PyUnicode_FromString,        "PyUnicode_FromString");
+    RESOLVE(PyUnicode_FromStringAndSize, "PyUnicode_FromStringAndSize");
     RESOLVE(PyUnicode_AsUTF8AndSize,     "PyUnicode_AsUTF8AndSize");
     RESOLVE(PyBytes_FromStringAndSize,   "PyBytes_FromStringAndSize");
     RESOLVE(PyBytes_AsStringAndSize,     "PyBytes_AsStringAndSize");
@@ -526,6 +541,7 @@ struct AetherPythonVM {
     double    result_double;
     int       result_bool;
     char*     result_str;
+    size_t    result_len;
 
     // Per-call state of the callback now running; saved and restored around
     // each callback, so a nested eval's callbacks don't clobber it.
@@ -850,10 +866,10 @@ static void set_global(AetherPythonVM* vm, const char* name, PyObject* value) {
     if (value) g_py.Py_DecRef(value);   // the dict keeps its own
 }
 
-void python_vm_set_global_str(void* v, const char* name, const char* value) {
+void python_vm_set_global_str(void* v, const char* name, const void* value) {
     if (!v || !name) return;
     PyGILState_STATE gstate = g_py.PyGILState_Ensure();
-    set_global((AetherPythonVM*)v, name, g_py.PyUnicode_FromString(value ? value : ""));
+    set_global((AetherPythonVM*)v, name, g_py.PyUnicode_FromStringAndSize(aether_string_data(value) ? aether_string_data(value) : "", (Py_ssize_t)aether_string_length(value)));
     g_py.PyGILState_Release(gstate);
 }
 
@@ -980,7 +996,7 @@ int python_vm_eval(void* v, const char* code) {
             const char* utf8 = g_py.PyUnicode_AsUTF8AndSize(res, &len);
             if (utf8) {
                 vm->result_str = (char*)malloc((size_t)len + 1);
-                if (vm->result_str) memcpy(vm->result_str, utf8, (size_t)len + 1);
+                if (vm->result_str) { memcpy(vm->result_str, utf8, (size_t)len + 1); vm->result_len = (size_t)len; }
             }
         }
     }
@@ -990,6 +1006,7 @@ int python_vm_eval(void* v, const char* code) {
         clear_vm_result(vm);
         vm->result_type = AE_PY_TERR;
         vm->result_str = fetch_error_message();
+        vm->result_len = vm->result_str ? strlen(vm->result_str) : 0;
         rc = -1;   // fetching the error cleared it: the next call starts clean
     }
 
@@ -1013,10 +1030,10 @@ int python_vm_result_bool(void* v) {
     return v ? ((AetherPythonVM*)v)->result_bool : 0;
 }
 
-const char* python_vm_result_str(void* v) {
-    if (!v) return "";
+const void* python_vm_result_str(void* v) {
+    if (!v) return ae_py_string("", 0);
     AetherPythonVM* vm = (AetherPythonVM*)v;
-    return vm->result_str ? vm->result_str : "";
+    return vm->result_str ? ae_py_string(vm->result_str, vm->result_len) : ae_py_string("", 0);
 }
 
 void* python_vm_result_bytes(void* v) {
@@ -1068,12 +1085,13 @@ int python_arg_type(void* v, int i) {
 }
 
 // Valid until the callback returns (the args tuple holds the string).
-const char* python_arg_str(void* v, int i) {
+const void* python_arg_str(void* v, int i) {
     PyObject* obj = get_arg_obj((AetherPythonVM*)v, i);
-    if (!obj || !py_isa(obj, g_py.py_unicode_type)) return "";
-    const char* s = g_py.PyUnicode_AsUTF8AndSize(obj, NULL);
-    if (!s) { g_py.PyErr_Clear(); return ""; }
-    return s;
+    if (!obj || !py_isa(obj, g_py.py_unicode_type)) return ae_py_string("", 0);
+    Py_ssize_t n = 0;
+    const char* s = g_py.PyUnicode_AsUTF8AndSize(obj, &n);
+    if (!s) { g_py.PyErr_Clear(); return ae_py_string("", 0); }
+    return ae_py_string(s, (size_t)n);
 }
 
 int64_t python_arg_int(void* v, int i) {
@@ -1119,8 +1137,8 @@ void python_push_int(void* v, int64_t val) {
     if (v) push_obj(v, g_py.PyLong_FromLongLong(val));
 }
 
-void python_push_str(void* v, const char* val) {
-    if (v) push_obj(v, g_py.PyUnicode_FromString(val ? val : ""));
+void python_push_str(void* v, const void* val) {
+    if (v) push_obj(v, g_py.PyUnicode_FromStringAndSize(aether_string_data(val) ? aether_string_data(val) : "", (Py_ssize_t)aether_string_length(val)));
 }
 
 void python_push_bool(void* v, int val) {
@@ -1182,13 +1200,13 @@ int python_run_sandboxed_with_map(void* perms, const char* code,
 void* python_vm_new(void) { python_init(); return NULL; }
 void python_vm_free(void* vm) { (void)vm; }
 int python_vm_register(void* vm, const char* name, void* host_fn) { (void)vm; (void)name; (void)host_fn; return -1; }
-void python_vm_set_global_str(void* vm, const char* name, const char* value) { (void)vm; (void)name; (void)value; }
+void python_vm_set_global_str(void* vm, const char* name, const void* value) { (void)vm; (void)name; (void)value; }
 void python_vm_set_global_int(void* vm, const char* name, int64_t value) { (void)vm; (void)name; (void)value; }
 void python_vm_set_global_strlist(void* vm, const char* name, void* items) { (void)vm; (void)name; (void)items; }
 int python_vm_eval(void* vm, const char* code) { (void)vm; (void)code; return -1; }
 int python_vm_result_type(void* vm) { (void)vm; return 0; }
 int64_t python_vm_result_int(void* vm) { (void)vm; return 0; }
-const char* python_vm_result_str(void* vm) { (void)vm; return ""; }
+const void* python_vm_result_str(void* vm) { (void)vm; return ""; }
 int python_vm_result_bool(void* vm) { (void)vm; return 0; }
 double python_vm_result_double(void* vm) { (void)vm; return 0.0; }
 void* python_vm_result_bytes(void* vm) { (void)vm; return NULL; }
@@ -1197,14 +1215,14 @@ const char* python_vm_set_instruction_limit(void* vm, int64_t budget, int every)
 
 int python_arg_count(void* vm) { (void)vm; return 0; }
 int python_arg_type(void* vm, int i) { (void)vm; (void)i; return 0; }
-const char* python_arg_str(void* vm, int i) { (void)vm; (void)i; return ""; }
+const void* python_arg_str(void* vm, int i) { (void)vm; (void)i; return ""; }
 int64_t python_arg_int(void* vm, int i) { (void)vm; (void)i; return 0; }
 int python_arg_bool(void* vm, int i) { (void)vm; (void)i; return 0; }
 double python_arg_double(void* vm, int i) { (void)vm; (void)i; return 0.0; }
 void* python_arg_bytes(void* vm, int i) { (void)vm; (void)i; return NULL; }
 
 void python_push_int(void* vm, int64_t v) { (void)vm; (void)v; }
-void python_push_str(void* vm, const char* v) { (void)vm; (void)v; }
+void python_push_str(void* vm, const void* v) { (void)vm; (void)v; }
 void python_push_bool(void* vm, int v) { (void)vm; (void)v; }
 void python_push_nil(void* vm) { (void)vm; }
 void python_push_double(void* vm, double v) { (void)vm; (void)v; }
