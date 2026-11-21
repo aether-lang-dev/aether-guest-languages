@@ -16,6 +16,19 @@
 //                       Error with the host's message, which the script can
 //                       catch; a CANCEL ends the script
 //   the end             DONE 0, or ERROR and the error ("TypeError: ...")
+//   export_fn(name, fn) marks fn for the host to call by name once the script
+//                       has ended (`export` is a reserved word in JavaScript;
+//                       export_fn(fn) takes the function's own name). A
+//                       script that exported anything ends with READY and its
+//                       names instead of DONE, and serves: each INVOKE calls
+//                       the function with its JSON arguments in the same
+//                       runtime (the script's globals and closures as it left
+//                       them) and is answered RETURN and the value as JSON
+//                       (undefined is null), or RAISE and the error as the
+//                       script's ERROR would say it, after which it serves
+//                       on; END ends it with DONE 0. The names are fixed at
+//                       READY. `export_fn` is the worker's name: a host cannot
+//                       mount it.
 //
 // A CANCEL is heard inside a loop as well as in a call's reply: a watcher
 // thread (worker_support.c) waits on the socket while the script runs and,
@@ -37,6 +50,7 @@
 import quickjs
 import std.guest.child
 import std.list
+import std.string
 import std.sync
 
 extern exit(code: int)
@@ -81,12 +95,19 @@ w_call(vm: ptr) -> int {
     return quickjs.raise_error(vm, r.text)
 }
 
+// __args(): the arguments of the invocation being served, an array.
+@c_callback
+w_args(vm: ptr) -> int {
+    if quickjs.push_json(vm, worker_of(vm).h.invoked) != 0 { return quickjs.raise_error(vm, "the arguments are not JSON") }
+    return 1
+}
+
 // The glue between JavaScript and the protocol, run before the script.
 fn prelude() -> string {
     return <<JS
 (function () {
-  const say = __say, call = __call, mounts = __MOUNTS;
-  delete globalThis.__say; delete globalThis.__call; delete globalThis.__MOUNTS;
+  const say = __say, call = __call, args = __args, mounts = __MOUNTS;
+  delete globalThis.__say; delete globalThis.__call; delete globalThis.__args; delete globalThis.__MOUNTS;
   function str(v) { try { return String(v); } catch (e) { return '[' + typeof v + ']'; } }
   function print(...a) { say(a.map(str).join(' ')); }
   globalThis.print = print;
@@ -94,6 +115,30 @@ fn prelude() -> string {
   for (const name of mounts) {
     globalThis[name] = function (...args) { return call(name, JSON.stringify(args)); };
   }
+  // Exports: functions the host may call by name once the script has ended.
+  const exports = new Map(), served = new Map();
+  globalThis.export_fn = function (name, fn) {
+    if (typeof name === 'function' && fn === undefined) { fn = name; name = fn.name; }
+    if (typeof name !== 'string' || name === '') throw new TypeError('export_fn: the name must be a non-empty string');
+    if (typeof fn !== 'function') throw new TypeError('export_fn: ' + name + ' is not a function');
+    exports.set(name, fn);
+  };
+  // The names at READY, fixed from here on; '' for none.
+  globalThis.__ae_ready = function () {
+    for (const [n, f] of exports) served.set(n, f);
+    return served.size ? JSON.stringify([...served.keys()]) : '';
+  };
+  // One INVOKE: 'RETURN\n<json>' or 'RAISE\n<error>'.
+  globalThis.__ae_serve = function (name) {
+    const fn = served.get(name);
+    if (!fn) return 'RAISE\nReferenceError: no export named ' + name;
+    try {
+      const v = JSON.stringify(fn(...args()));
+      return 'RETURN\n' + (v === undefined ? 'null' : v);
+    } catch (e) {
+      return 'RAISE\n' + str(e);
+    }
+  };
 })();
 JS
 }
@@ -121,11 +166,18 @@ main() {
     quickjs.vm_set_user(vm, w as ptr)
     quickjs.vm_register(vm, "__say", w_say)
     quickjs.vm_register(vm, "__call", w_call)
+    quickjs.vm_register(vm, "__args", w_args)
     names = list.new()
     n = child.mount_count(h)
     i = 0
     while i < n {
         name, _min, _max = child.mount_at(h, i)
+        // The prelude defines export_fn for the script: it would shadow a
+        // host function mounted under that name.
+        if name == "export_fn" {
+            child.error(h, "quickjs-worker: cannot mount 'export_fn': the worker defines it for the script")
+            exit(1)
+        }
         list.add(names, name)
         i = i + 1
     }
@@ -142,7 +194,8 @@ main() {
         ghl_watch_stop(w.watch)
         w.watch = null
         if rc == 0 {
-            child.done(h, 0)
+            quickjs.vm_pop_result(vm)
+            serve_exports(vm, w)
         } else if h.cancel != "" || quickjs.vm_result_str(vm) == "InternalError: interrupted: cancelled" {
             // The watcher saw the host speak; read what it said.
             why = child.poll(h)
@@ -157,4 +210,52 @@ main() {
     heap.free(w)
     child.free(h)
     exit(0)
+}
+
+// After the script: DONE when it exported nothing; otherwise READY, and each
+// INVOKE runs __ae_serve in the same runtime, with the watcher on as it is for
+// the script, until END or a cancel. A cancel heard inside an invocation (the
+// watcher's cancel cell, or a call's reply) ends the worker: the function's
+// state is half done. (Not named serve: an unqualified call inside child.run's
+// callback block resolves to child's own serve.)
+fn serve_exports(vm: ptr, w: *Worker) {
+    h = w.h
+    quickjs.vm_eval(vm, "__ae_ready()")
+    names = quickjs.vm_result_str(vm)
+    quickjs.vm_pop_result(vm)
+    if names == "" {
+        child.done(h, 0)
+        return
+    }
+    child.ready(h, names)
+    while true {
+        inv = child.serve(h)
+        if inv.kind == "END" {
+            child.done(h, 0)
+            return
+        }
+        if inv.kind != "INVOKE" {
+            child.error(h, "cancelled by host: ${inv.args}")
+            return
+        }
+        w.watch = ghl_watch_start(h.ch, w.cell)
+        rc = quickjs.vm_eval(vm, "__ae_serve(${child.json_string(inv.name)})")
+        ghl_watch_stop(w.watch)
+        w.watch = null
+        out = quickjs.vm_result_str(vm)
+        quickjs.vm_pop_result(vm)
+        if h.cancel != "" || out == "InternalError: interrupted: cancelled" {
+            why = h.cancel
+            if why == "" { why = child.poll(h) }
+            child.error(h, "cancelled by host: ${why}")
+            return
+        }
+        if rc != 0 {
+            child.error(h, out)
+            return
+        }
+        at = string.index_of(out, "\n")
+        text = string.substring(out, at + 1, string.length(out))
+        if string.starts_with(out, "RETURN") == 1 { child.returned(h, text) } else { child.raised(h, text) }
+    }
 }

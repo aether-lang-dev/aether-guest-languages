@@ -14,6 +14,21 @@
 //                       Error with the host's message; a CANCEL throws
 //                       "cancelled by host: ..."
 //   the end             DONE 0, or ERROR and the error's text
+//   export_fn(name, fn) marks fn for the host to call by name once the script
+//                       has ended (`export` is a reserved word in JavaScript;
+//                       export_fn(fn) takes a named function's own name). A
+//                       script that exported anything ends with READY and its
+//                       names instead of DONE, and serves: each INVOKE calls
+//                       the function with its JSON arguments in the same heap
+//                       (the script's globals and closures as it left them)
+//                       and is answered RETURN and the value as JSON
+//                       (undefined is null), or RAISE and the error's text,
+//                       after which it serves on; END ends it with DONE 0. The
+//                       names are fixed at READY. `export_fn` is the worker's
+//                       name: a host cannot mount it. A CANCEL during an
+//                       invocation is heard as during the script: only in a
+//                       call's reply, else the host kills the worker after its
+//                       grace period.
 //
 // The bridge's own env, readFile, fileExists, writeFile and exec (the
 // bindings that check a sandbox's grants in-process) are removed before the
@@ -63,12 +78,19 @@ w_call(vm: ptr) -> int {
     return 1
 }
 
+// __args() -> the arguments of the invocation being served, a JSON array
+@c_callback
+w_args(vm: ptr) -> int {
+    duktape.push_str(vm, host().invoked)
+    return 1
+}
+
 // The glue between JavaScript and the protocol, run before the script.
 fn prelude() -> string {
     return <<JS
 (function (G) {
-  var say = __say, call = __call, mounts = __MOUNTS;
-  delete G.__say; delete G.__call; delete G.__MOUNTS;
+  var say = __say, call = __call, args = __args, mounts = __MOUNTS;
+  delete G.__say; delete G.__call; delete G.__args; delete G.__MOUNTS;
 
   // The bridge's in-process bindings are not for a contained script.
   var gone = ['env', 'readFile', 'fileExists', 'writeFile', 'exec'];
@@ -91,6 +113,31 @@ fn prelude() -> string {
     };
   }
   for (var j = 0; j < mounts.length; j++) mount(mounts[j]);
+  // Exports: functions the host may call by name once the script has ended.
+  var exports = {}, order = [], served = {};
+  var own = Object.prototype.hasOwnProperty;
+  G.export_fn = function (name, fn) {
+    if (typeof name === 'function' && fn === undefined) { fn = name; name = fn.name; }
+    if (typeof name !== 'string' || name === '') throw new TypeError('export_fn: the name must be a non-empty string');
+    if (typeof fn !== 'function') throw new TypeError('export_fn: ' + name + ' is not a function');
+    if (!own.call(exports, name)) order.push(name);
+    exports[name] = fn;
+  };
+  // The names at READY, fixed from here on; '' for none.
+  G.__ae_ready = function () {
+    for (var i = 0; i < order.length; i++) served[order[i]] = exports[order[i]];
+    return order.length ? JSON.stringify(order) : '';
+  };
+  // One INVOKE: 'RETURN\n<json>' or 'RAISE\n<error>'.
+  G.__ae_serve = function (name) {
+    if (!own.call(served, name)) return 'RAISE\nReferenceError: no export named ' + name;
+    try {
+      var v = JSON.stringify(served[name].apply(null, JSON.parse(args())));
+      return 'RETURN\n' + (v === undefined ? 'null' : v);
+    } catch (e) {
+      return 'RAISE\n' + String(e);
+    }
+  };
 })(this);
 JS
 }
@@ -106,6 +153,19 @@ fn mounts_js(h: *child.Host) -> string {
         i = i + 1
     }
     return "${out}];\n"
+}
+
+// A mounted name the prelude defines for the script itself, which would
+// shadow the host's function: "" or the name.
+fn reserved(h: *child.Host) -> string {
+    n = child.mount_count(h)
+    i = 0
+    while i < n {
+        name, _min, _max = child.mount_at(h, i)
+        if name == "export_fn" { return name }
+        i = i + 1
+    }
+    return ""
 }
 
 main() {
@@ -126,7 +186,13 @@ main() {
         child.error(h, "duktape-worker: cannot load libduktape (AETHER_DUKTAPE_SONAME)")
         exit(1)
     }
+    taken = reserved(h)
+    if taken != "" {
+        child.error(h, "duktape-worker: cannot mount '${taken}': the worker defines it for the script")
+        exit(1)
+    }
     ghl_keep(h as ptr)
+    duktape.vm_register(vm, "__args", w_args)
     duktape.vm_register(vm, "__say", w_say)
     duktape.vm_register(vm, "__call", w_call)
     if duktape.vm_eval(vm, "${mounts_js(h)}${prelude()}") != 0 {
@@ -136,10 +202,51 @@ main() {
     duktape.vm_pop_result(vm)
     child.run(h) callback {
         if duktape.vm_eval(vm, h.source) == 0 {
-            child.done(h, 0)
+            duktape.vm_pop_result(vm)
+            serve_exports(vm, h)
         } else {
             child.error(h, duktape.vm_result_str(vm))
         }
     }
     exit(0)
+}
+
+// After the script: DONE when it exported nothing; otherwise READY, and each
+// INVOKE runs __ae_serve in the same heap until END or a cancel, which (heard
+// in a call's reply) ends the worker: the function's state is half done. (Not
+// named serve: an unqualified call inside child.run's callback block resolves
+// to child's own serve.)
+fn serve_exports(vm: ptr, h: *child.Host) {
+    duktape.vm_eval(vm, "__ae_ready()")
+    names = duktape.vm_result_str(vm)
+    duktape.vm_pop_result(vm)
+    if names == "" {
+        child.done(h, 0)
+        return
+    }
+    child.ready(h, names)
+    while true {
+        inv = child.serve(h)
+        if inv.kind == "END" {
+            child.done(h, 0)
+            return
+        }
+        if inv.kind != "INVOKE" {
+            child.error(h, "cancelled by host: ${inv.args}")
+            return
+        }
+        if duktape.vm_eval(vm, "__ae_serve(${child.json_string(inv.name)})") != 0 {
+            child.error(h, duktape.vm_result_str(vm))
+            return
+        }
+        out = duktape.vm_result_str(vm)
+        duktape.vm_pop_result(vm)
+        if h.cancel != "" {
+            child.error(h, "cancelled by host: ${h.cancel}")
+            return
+        }
+        at = string.index_of(out, "\n")
+        text = string.substring(out, at + 1, string.length(out))
+        if string.starts_with(out, "RETURN") == 1 { child.returned(h, text) } else { child.raised(h, text) }
+    }
 }

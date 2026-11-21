@@ -140,7 +140,7 @@ def duplex_inproc_cell(res):
     nest = "calls nest in an expression" if res.get(("nest", "-")) == "ok" else "nested calls: " + res.get(("nest", "-"), "n/a")
     return "the host calls the guest and the guest calls back mid-eval, one thread; %s; no cancel in-process; %s" % (nest, lim)
 
-def duplex_cell(res):
+def duplex_cell(res, serves=False):
     if not any(v == "ok" for k, v in res.items() if k[0] in ("str", "int")):
         return "no host calls cross"
     nest = "calls nest in an expression" if res.get(("nest", "-")) == "ok" else "nested calls: " + res.get(("nest", "-"), "n/a")
@@ -151,7 +151,9 @@ def duplex_cell(res):
         cancel = "cancel heard only at a call (a loop is killed after the grace period)"
     else:
         cancel = "cancel: loop %s, call %s" % (loop, wait)
-    return "guest starts every exchange, host answers or cancels; %s; %s" % (nest, cancel)
+    who = ("guest starts every exchange while its script runs, host answers or cancels; once the script has ended with exports, "
+           "the host invokes them one at a time") if serves else "guest starts every exchange, host answers or cancels"
+    return "%s; %s; %s" % (who, nest, cancel)
 
 def callbacks_cell(res, inproc=False):
     if not inproc and not any(v == "ok" for k, v in res.items() if k[0] in ("str", "int")):
@@ -192,7 +194,47 @@ def boundary_cells(lang):
     res = bt.parse_readme_table(text)
     if res is None:
         return None
-    return (transport_cell(res, TRANSPORT_EXTRA.get(lang, "")), types_cell(res), duplex_cell(res), callbacks_cell(res))
+    iv = bt.parse_invoke(text)
+    serves = iv is not None and iv.get(("guest-export-called", "-")) == "held"
+    return (transport_cell(res, TRANSPORT_EXTRA.get(lang, "")), types_cell(res), duplex_cell(res, serves), callbacks_cell(res))
+
+# --- The host calling the guest, from each language's grid (tests/test_invoke.sh) --
+INVOKE_STATIC = {
+    "go": "none: the worker's script is `call NAME [JSON]` lines, with nothing to export (go/README.md)",
+    "tinygo": "none: the worker mounts no host function and its script is call lines, with nothing to export",
+}
+
+def invoke_cells(lang):
+    """(types, behaviour) for the host calling the guest, or None when the language has no grid."""
+    text = open("%s/%s/README.md" % (root, lang)).read()
+    res = bt.parse_invoke(text)
+    if res is None:
+        return None
+    rt, rtno = types_dir(res, "ret"); ar, arno = types_dir(res, "arg")
+    def one(l, no):
+        s = ", ".join(l) if l else "none"
+        return s + ("; not " + ", ".join(no) if no and l else "")
+    if (rt, rtno) == (ar, arno):
+        types = "both ways: " + one(rt, rtno)
+    else:
+        types = "as a `RETURN` value: %s<br>as an `INVOKE` argument, returned: %s" % (one(rt, rtno), one(ar, arno))
+    r = res.get(("raise", "-"), "n/a")
+    err = ("`RAISE` with the language's error (%s), and the guest serves on" % r[len("RAISE: "):].strip()) if r.startswith("RAISE: ") else r
+    loop = res.get(("loop", "-"), "n/a")
+    cancel = {"heard in a loop": "heard in an export's loop", "not heard: killed": "not heard in an export's loop: killed after the grace period"}.get(loop, loop)
+    txn = res.get(("txn", "-"), "n/a")
+    rows = [res.get((k, "-"), "n/a") for k in bt.INVOKE_ROWS]
+    held = sum(1 for c in rows if c == "held" or c.startswith("stricter"))
+    out = sum(1 for c in rows if c.startswith("left out"))
+    safety = "%d of %d host-calls-guest rows held%s" % (held, len(rows) - out, ", %d left out" % out if out else "")
+    calls = "an export calls mounted host functions" if res.get(("relay", "-")) == "ok" else "an export calling the host: " + res.get(("relay", "-"), "n/a")
+    return (types, "exports by name; %s; an error: %s; cancel: %s; notify then fetch: %s; %s" % (calls, err, cancel, txn, safety))
+
+def invoke_static(lang):
+    if lang in INVOKE_STATIC:
+        return (INVOKE_STATIC[lang],) * 2
+    kind, why = STATIC.get(lang, (None, None))
+    return (why or "not run", why or "not run")
 
 def static_cells(lang):
     kind, why = STATIC.get(lang, (None, None))
@@ -259,6 +301,8 @@ gen = ["Child: transport (generated)", "Child: types (generated)", "Child: duple
 gi = [bcols.index(g) for g in gen]
 gen_in = ["In-process: transport (generated)", "In-process: types (generated)", "In-process: duplex (generated)", "In-process: callbacks (generated)"]
 gii = [bcols.index(g) for g in gen_in]
+gen_iv = ["Child: host calls guest, types (generated)", "Child: host calls guest (generated)"]
+gvi = [bcols.index(g) for g in gen_iv]
 for i in range(bh + 2, be):
     if not lines[i].startswith("|"):
         continue
@@ -276,6 +320,13 @@ for i in range(bh + 2, be):
             print("  [FAIL] readme tables: %s: the README table says its child does not start, and its parity table says otherwise" % lang)
             bad += 1
     for ix, w in zip(gi, want):
+        if cells[ix] != w:
+            if what == "check":
+                print("  [FAIL] readme tables: %s, column %r: the README says %r, the tests say %r" % (lang, bcols[ix], cells[ix], w))
+                bad += 1
+            cells[ix] = w
+    wiv = invoke_cells(lang) or invoke_static(lang)
+    for ix, w in zip(gvi, wiv):
         if cells[ix] != w:
             if what == "check":
                 print("  [FAIL] readme tables: %s, column %r: the README says %r, the tests say %r" % (lang, bcols[ix], cells[ix], w))

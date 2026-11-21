@@ -23,3 +23,17 @@ v:null	nil
 v:array	{1, "a", 2.5}
 v:map	{k = "v", n = 1}
 v:nested	{a = {1, {b = "x"}}, c = {d = 2.5}}
+# The other direction (tests/boundary.py run-invoke): scripts that export functions for the host to call. x:make returns @V@; x:back hands its argument back.
+x:make	export("make", function() return @V@ end)
+x:back	export("back", function(v) return v end)
+x:relay	export("relay", function(v) return echo(v) end)
+x:count	local n = 0@NL@export("count", function() n = n + 1; return n end)@NL@export("boom", function() error("boom") end)
+x:loop	export("spin", function() while true do end end)
+x:wait	export("wait", function() return slow("x") end)
+x:silent	export("hush", function() debug.sethook(); while true do end end)
+x:big	export("big", function() return string.rep("x", 100000) end)
+x:none	local x = 1
+x:reenter	export("via", function(v) return reenter(v) end)
+x:flood	for i = 0, 299 do export("f" .. i, function() return i end) end
+x:malformed	export("two words", function() return 1 end)
+x:txn	local pending = { txn_start("deposit"), txn_start("refund") }@NL@local seen = 0@NL@export("on_txn", function(id)@NL@  local d, err = txn_details(id)@NL@  if not d then error(err, 0) end@NL@  seen = seen + 1@NL@  return string.format("%d %s %d", seen, d.kind, d.amount)@NL@end)

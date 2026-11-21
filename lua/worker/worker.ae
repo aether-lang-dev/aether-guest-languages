@@ -13,6 +13,17 @@
 //                       is {granted = true, text = ...}); a FAIL is nil and
 //                       the message; a CANCEL ends the script
 //   the end             DONE 0, or ERROR and Lua's message
+//   export(name, fn)    marks fn for the host to call by name once the script
+//                       has ended (export(name) takes the global function of
+//                       that name). A script that exported anything ends with
+//                       READY and its names instead of DONE, and serves: each
+//                       INVOKE calls the function with its JSON arguments in
+//                       the same VM (the script's globals, upvalues and
+//                       modules as it left them) and is answered RETURN and
+//                       the first result as JSON, or RAISE and Lua's message,
+//                       after which it serves on; END ends it with DONE 0. The
+//                       names are fixed at READY. `export` is the worker's
+//                       name: a host cannot mount it.
 //
 // Usage (by a host): lua-worker [<liblua soname or path>]
 //
@@ -61,11 +72,18 @@ w_poll(vm: ptr) -> int {
     return 1
 }
 
+// __args() -> the arguments of the invocation being served, a JSON array
+@c_callback
+w_args(vm: ptr) -> int {
+    lua.push_str(vm, host().invoked)
+    return 1
+}
+
 // The glue between Lua and the protocol, run before the script.
 fn prelude() -> string {
     return <<LUA
-local say, call, poll = __say, __call, __poll
-__say, __call, __poll = nil, nil, nil
+local say, call, poll, args = __say, __call, __poll, __args
+__say, __call, __poll, __args = nil, nil, nil, nil
 
 function print(...)
   local n, t = select('#', ...), {}
@@ -88,6 +106,10 @@ local function enc(v)
   end
   error("a host function takes strings, numbers, booleans and nil, not a " .. ty, 3)
 end
+
+-- How many values the last array dec finished held (nil included): the
+-- outermost array is the last to finish, so after dec(args) it is the count.
+local arrcount = 0
 
 local function dec(s)
   local i = 1
@@ -126,12 +148,13 @@ local function dec(s)
         if d == "}" then return t end
       end
     elseif c == "[" then
-      local t = {}; i = i + 1; ws()
-      if s:sub(i, i) == "]" then i = i + 1; return t end
+      local t, k = {}, 0; i = i + 1; ws()
+      if s:sub(i, i) == "]" then i = i + 1; arrcount = 0; return t end
       while true do
-        t[#t + 1] = val(); ws()
+        k = k + 1
+        t[k] = val(); ws()
         local d = s:sub(i, i); i = i + 1
-        if d == "]" then return t end
+        if d == "]" then arrcount = k; return t end
       end
     elseif s:sub(i, i + 3) == "true" then i = i + 4; return true
     elseif s:sub(i, i + 4) == "false" then i = i + 5; return false
@@ -157,6 +180,37 @@ for _, name in ipairs(__MOUNTS) do
 end
 __MOUNTS = nil
 
+-- Exports: functions the host may call by name once the script has ended.
+local exports, order, served = {}, {}, {}
+
+function export(name, fn)
+  if type(name) ~= "string" then error("export: the name must be a string", 2) end
+  if fn == nil then fn = _G[name] end
+  if type(fn) ~= "function" then error("export: " .. name .. " is not a function", 2) end
+  if exports[name] == nil then order[#order + 1] = name end
+  exports[name] = fn
+end
+
+-- The names at READY, fixed from here on, as a JSON array; "" for none.
+function __ae_ready()
+  local names = {}
+  for _, n in ipairs(order) do served[n] = exports[n]; names[#names + 1] = enc(n) end
+  if #names == 0 then return "" end
+  return "[" .. table.concat(names, ",") .. "]"
+end
+
+-- One INVOKE: "RETURN\n<json>" or "RAISE\n<message>".
+function __ae_serve(name)
+  local fn = served[name]
+  if fn == nil then return "RAISE\nno export named " .. name end
+  local a = dec(args())
+  local r = table.pack(pcall(fn, table.unpack(a, 1, arrcount)))
+  if not r[1] then return "RAISE\n" .. tostring(r[2]) end
+  local ok, j = pcall(enc, r[2])
+  if not ok then return "RAISE\nthe value returned: " .. tostring(j):gsub("^%[string .-%]:%d+: ", "") end
+  return "RETURN\n" .. j
+end
+
 debug.sethook(function()
   local why = poll()
   if why ~= "" then error("cancelled by host: " .. why, 0) end
@@ -177,6 +231,19 @@ fn mounts_lua(h: *child.Host) -> string {
     return "${out}}\n"
 }
 
+// A mounted name the prelude defines for the script itself, which would
+// shadow the host's function: "" or the name.
+fn reserved(h: *child.Host) -> string {
+    n = child.mount_count(h)
+    i = 0
+    while i < n {
+        name, _min, _max = child.mount_at(h, i)
+        if name == "export" { return name }
+        i = i + 1
+    }
+    return ""
+}
+
 main() {
     h, err = child.open("lua-worker")
     if err != "" {
@@ -195,7 +262,13 @@ main() {
         child.error(h, "lua-worker: cannot load liblua (AETHER_LUA_SONAME)")
         exit(1)
     }
+    taken = reserved(h)
+    if taken != "" {
+        child.error(h, "lua-worker: cannot mount '${taken}': the worker defines it for the script")
+        exit(1)
+    }
     ghl_keep(h as ptr)
+    lua.vm_register(vm, "__args", w_args)
     lua.vm_register(vm, "__say", w_say)
     lua.vm_register(vm, "__call", w_call)
     lua.vm_register(vm, "__poll", w_poll)
@@ -206,10 +279,51 @@ main() {
     lua.vm_pop_result(vm)
     child.run(h) callback {
         if lua.vm_eval(vm, h.source) == 0 {
-            child.done(h, 0)
+            lua.vm_pop_result(vm)
+            serve_exports(vm, h)
         } else {
             child.error(h, lua.vm_result_str(vm))
         }
     }
     exit(0)
+}
+
+// After the script: DONE when it exported nothing; otherwise READY, and each
+// INVOKE runs __ae_serve in the same VM until END or a cancel. A cancel heard
+// inside an invocation (the count hook, or a call's reply) ends the worker:
+// the function's state is half done. (Not named serve: an unqualified call
+// inside child.run's callback block resolves to child's own serve.)
+fn serve_exports(vm: ptr, h: *child.Host) {
+    lua.vm_eval(vm, "return __ae_ready()")
+    names = lua.vm_result_str(vm)
+    lua.vm_pop_result(vm)
+    if names == "" {
+        child.done(h, 0)
+        return
+    }
+    child.ready(h, names)
+    while true {
+        inv = child.serve(h)
+        if inv.kind == "END" {
+            child.done(h, 0)
+            return
+        }
+        if inv.kind != "INVOKE" {
+            child.error(h, "cancelled by host: ${inv.args}")
+            return
+        }
+        if lua.vm_eval(vm, "return __ae_serve(${child.json_string(inv.name)})") != 0 {
+            child.error(h, lua.vm_result_str(vm))
+            return
+        }
+        out = lua.vm_result_str(vm)
+        lua.vm_pop_result(vm)
+        if h.cancel != "" {
+            child.error(h, "cancelled by host: ${h.cancel}")
+            return
+        }
+        at = string.index_of(out, "\n")
+        text = string.substring(out, at + 1, string.length(out))
+        if string.starts_with(out, "RETURN") == 1 { child.returned(h, text) } else { child.raised(h, text) }
+    }
 }
