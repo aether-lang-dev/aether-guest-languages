@@ -226,6 +226,19 @@ from a run (`sh tests/run.sh --write-parity`) and checked against every run
 (`tests/parity.sh`), in the columns the host can run; the lines under it
 say which host produced which column.
 
+## What crosses the boundary
+
+The top-level README's first table says it in a line; this is the detail, each
+claim with the spec that backs it.
+
+- **In-process transport.** a direct C call into the embedded Perl (`dlopen`ed libperl); no transport.
+- **Types.** `run(str)` returns 0 or -1 only. str and int cross both ways: a registered function reads str and int and pushes str and int; the shared map carries str keys and values (`aether_map_get`, `aether_map_put`, `%_aether_input`). Text goes through as UTF-8. No float, no bool, no list.
+- **Duplex.** host calls the guest; the guest calls back mid-run, even from two threads at once.
+- **Callbacks.** `register(name, cb)` makes a Perl sub; a name that is not a Perl identifier is refused; an unregistered function is a catchable error.
+- **Errors and state.** -1 with `$@` on stderr, `last_error()` for the text; `raise_error` dies, catchable; no limit; one interpreter per process (finalize then init makes a new one).
+- **Contained child.** Contained child: `std.guest` over a `std.ipc` socketpair, 4-byte length-prefixed frames, JSON arguments and values, a granted file as a descriptor, guest-initiated calls answered one at a time, no nesting (the top-level README lists the common part). strings and integers cross as JSON (the stunt rows send no other kind); a `FAIL` dies; `ERROR` carries `$@`; `CANCEL` from a 50 ms `SIGALRM` handler.
+- **Tests.** `perl/test_host_perl_host.ae`: "register, then call: strings and ints in, a value out", "text goes through as UTF-8, and quotes and backslashes survive", "raise_error dies in the script, which can catch it", "an unregistered function is a catchable error, not a crash", "two threads call a host function at once", "reads inputs, writes outputs to the host's map".
+
 ## Containment table
 
 What a Perl script gets when it tries each row of stunt's catalogue (aether

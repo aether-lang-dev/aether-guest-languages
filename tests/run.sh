@@ -56,6 +56,19 @@ for lang in $langs; do
     if [ "$what" = all ] || [ "$what" = spec ]; then
         lang_runtime || echo "  [SKIP] no $LANG_TITLE runtime found: the specs will skip"
         echo "$LANG_TITLE runtime: $(eval echo "\${$LANG_RUNTIME_ENV:-none}")"
+        # A CI job says which runtime it has (GHL_CI_RUNTIME, which the README's
+        # "CI today" column is made from). On Actions that claim is checked
+        # against what was found: its version, or GHL_CI_RUNTIME_MATCH, a
+        # substring of the runtime's path or version; "-" says the runtime
+        # names no version to check.
+        if [ -n "${GHL_CI_RUNTIME:-}" ] && [ "${GITHUB_ACTIONS:-}" = true ] && [ "${GHL_CI_RUNTIME_MATCH:-}" != "-" ]; then
+            seen="$(eval echo "\${$LANG_RUNTIME_ENV:-none}") $(lang_version 2>/dev/null)"
+            need="${GHL_CI_RUNTIME_MATCH:-$(echo "$GHL_CI_RUNTIME" | grep -oE '[0-9]+(\.[0-9]+)+' | head -1)}"
+            case "$seen" in
+                *"$need"*) echo "  [PASS] CI runtime: $GHL_CI_RUNTIME (found $need in: $seen)" ;;
+                *) echo "  [FAIL] CI runtime: the job says \"$GHL_CI_RUNTIME\" but the runtime found is: $seen"; fails=$((fails + 1)) ;;
+            esac
+        fi
         mkdir -p "$ROOT/build"
         # A language whose specs need its side built first (Java) says how.
         if type lang_spec_env > /dev/null 2>&1; then lang_spec_env || fails=$((fails + 1)); fi
@@ -91,6 +104,13 @@ for lang in $langs; do
         fi
     fi
 done
+
+# The README's language table: its generated columns against ci.yml and the
+# parity tables (the check reads the sources, not this host).
+if [ "$what" = all ] || [ "$what" = containment ]; then
+    echo "== readme tables"
+    if [ "$parity" = write ]; then sh "$SCRIPT_DIR/readme_tables.sh" write; else sh "$SCRIPT_DIR/readme_tables.sh" check || fails=$((fails + 1)); fi
+fi
 
 [ "$fails" -eq 0 ] && echo "ALL PASSED" || echo "$fails FAILED"
 [ "$fails" -eq 0 ]

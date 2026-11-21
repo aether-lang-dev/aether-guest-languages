@@ -224,6 +224,19 @@ table below has each row. The table is generated from a run
 say which host produced which column. FreeBSD's preload is not column 3's
 (see the containment table).
 
+## What crosses the boundary
+
+The top-level README's first table says it in a line; this is the detail, each
+claim with the spec that backs it.
+
+- **In-process transport.** a direct C call into the embedded CPython (`dlopen`ed libpython); no transport.
+- **Types.** in: str, int, strlist as globals; callbacks read str, int, bool, float, bytes, nil. out: str, int, float, bool, bytes (length-aware, never a `str`), integers past 64 bits and a list or dict only as tags (`PY_TOTHER`, `PY_TTABLE`).
+- **Duplex.** host calls the guest, the guest calls back mid-eval, and a callback may `eval` again (nested, tested).
+- **Callbacks.** registered by name (dotted ok) and outliving their VM safely; they push int, str, bool, nil, double, bytes and return the count.
+- **Errors and state.** `vm_eval` returns -1 with `Type: message` as the result; `raise_error` is a Python exception, catchable; an instruction limit (per eval, nested, disarmed); one interpreter per VM handle, one handle per thread at a time.
+- **Contained child.** Contained child: `std.guest` over a `std.ipc` socketpair, 4-byte length-prefixed frames, JSON arguments and values, a granted file as a descriptor, guest-initiated calls answered one at a time, no nesting (the top-level README lists the common part). strings and integers cross as JSON (the stunt rows send no other kind); a `FAIL` is `RuntimeError`; `print` is `SAY`; `CANCEL` from a `sys.settrace` hook every 1000 events.
+- **Tests.** `python/test_host_python_vm.ae`: "each argument's tag and reading, as a callback sees it", "each pushed type, and the callback's return count", "results: numbers, sizes past 64 bits, tables, a lying __class__", "bytes: length-aware both ways, never a str", "raise_error, caught and uncaught; a nested eval", "the instruction limit: caught, nested, per eval, disarmed", "two threads, each on its own VM, at once".
+
 ## Containment table
 
 What a Python script gets when it tries each row of stunt's catalogue

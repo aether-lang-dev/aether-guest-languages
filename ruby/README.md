@@ -234,6 +234,19 @@ table below has each row. The table is generated from a run
 which host produced which column. FreeBSD's preload is not column 3's (see
 the containment table), and was not tried for Ruby.
 
+## What crosses the boundary
+
+The top-level README's first table says it in a line; this is the detail, each
+claim with the spec that backs it.
+
+- **In-process transport.** a direct C call into the embedded CRuby (`dlopen`ed libruby); no transport.
+- **Types.** `eval(str)` keeps the result as its `to_s` text (`result_str`). Callbacks are Ruby methods: args nil, bool, int, float, str (told apart: nil and bool are not integers); they push int, str, bool, double; floats, bools and nil come back from `eval` as themselves, as `to_s` text.
+- **Duplex.** host calls the guest; the guest calls back mid-eval; an `eval` inside a callback is a nested call of its own (tested).
+- **Callbacks.** `register(name, cb)`; by name.
+- **Errors and state.** an exception is the result, as `Class: message`; a callback's error is a `RuntimeError`, after its defers ran; a line and call budget (`set_instruction_limit`); one interpreter per process, `finalize_host` is terminal.
+- **Contained child.** Contained child: `std.guest` over a `std.ipc` socketpair, 4-byte length-prefixed frames, JSON arguments and values, a granted file as a descriptor, guest-initiated calls answered one at a time, no nesting (the top-level README lists the common part). strings and integers cross as JSON (the stunt rows send no other kind); a `FAIL` is `RuntimeError`; `CANCEL` from a TracePoint hook every 1000 events.
+- **Tests.** `ruby/test_host_ruby.ae`: "a registered function is a Ruby method with typed arguments and result", "argument types are told apart; nil and bool are not integers", "floats, bools and nil come back as themselves", "an error raised by the callback is a RuntimeError, after its defers ran", "an eval inside a callback is a nested call of its own", "an exception is the result, as Class: message".
+
 ## Containment table
 
 What a Ruby script gets when it tries each row of stunt's catalogue (aether

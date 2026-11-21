@@ -223,6 +223,19 @@ the grants it needs to start added, below). The table is generated from a run
 (`sh tests/run.sh --write-parity`) and checked against every run
 (`tests/parity.sh`), in the columns the host can run.
 
+## What crosses the boundary
+
+The top-level README's first table says it in a line; this is the detail, each
+claim with the spec that backs it.
+
+- **In-process transport.** a direct C call into the fork's `libfactor` (`dlopen`ed); no transport.
+- **Types.** `eval(str)` returns what the script printed as a str; `set` and `get` a string key in the VM's global namespace; the shared map is reached by FFI words (`aether-map-get`, `aether-map-put`), str only.
+- **Duplex.** one way for the bridge itself: the host evaluates and waits. The VM is persistent, so state carries across calls.
+- **Callbacks.** none: the bridge has no host-function API (stunt's `callback-*` rows are answered by the test host, not by the bridge).
+- **Errors and state.** a stack-effect error comes back as text in the output, not as -1; `run` returns 0 on success; one VM per process.
+- **Contained child.** Contained child: `std.guest` over a `std.ipc` socketpair, 4-byte length-prefixed frames, JSON arguments and values, a granted file as a descriptor, guest-initiated calls answered one at a time, no nesting (the top-level README lists the common part). mounted functions are made as Factor words that send `CALL name args` and read the answer; there is no `CANCEL` hook (cooperative threads): it arrives as the reply to a host call. The child cannot start on current ae: the preload refuses the VM's executable memory.
+- **Tests.** `factor/test_host_factor.ae`: "evaluates a recursive word and returns its output", "reports a stack-effect error rather than the value", "carries a populated k-v map across calls", "lets a script read and mutate a shared key", "reads and writes the shared map, keys discovered at runtime included".
+
 ## Containment table
 
 What a Factor program gets when it tries each row of stunt's catalogue

@@ -168,6 +168,19 @@ below has each row. The table is generated from a run
 (`tests/parity.sh`), in the columns the host can run; the lines under it
 say which host produced which column.
 
+## What crosses the boundary
+
+The top-level README's first table says it in a line; this is the detail, each
+claim with the spec that backs it.
+
+- **In-process transport.** a direct C call into the embedded Lua state (`dlopen`ed liblua); no transport.
+- **Types.** in: str, int, strlist as globals; tables (array, map, nested) are built by a callback and pushed. out: str, int. The bridge also has bool, nil and double entry points that no spec exercises, so they are not claimed.
+- **Duplex.** host calls the guest (`vm_eval`); the guest calls the host while it runs (a registered callback); a callback is a plain call, so the guest waits. Nesting an `eval` from a callback is not claimed: no spec.
+- **Callbacks.** registered by name, dotted names make the prefix table (`redis.call`); the host cannot receive a Lua function.
+- **Errors and state.** `vm_eval` returns -1 and the error is the result (tag ERR); a callback's `raise_error` is a Lua error a script can catch; an instruction limit stops a loop; state is one Lua state per VM handle.
+- **Contained child.** Contained child: `std.guest` over a `std.ipc` socketpair, 4-byte length-prefixed frames, JSON arguments and values, a granted file as a descriptor, guest-initiated calls answered one at a time, no nesting (the top-level README lists the common part). strings and integers cross as JSON (the stunt rows send no other kind); `print` is `SAY`; a `FAIL` raises a Lua error; `CANCEL` is looked for every 1000 instructions from a debug hook, and in every reply.
+- **Tests.** `lua/test_host_lua_vm.ae`: "a host callback's int result and injected globals", "a typed string result", "a callback reads its string argument and the argument count", "a callback's raise_error is a Lua error the script can catch", "the instruction limit stops an endless loop", "array, map and nested tables from callbacks"; `lua/test_host_lua.ae`; the child: `tests/test_stunt_*.sh` rows `callback-greet`, `callback-add`, `binding-*` (`lua/containment/checks.lua`).
+
 ## Containment table
 
 What a Lua script gets when it tries each row of stunt's catalogue (aether

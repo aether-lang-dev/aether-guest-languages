@@ -305,6 +305,19 @@ say which host produced which column. The row names the cells list are
 Column 3 is long because it is the finding: every row Go reaches the system
 with by itself **escapes** the preload.
 
+## What crosses the boundary
+
+The top-level README's first table says it in a line; this is the detail, each
+claim with the spec that backs it.
+
+- **In-process transport.** the Go library is loaded into the process with `std.dl` and its exported C functions are called directly: same address space, no marshalling, no transport.
+- **Types.** `call_<ret>_<args>`: int, long, double, str and ptr, up to four arguments; a string result is borrowed, or taken over and freed by the `_owned` twins; any other signature goes through libffi when the bridge is built with it. No tables or structures.
+- **Duplex.** one way: the host calls an exported function and waits.
+- **Callbacks.** none: a Go c-shared library cannot call into Aether, so stunt's `callback-*` and `map-*` rows are left out.
+- **Errors and state.** `load` returns (handle, error) and `last_error()`; a call returns the function's value; one Go runtime per process, goroutines have threads of their own.
+- **Contained child.** Contained child: `std.guest` over a `std.ipc` socketpair, 4-byte length-prefixed frames, JSON arguments and values, a granted file as a descriptor, guest-initiated calls answered one at a time, no nesting (the top-level README lists the common part). the script is lines: `call SYMBOL arg<TAB>arg` calls `char* SYMBOL(char*, char*)` on a thread of its own and says the string it returns; nothing is mounted and no JSON is involved; `call_here` runs on the main thread, which cannot hear `CANCEL`.
+- **Tests.** `tinygo/test_host_tinygo.ae` and `tinygo/test_host_tinygo_owned.ae` against `tinygo/examples/greet.go` (a real Go library); `tinygo/test_support/fake_cshared.c`.
+
 ## Containment table
 
 What a Go library gets when it tries each row of stunt's catalogue (aether

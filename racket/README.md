@@ -362,6 +362,19 @@ below has each row. The table is generated from a run
 which host produced which column. Column 4 is not generated: there is no
 contained child to run (way 4).
 
+## What crosses the boundary
+
+The top-level README's first table says it in a line; this is the detail, each
+claim with the spec that backs it.
+
+- **In-process transport.** a direct C call into the embedded Racket CS (`dlopen`ed); Rhombus runs on the same VM. No transport.
+- **Types.** `evaluate(str)` returns what was printed as a str, not the last value; `set` and `get` string keys (the map is shared with Rhombus); callbacks read int and str arguments by tag (1-based) and push int, str, bool, nil. No float or list.
+- **Duplex.** host calls the guest; the guest calls registered functions mid-evaluation.
+- **Callbacks.** `register(name, cb)`; by name.
+- **Errors and state.** `evaluate` returns the output plus `error: <message>`; `run` returns -1 and `last_error()` has the text; `raise_error`; definitions persist between calls; one VM per process, which lives until exit. Nothing stops a run that does not end.
+- **Contained child.** Contained child: `std.guest` over a `std.ipc` socketpair, 4-byte length-prefixed frames, JSON arguments and values, a granted file as a descriptor, guest-initiated calls answered one at a time, no nesting (the top-level README lists the common part). none runs: Chez Scheme maps anonymous executable memory, which the preload refuses a contained child; `racket/worker` is written and fails.
+- **Tests.** `racket/test_host_racket.ae`: "evaluates and returns what was printed", "keeps definitions between calls", "reports an error as text from evaluate and -1 from run", "round-trips the string k-v map, and the guest sees it as aether-host-kv", "calls registered Aether functions"; `rhombus/test_host_rhombus.ae`: "shares the VM and the k-v map with racket".
+
 ## Containment table
 
 What a Racket program gets when it tries each row of stunt's catalogue

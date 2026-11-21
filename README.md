@@ -58,20 +58,75 @@ Above it, a **Stunt parity** table gives one row per stunt test (the
 its host can run, so a README that no longer says what the tests do fails
 the tests.
 
-| Language | In-process | Contained child | Table |
-|---|---|---|---|
-| Lua 5.3, 5.4, 5.5 | `import lua` | `lua/worker` (std.guest) | [lua/README.md](lua/README.md#containment-table) |
-| CPython 3.10 to 3.14 | `import python` | `python/worker` (std.guest) | [python/README.md](python/README.md#containment-table) |
-| JavaScript, Duktape 2.x (ES5.1) | `import duktape` | `duktape/worker` (std.guest) | [duktape/README.md](duktape/README.md#containment-table) |
-| JavaScript, QuickJS (quickjs-ng 0.18, ES2023) | `import quickjs` | `quickjs/worker` (std.guest) | [quickjs/README.md](quickjs/README.md#containment-table) |
-| Tcl 8.5, 8.6 (9.0 in principle) | `import tcl` | `tcl/worker` (std.guest) | [tcl/README.md](tcl/README.md#containment-table) |
-| Perl 5 (threaded), 5.34 to 5.44 tested | `import perl` | `perl/worker` (std.guest) | [perl/README.md](perl/README.md#containment-table) |
-| CRuby 2.6 to 3.4 (checked) | `import ruby` | `ruby/worker` (std.guest) | [ruby/README.md](ruby/README.md#containment-table) |
-| Go 1.21 or later, as a c-shared library (compiled; `go build -buildmode=c-shared`) | `import tinygo` | `tinygo/worker` (std.guest) | [tinygo/README.md](tinygo/README.md#containment-table) |
-| Go 1.18 or later (checked 1.22, 1.27), as a child process | `import go` (starts a program; no in-process way) | `go/worker` (std.guest, Go) | [go/README.md](go/README.md#containment-table) |
-| Java 21 or later (checked 21, 25), as a JVM child process | `import java` (starts a JVM; no in-process way) | `java/worker` (std.guest, Java); the JVM does not start inside the preload yet | [java/README.md](java/README.md#containment-table) |
-| Factor (experimental: the embed-api fork of Factor, not a distribution's) | `import factor` | `factor/worker` (std.guest); cannot start on ae 0.889.0 (preload refuses executable memory) | [factor/README.md](factor/README.md#containment-table) |
-| Racket CS 8.10 and 9.3 (checked), Rhombus on the same VM | `import racket`, `import rhombus` | none: Chez Scheme cannot run under the contained child's preload (`racket/worker` is written and fails) | [racket/README.md](racket/README.md#containment-table) |
+Every language has a contained child except Racket (below) and the two that are
+a child already, and the contained child is the same conversation for all of
+them, because they share `std.guest`:
+
+- **Transport.** A socketpair (`std.ipc`'s "socket" channel, made by
+  `sandbox.spawn_socket`, which is `os.run_socket` plus the sandbox). Frames are
+  a 4-byte big-endian length and then a verb and its text, at most 64 KiB; the
+  arguments and values are JSON. A granted file is passed as an open file
+  descriptor (`ipc.send_fd`), never a path.
+- **Duplex.** The guest starts every exchange: `SAY` (what it prints) and `LOG`
+  go up and nothing answers them, `CALL name [json]` goes up and the host
+  answers it (`answer`, `fail`, `grant_file` or `deny`) before the guest
+  continues. One call is open at a time, calls do not nest, and nothing
+  streams: a value is one frame. The host speaks first with the mounted names
+  and the script, and afterwards only to answer, or to send `CANCEL` when a
+  deadline passes.
+- **Callbacks.** The host mounts functions by name (`guest.mount`); the guest
+  calls them as first-class names of its own language. Nothing the guest makes
+  (a closure, a handle) is handed to the host. A `FAIL` answer is an error in
+  the guest, which can catch it; the script's own error is one `ERROR` frame
+  of text.
+
+The Contained child column below says only what differs from that. It states
+what the stunt rows exercise in every worker: strings and integers as
+arguments and values (`callback-greet`, `callback-add`), a granted file as a
+descriptor (`binding-read-granted-file`), and an unknown name refused
+(`callback-unregistered`). Objects, arrays and floats are decoded by each
+worker's JSON reader but no test sends them, so no cell claims them.
+
+<!-- language-boundary:begin: hand-written; every claim names its spec in the language's README, "What crosses the boundary" -->
+| Language | Way in | In-process: call, types | In-process: callbacks, errors, state | Contained child: differs by | Detail |
+|---|---|---|---|---|---|
+| Lua | `import lua` | `eval(str)` on a VM handle, or `run(str)`. In: str, int, strlist; tables (array, map, nested) come from callbacks. Out: str, int | by name (dotted ok), called mid-eval; args str, int; returns int, str, table (array, map, nested); a callback's `raise_error` is a catchable Lua error; `eval` gives -1 and the message; instruction limit; one state per handle | str and int cross as JSON; `CANCEL` heard inside a loop (debug hook) | [lua](lua/README.md#what-crosses-the-boundary) |
+| Python | `import python` | `eval(str)` on a VM handle, or `run(str)`. In: str, int, strlist. Out: str, int, float, bool, bytes (length-aware); a table result is a tag | by name (dotted ok), mid-eval; args str, int, bool, float, bytes, nil; returns the same; `raise_error` is a Python exception; nested `eval` allowed; the exception is the result; instruction limit; one interpreter per handle, one handle per thread | str and int cross as JSON; a `FAIL` is `RuntimeError`; `CANCEL` heard inside a loop (trace hook) | [python](python/README.md#what-crosses-the-boundary) |
+| JavaScript, Duktape | `import duktape` | `eval(str)` on a VM handle, or `run(str)`. In: str, int, bool, nil, strlist. Out: str, int, bool | by name, mid-eval; args bool, int, str, typed by tag; returns int, str, bool, nil, double; `raise_error`; a syntax error is an error result; no instruction limit (reported unavailable); one heap per handle | str and int cross as JSON; an `Error` for a `FAIL`; `CANCEL` heard only in a host call's reply, a loop is killed after the grace period | [duktape](duktape/README.md#what-crosses-the-boundary) |
+| JavaScript, QuickJS | `import quickjs` | `run(str)` only, 0 or -1; a fresh runtime per script with a 5 s deadline. Out: what `print` said, and the shared map (str) | none through this bridge (the engine's own API, `contrib.quickjs`, has them, and the worker mounts them); error is -1 and a `[js]` line on stderr | str and int cross as JSON; the worker mounts host functions; `CANCEL` heard only in a host call's reply, so a loop is killed after the grace period | [quickjs](quickjs/README.md#what-crosses-the-boundary) |
+| Tcl | `import tcl` | `eval(str)` on a VM handle, or `run(str)`; everything is a string underneath. In: str, int, strlist. Out: str, int, double, bool | host commands by name, mid-eval; args str, int, double, bool; returns int, str, bool, nil, double; `raise_error`; nested `eval` runs at global level; command limit and time limit; one interpreter per handle, one thread | str and int cross as JSON; a `FAIL` is a Tcl error; `CANCEL` reaches a loop (child interpreter) | [tcl](tcl/README.md#what-crosses-the-boundary) |
+| Perl | `import perl` | `run(str)` only, 0 or -1: no value comes back. str and int cross both ways through callbacks and the shared map | by name (`register`); args str, int; returns str, int; `raise_error` dies, catchable; error is -1, `$@` on stderr, `last_error()`; no limit; one interpreter per process | str and int cross as JSON; a `FAIL` dies; `ERROR` carries `$@`; `CANCEL` heard inside a loop (alarm handler) | [perl](perl/README.md#what-crosses-the-boundary) |
+| Ruby | `import ruby` | `eval(str)`, the result kept as its `to_s`; or `run(str)`. In and out: str only, as text | by name (`register`), mid-eval; args nil, bool, int, float, str by tag; returns int, str, bool, double; `raise_error` is `RuntimeError`; the exception is the result as `Class: message`; nested `eval` in a callback; line and call budget; one interpreter per process (finalize is terminal) | str and int cross as JSON; a `FAIL` is `RuntimeError`; `CANCEL` heard inside a loop (TracePoint) | [ruby](ruby/README.md#what-crosses-the-boundary) |
+| Go, as a shared library | `import tinygo` | `load(path)` then `call_<ret>_<args>(symbol, ...)`: int, long, double, str, ptr, and owned-string results; any other signature through libffi when built with it. No tables, no structures | none: a Go library cannot call into Aether; error is the call's return value and `last_error()` for `load`; one Go runtime per process | the script is lines: `call SYMBOL arg<TAB>arg` with two strings in, one string out; nothing is mounted, no JSON | [tinygo](tinygo/README.md#what-crosses-the-boundary) |
+| Go, as a child process | `import go` | `run(binary)`, `run_script(path)`: starts a program; out: its exit status. Env and the shared map (`..._with_map`) are the only values | none; -1 if it cannot start (not 127) | a compiled-in worker: `call NAME [JSON]`, answers `VALUE json` or `FAIL msg`; no interpreter | [go](go/README.md#what-crosses-the-boundary) |
+| Java, as a JVM child | `import java` | `run(classpath, main)`: starts a JVM; out: its exit status; the shared map through `AETHER_MAP_SHM` | none; a class that is not there is the JVM's 1, no JVM is -1 | a worker over `std.guest` in Java; the JVM does not start inside the preload on Linux today | [java](java/README.md#what-crosses-the-boundary) |
+| Factor (experimental fork) | `import factor` | `eval(str)` returns what the script printed; `run(str)`; `set` and `get` a string key in the VM's global namespace; shared map by FFI words | none: the bridge has no host-function API; a stack-effect error comes back as text in the output, not as -1; one persistent VM per process | mounted functions work; no `CANCEL` hook; cannot start on ae 0.889.0 and later: the preload refuses its executable memory | [factor](factor/README.md#what-crosses-the-boundary) |
+| Racket CS (and Rhombus) | `import racket`, `import rhombus` | `evaluate(str)` returns what was printed; `run(str)`; `set` and `get` string keys. Rhombus: the same calls on the same VM, module body in | by name (`register`); args int, str, typed by tag; returns int, str, bool, nil; `raise_error`; error is `error: <message>` text from `evaluate`, -1 from `run`, `last_error()`; definitions persist; one VM per process; nothing stops a run that does not end | none: Chez Scheme cannot run in the contained child (`racket/worker` is written and fails) | [racket](racket/README.md#what-crosses-the-boundary) |
+<!-- language-boundary:end -->
+
+A guest that is written in Aether and lives in another repository (its engine
+is linked into the host) takes a row in each table like the rest: how it runs is
+"Aether engine linked into the host", its runtime comes from that repository at
+a pinned commit, and a way of running that does not apply is written "does not
+apply" with the reason. The generated columns find a row by the link in its
+first cell, so adding one needs no change to the tests.
+
+<!-- language-facts:begin: columns marked (generated) are written by sh tests/run.sh --write-parity (tests/readme_tables.sh) from .github/workflows/ci.yml and the parity tables; the rest is hand-written -->
+| Language | How it runs | Runtime comes from | CI today (generated) | Checked by hand | Status | Resource limits | Containment (generated) |
+|---|---|---|---|---|---|---|---|
+| [Lua](lua/README.md#four-ways-to-run-lua-from-aether) | embedded in the host process | system liblua, found at run time | Ubuntu 24.04: Lua 5.4 + child<br>macOS 15: Lua 5.5, 5.4 | 5.3, 5.5 (README, undated) | stable | instruction limit | macOS: 8 of 10 tests have a row not held; Linux preload: every row held; child: every row held |
+| [CPython](python/README.md#four-ways-to-run-python-from-aether) | embedded in the host process | system libpython, found at run time (free-threaded refused) | Ubuntu 24.04: Python 3.12 + child<br>macOS 15: Python 3.13 | 3.10 to 3.14 (README, undated); cachyos 3.14, 2026-11-21 | stable | instruction limit | macOS: 9 of 10 tests have a row not held; Linux preload: 1 of 10 tests have a row not held; child: every row held |
+| [Duktape](duktape/README.md#four-ways-to-run-javascript-from-aether) | embedded in the host process | system libduktape, found at run time | Ubuntu 24.04: Duktape 2.7 + child<br>macOS 15: Duktape 2.7 | none beyond CI | stable | none (reported unavailable) | macOS: every row held; Linux preload: every row held; child: every row held |
+| [QuickJS](quickjs/README.md#four-ways-to-run-javascript-from-aether) | engine compiled into your program | Aether's `contrib.quickjs`: quickjs-ng 0.18.0 as the ae release ships it (Array.find fix patched in from ae 0.934.0) | Ubuntu 24.04: quickjs-ng 0.18 + child<br>macOS 15: quickjs-ng 0.18 | none beyond CI | stable | 5 s deadline per script (in-process); none inside the worker (the host kills it) | macOS: every row held; Linux preload: every row held; child: every row held |
+| [Tcl](tcl/README.md#four-ways-to-run-tcl-from-aether) | embedded in the host process | system libtcl, found at run time; one build serves 8.5, 8.6 and 9.0 | Ubuntu 24.04: Tcl 8.6 + child<br>macOS 15: Tcl 8.6 (Homebrew tcl-tk@8) | 8.5, 8.6 (README, undated) | stable | command limit, time limit | macOS: 9 of 10 tests have a row not held; Linux preload: 1 of 10 tests have a row not held; child: every row held |
+| [Perl](perl/README.md#four-ways-to-run-perl-from-aether) | embedded in the host process | system libperl (threaded), found at run time | Ubuntu 24.04: Perl 5.38 + child<br>macOS 15: Perl 5.34 (the system's) | 5.34 to 5.44 (README, undated) | stable | none | macOS: 9 of 10 tests have a row not held; Linux preload: every row held; child: every row held |
+| [CRuby](ruby/README.md#four-ways-to-run-ruby-from-aether) | embedded in the host process | system libruby, found at run time | Ubuntu 24.04: Ruby 3.2 + child<br>macOS 15: Ruby 4.0 (Homebrew) | 2.6 to 3.4 (README, undated) | stable | line and call budget | macOS: 9 of 10 tests have a row not held; Linux preload: every row held; child: every row held |
+| [Go, shared library](tinygo/README.md#four-ways-to-run-go-from-aether) | compiled shared library loaded by the host | your Go library (`go build -buildmode=c-shared`); the bridge needs no Go | Ubuntu 24.04: Go (the runner's) + child<br>macOS 15: Go (the runner's) | Go 1.22, 1.27 (README, undated) | stable; the grant checks are the preload's and the child's only | none | macOS: 9 of 10 tests have a row not held; Linux preload: 9 of 10 tests have a row not held; child: 1 of 9 tests have a row not held |
+| [Go, child process](go/README.md#four-ways-to-run-go-from-aether) | separate runtime process | the `go` command or a built binary | Ubuntu 24.04: Go 1.22 + child<br>macOS 15: Go (the runner's) | 1.22, 1.27 (README, undated) | stable | the child's deadline and kill (contained child) | macOS: 9 of 10 tests have a row not held; Linux preload: 9 of 10 tests have a row not held; child: 1 of 9 tests have a row not held |
+| [Java, JVM child](java/README.md#four-ways-to-run-java-from-aether) | separate runtime process | the `java` command, JDK 21 or later | Ubuntu 24.04: OpenJDK 21 + child<br>macOS 15: JDK 21 (the runner's) | 21, 25 (README, undated) | stable; the JVM does not start in the preload on Linux | the child's deadline and kill | macOS: 9 of 10 tests have a row not held; Linux preload: runtime does not start; child: runtime does not start |
+| [Factor](factor/README.md#four-ways-to-run-factor-from-aether) | embedded in the host process | a fork of Factor with an embedding API, built from `aether-lang-dev/factor-language` at a pinned commit | Ubuntu 24.04: Factor embed-api fork + child | none beyond CI | experimental: a fork, and its child cannot start | none | macOS: not run; Linux preload: 1 of 10 tests have a row not held; child: runtime does not start |
+| [Racket CS, Rhombus](racket/README.md#four-ways-to-run-racket-from-aether) | embedded in the host process | a Racket CS installation (Linux: `libracketcs.so` made from the distribution's `.a`) | Ubuntu 24.04 arm64: Racket 8.10 (apt)<br>macOS 15: Racket 9.3 (cask), with Rhombus | 8.10, 9.3 (README, undated) | stable in-process; no contained child | none | macOS: 9 of 10 tests have a row not held; Linux preload: every row held; child: not run |
+<!-- language-facts:end -->
 
 ## Layout
 
@@ -203,6 +258,7 @@ tests/
   test_stunt_*.sh      one per policy: aether's contrib_host_stunt lists
   test_catalogue.sh    every catalogue row is named here or left out
   parity.sh            renders and checks a README's Stunt parity table
+  readme_tables.sh     checks (or writes) the generated columns of the language-facts table: CI today, from ci.yml, and Containment, from the parity tables
   factor_env.sh        find the embed-api fork's libfactor and image (the fork's checkout)
   <lang>_env.sh        find the language's runtime library on this machine (lua, python,
   <lang>_env.sh        find the language's runtime library on this machine (racket's also makes
@@ -343,7 +399,7 @@ child rows run where ae is 0.878.0 or later and the kernel has Landlock
 (`GHL_REQUIRE_CHILD=1` makes a missing child mode a failure, as CI does).
 
 CI (`.github/workflows/ci.yml`), one language per job, four jobs per
-language: Linux (Ubuntu 24.04) on `AE_PIN` (in-process), on `AE_CHILD_PIN`
+language: Linux (Ubuntu 24.04) on `AE_PIN` (in-process and the contained child, required; Racket's child is probed and skipped), on `AE_CHILD_PIN`
 (in-process and contained child) and on `AE_SPAWN_PIN` (the same, on the
 first ae whose preload holds the exec rows), and macOS on `AE_PIN`. Linux
 installs only each language's runtime package, never a dev package:

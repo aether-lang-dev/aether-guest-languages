@@ -1,8 +1,12 @@
 name: CI
 
 # ae comes from aeb's get.sh at the versions ci/versions.env pins (binary
-# releases). The in-process jobs run on AE_PIN; the contained-child jobs need
-# std.guest, so AE_CHILD_PIN. The *-spawn jobs run on AE_SPAWN_PIN, the first
+# releases). The Linux jobs on AE_PIN run the in-process rows and the contained
+# child (required: until 0.934.0 no job ran the child on a current ae, and the
+# older-pin child jobs below could not see what ae 0.927.0 changed); the
+# macOS jobs run the in-process rows (a contained child needs Linux). Racket's
+# Linux job probes the child and skips it: Chez cannot run in it. The
+# contained-child jobs on older pins need std.guest, so AE_CHILD_PIN. The *-spawn jobs run on AE_SPAWN_PIN, the first
 # ae whose preload holds os.execute / os.system, so both sides of that line are
 # checked. quickjs is the exception: it builds only on AE_QUICKJS_PIN or later,
 # so it has no spawn job and its child job runs there. Each job runs one language (GUEST_LANG), and
@@ -17,8 +21,10 @@ on:
 
 jobs:
   linux:
-    name: Linux (in-process, Lua 5.4)
+    name: Linux (in-process and contained child, Lua 5.4, ae AE_PIN)
     runs-on: ubuntu-24.04
+    env:
+      GHL_CI_RUNTIME: "Lua 5.4"
     steps:
       - uses: actions/checkout@v4
       - name: Lua
@@ -30,8 +36,8 @@ jobs:
             | AE_PIN="$AE_PIN" AEB_REF="$AEB_REF" sh
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - run: ae version
-      - name: Specs and containment rows
-        run: GUEST_LANG=lua sh tests/run.sh
+      - name: Specs and containment rows, the child required
+        run: GUEST_LANG=lua GHL_REQUIRE_CHILD=1 sh tests/run.sh
 
   linux-child:
     name: Linux (in-process and contained child, Lua 5.4)
@@ -70,6 +76,9 @@ jobs:
   macos:
     name: macOS (in-process, Lua 5.5 and 5.4)
     runs-on: macos-15
+    env:
+      GHL_CI_RUNTIME: "Lua 5.5, 5.4"
+      GHL_CI_RUNTIME_MATCH: "-"
     steps:
       - uses: actions/checkout@v4
       - name: Lua
@@ -90,8 +99,10 @@ jobs:
   # libpython of /usr/bin/python3); no python3-dev, which the bridge does not
   # need to build. tests/python_env.sh asks PYTHON for its library.
   linux-python:
-    name: Linux (in-process, Python 3.12)
+    name: Linux (in-process and contained child, Python 3.12, ae AE_PIN)
     runs-on: ubuntu-24.04
+    env:
+      GHL_CI_RUNTIME: "Python 3.12"
     steps:
       - uses: actions/checkout@v4
       - name: Python
@@ -103,8 +114,8 @@ jobs:
             | AE_PIN="$AE_PIN" AEB_REF="$AEB_REF" sh
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - run: ae version
-      - name: Specs and containment rows
-        run: GUEST_LANG=python PYTHON=/usr/bin/python3 sh tests/run.sh
+      - name: Specs and containment rows, the child required
+        run: GUEST_LANG=python GHL_REQUIRE_CHILD=1 PYTHON=/usr/bin/python3 sh tests/run.sh
 
   linux-python-child:
     name: Linux (in-process and contained child, Python 3.12)
@@ -143,6 +154,8 @@ jobs:
   macos-python:
     name: macOS (in-process, Python 3.13)
     runs-on: macos-15
+    env:
+      GHL_CI_RUNTIME: "Python 3.13"
     steps:
       - uses: actions/checkout@v4
       - name: Python
@@ -161,8 +174,11 @@ jobs:
   # 2.7); no libduktape-dev, which the bridge does not need to build.
   # tests/duktape_env.sh finds the library in the loader's cache.
   linux-duktape:
-    name: Linux (in-process, Duktape 2.7)
+    name: Linux (in-process and contained child, Duktape 2.7, ae AE_PIN)
     runs-on: ubuntu-24.04
+    env:
+      GHL_CI_RUNTIME: "Duktape 2.7"
+      GHL_CI_RUNTIME_MATCH: "207"
     steps:
       - uses: actions/checkout@v4
       - name: Duktape
@@ -174,8 +190,8 @@ jobs:
             | AE_PIN="$AE_PIN" AEB_REF="$AEB_REF" sh
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - run: ae version
-      - name: Specs and containment rows
-        run: GUEST_LANG=duktape sh tests/run.sh
+      - name: Specs and containment rows, the child required
+        run: GUEST_LANG=duktape GHL_REQUIRE_CHILD=1 sh tests/run.sh
 
   linux-duktape-child:
     name: Linux (in-process and contained child, Duktape 2.7)
@@ -214,6 +230,9 @@ jobs:
   macos-duktape:
     name: macOS (in-process, Duktape 2.7)
     runs-on: macos-15
+    env:
+      GHL_CI_RUNTIME: "Duktape 2.7"
+      GHL_CI_RUNTIME_MATCH: "207"
     steps:
       - uses: actions/checkout@v4
       - name: Duktape
@@ -232,8 +251,10 @@ jobs:
   # every ae release ships with its pinned amalgamation, compiled into the
   # program, so the jobs need only ae.
   linux-quickjs:
-    name: Linux (in-process, quickjs-ng 0.18)
+    name: Linux (in-process and contained child, quickjs-ng 0.18, ae AE_PIN)
     runs-on: ubuntu-24.04
+    env:
+      GHL_CI_RUNTIME: "quickjs-ng 0.18"
     steps:
       - uses: actions/checkout@v4
       - name: ae (AE_PIN)
@@ -243,8 +264,8 @@ jobs:
             | AE_PIN="$AE_PIN" AEB_REF="$AEB_REF" sh
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - run: ae version
-      - name: Specs and containment rows
-        run: GUEST_LANG=quickjs sh tests/run.sh
+      - name: Specs and containment rows, the child required
+        run: GUEST_LANG=quickjs GHL_REQUIRE_CHILD=1 sh tests/run.sh
 
   linux-quickjs-child:
     name: Linux (in-process and contained child, quickjs-ng 0.18, ae AE_QUICKJS_PIN)
@@ -264,6 +285,8 @@ jobs:
   macos-quickjs:
     name: macOS (in-process, quickjs-ng 0.18)
     runs-on: macos-15
+    env:
+      GHL_CI_RUNTIME: "quickjs-ng 0.18"
     steps:
       - uses: actions/checkout@v4
       - name: ae (AE_PIN)
@@ -280,8 +303,10 @@ jobs:
   # which the bridge does not need to build. The `tcl` package adds the
   # unversioned tclsh that tests/tcl_env.sh asks for Tcl's library directory.
   linux-tcl:
-    name: Linux (in-process, Tcl 8.6)
+    name: Linux (in-process and contained child, Tcl 8.6, ae AE_PIN)
     runs-on: ubuntu-24.04
+    env:
+      GHL_CI_RUNTIME: "Tcl 8.6"
     steps:
       - uses: actions/checkout@v4
       - name: Tcl
@@ -293,8 +318,8 @@ jobs:
             | AE_PIN="$AE_PIN" AEB_REF="$AEB_REF" sh
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - run: ae version
-      - name: Specs and containment rows
-        run: GUEST_LANG=tcl sh tests/run.sh
+      - name: Specs and containment rows, the child required
+        run: GUEST_LANG=tcl GHL_REQUIRE_CHILD=1 sh tests/run.sh
 
   linux-tcl-child:
     name: Linux (in-process and contained child, Tcl 8.6)
@@ -333,6 +358,8 @@ jobs:
   macos-tcl:
     name: macOS (in-process, Homebrew's tcl-tk)
     runs-on: macos-15
+    env:
+      GHL_CI_RUNTIME: "Tcl 8.6 (Homebrew tcl-tk@8)"
     steps:
       - uses: actions/checkout@v4
       - name: Tcl
@@ -351,8 +378,10 @@ jobs:
   # perl package depends on); no libperl-dev, which the bridge does not need
   # to build. tests/perl_env.sh asks PERL for its library.
   linux-perl:
-    name: Linux (in-process, Perl 5.38)
+    name: Linux (in-process and contained child, Perl 5.38, ae AE_PIN)
     runs-on: ubuntu-24.04
+    env:
+      GHL_CI_RUNTIME: "Perl 5.38"
     steps:
       - uses: actions/checkout@v4
       - name: Perl
@@ -364,8 +393,8 @@ jobs:
             | AE_PIN="$AE_PIN" AEB_REF="$AEB_REF" sh
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - run: ae version
-      - name: Specs and containment rows
-        run: GUEST_LANG=perl PERL=/usr/bin/perl sh tests/run.sh
+      - name: Specs and containment rows, the child required
+        run: GUEST_LANG=perl GHL_REQUIRE_CHILD=1 PERL=/usr/bin/perl sh tests/run.sh
 
   linux-perl-child:
     name: Linux (in-process and contained child, Perl 5.38)
@@ -404,6 +433,8 @@ jobs:
   macos-perl:
     name: macOS (in-process, Perl 5.34, the system's)
     runs-on: macos-15
+    env:
+      GHL_CI_RUNTIME: "Perl 5.34 (the system's)"
     steps:
       - uses: actions/checkout@v4
       - name: ae (AE_PIN)
@@ -420,8 +451,10 @@ jobs:
   # binary tests/ruby_env.sh asks for RbConfig); no ruby-dev, which the bridge
   # does not need to build.
   linux-ruby:
-    name: Linux (in-process, Ruby 3.2)
+    name: Linux (in-process and contained child, Ruby 3.2, ae AE_PIN)
     runs-on: ubuntu-24.04
+    env:
+      GHL_CI_RUNTIME: "Ruby 3.2"
     steps:
       - uses: actions/checkout@v4
       - name: Ruby
@@ -433,8 +466,8 @@ jobs:
             | AE_PIN="$AE_PIN" AEB_REF="$AEB_REF" sh
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - run: ae version
-      - name: Specs and containment rows
-        run: GUEST_LANG=ruby RUBY=/usr/bin/ruby sh tests/run.sh
+      - name: Specs and containment rows, the child required
+        run: GUEST_LANG=ruby GHL_REQUIRE_CHILD=1 RUBY=/usr/bin/ruby sh tests/run.sh
 
   linux-ruby-child:
     name: Linux (in-process and contained child, Ruby 3.2)
@@ -473,6 +506,8 @@ jobs:
   macos-ruby:
     name: macOS (in-process, Homebrew's Ruby)
     runs-on: macos-15
+    env:
+      GHL_CI_RUNTIME: "Ruby 4.0 (Homebrew)"
     steps:
       - uses: actions/checkout@v4
       - name: Ruby
@@ -492,8 +527,11 @@ jobs:
   # has Go and clang). The bridge needs no Go to build or run, only the
   # library does. TinyGo is not used: its c-shared is wasm-only (tinygo/README.md).
   linux-tinygo:
-    name: Linux (in-process, Go)
+    name: Linux (in-process and contained child, Go, ae AE_PIN)
     runs-on: ubuntu-24.04
+    env:
+      GHL_CI_RUNTIME: "Go (the runner's)"
+      GHL_CI_RUNTIME_MATCH: "-"
     steps:
       - uses: actions/checkout@v4
       - name: Go (cgo needs a C compiler, which the runner has)
@@ -505,8 +543,8 @@ jobs:
             | AE_PIN="$AE_PIN" AEB_REF="$AEB_REF" sh
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - run: ae version
-      - name: Specs and containment rows
-        run: GUEST_LANG=tinygo sh tests/run.sh
+      - name: Specs and containment rows, the child required
+        run: GUEST_LANG=tinygo GHL_REQUIRE_CHILD=1 sh tests/run.sh
 
   linux-tinygo-child:
     name: Linux (in-process and contained child, Go)
@@ -545,6 +583,9 @@ jobs:
   macos-tinygo:
     name: macOS (in-process, Go)
     runs-on: macos-15
+    env:
+      GHL_CI_RUNTIME: "Go (the runner's)"
+      GHL_CI_RUNTIME_MATCH: "-"
     steps:
       - uses: actions/checkout@v4
       # macos-15 runners ship no go on PATH (the Linux ones do); setup-go puts one there.
@@ -568,8 +609,10 @@ jobs:
   # loading a library, so there is no runtime package; cgo needs gcc, which
   # the runner has. tests/go_env.sh finds go and checks cgo works.
   linux-go:
-    name: Linux (in-process, Go 1.22)
+    name: Linux (in-process and contained child, Go 1.22, ae AE_PIN)
     runs-on: ubuntu-24.04
+    env:
+      GHL_CI_RUNTIME: "Go 1.22"
     steps:
       - uses: actions/checkout@v4
       - name: Go
@@ -581,8 +624,8 @@ jobs:
             | AE_PIN="$AE_PIN" AEB_REF="$AEB_REF" sh
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - run: ae version
-      - name: Specs and containment rows
-        run: GUEST_LANG=go sh tests/run.sh
+      - name: Specs and containment rows, the child required
+        run: GUEST_LANG=go GHL_REQUIRE_CHILD=1 sh tests/run.sh
 
   linux-go-child:
     name: Linux (in-process and contained child, Go 1.22)
@@ -621,6 +664,9 @@ jobs:
   macos-go:
     name: macOS (in-process, Go from the runner or Homebrew)
     runs-on: macos-15
+    env:
+      GHL_CI_RUNTIME: "Go (the runner's)"
+      GHL_CI_RUNTIME_MATCH: "-"
     steps:
       - uses: actions/checkout@v4
       - name: Go
@@ -644,8 +690,10 @@ jobs:
   # BLOCKED: a JVM does not start under the preload (java/README.md, "The wall
   # that stops a JVM"), which the tests check rather than skip.
   linux-java:
-    name: Linux (in-process, OpenJDK 21)
+    name: Linux (in-process and contained child, OpenJDK 21, ae AE_PIN)
     runs-on: ubuntu-24.04
+    env:
+      GHL_CI_RUNTIME: "OpenJDK 21"
     steps:
       - uses: actions/checkout@v4
       - name: JDK
@@ -657,8 +705,8 @@ jobs:
             | AE_PIN="$AE_PIN" AEB_REF="$AEB_REF" sh
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - run: ae version
-      - name: Specs and containment rows
-        run: GUEST_LANG=java sh tests/run.sh
+      - name: Specs and containment rows, the child required
+        run: GUEST_LANG=java GHL_REQUIRE_CHILD=1 sh tests/run.sh
 
   linux-java-child:
     name: Linux (in-process and contained child, OpenJDK 21)
@@ -697,6 +745,8 @@ jobs:
   macos-java:
     name: macOS (in-process, JDK 21 from the runner or Homebrew)
     runs-on: macos-15
+    env:
+      GHL_CI_RUNTIME: "JDK 21 (the runner's)"
     steps:
       - uses: actions/checkout@v4
       - name: JDK
@@ -726,8 +776,11 @@ jobs:
   # Linux x86_64, so its macOS job builds the bridge, the host and the worker
   # (the C compiles there) and checks that the specs and rows skip cleanly.
   linux-factor:
-    name: Linux (in-process, Factor embed-api fork)
+    name: Linux (in-process and contained child, Factor embed-api fork, ae AE_PIN)
     runs-on: ubuntu-24.04
+    env:
+      GHL_CI_RUNTIME: "Factor embed-api fork"
+      GHL_CI_RUNTIME_MATCH: "-"
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
@@ -763,8 +816,8 @@ jobs:
             | AE_PIN="$AE_PIN" AEB_REF="$AEB_REF" sh
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - run: ae version
-      - name: Specs and containment rows
-        run: GUEST_LANG=factor FACTOR_HOME="$PWD/factor-language" sh tests/run.sh
+      - name: Specs and containment rows, the child required
+        run: GUEST_LANG=factor GHL_REQUIRE_CHILD=1 FACTOR_HOME="$PWD/factor-language" sh tests/run.sh
 
   linux-factor-child:
     name: Linux (in-process and contained child, Factor embed-api fork)
@@ -854,6 +907,9 @@ jobs:
   macos-factor:
     name: macOS (compile check; no Factor to run)
     runs-on: macos-15
+    env:
+      GHL_CI_RUNTIME: "none (compile check only)"
+      GHL_CI_RUNTIME_MATCH: "-"
     steps:
       - uses: actions/checkout@v4
       # AE_CHILD_PIN, not AE_PIN: the worker and the contained-child host import
@@ -893,6 +949,9 @@ jobs:
   linux-racket:
     name: Linux (in-process, Racket 8.10 from apt)
     runs-on: ubuntu-24.04-arm
+    env:
+      GHL_CI_RUNTIME: "Racket 8.10 (apt)"
+      GHL_CI_RUNTIME_MATCH: "-"
     steps:
       - uses: actions/checkout@v4
       # make, pkg-config, libssl-dev and zlib1g-dev are for ae itself: there is no
@@ -952,6 +1011,8 @@ jobs:
   macos-racket:
     name: macOS (in-process, Racket from the Homebrew cask, with rhombus)
     runs-on: macos-15
+    env:
+      GHL_CI_RUNTIME: "Racket 9.3 (cask), with Rhombus"
     steps:
       - uses: actions/checkout@v4
       - name: Racket CS and rhombus

@@ -227,6 +227,19 @@ the contained child, which is stricter than the policy where the bridge's
 bindings would have allowed a thing and the worker does not give them to the
 script.
 
+## What crosses the boundary
+
+The top-level README's first table says it in a line; this is the detail, each
+claim with the spec that backs it.
+
+- **In-process transport.** a direct C call into the embedded Duktape (`dlopen`ed libduktape); no transport.
+- **Types.** in: str, int, strlist as globals. out: str, int, bool. A callback reads each argument's count and type and pushes int, str, bool, nil or a double. No bytes.
+- **Duplex.** host calls the guest; the guest calls back mid-eval. Nested `eval` is not claimed.
+- **Callbacks.** registered by name; the host cannot receive a JavaScript function.
+- **Errors and state.** a syntax error or a thrown value is an error result (-1); `raise_error`; the execution limit is reported unavailable, not silently ignored; one heap per VM handle.
+- **Contained child.** Contained child: `std.guest` over a `std.ipc` socketpair, 4-byte length-prefixed frames, JSON arguments and values, a granted file as a descriptor, guest-initiated calls answered one at a time, no nesting (the top-level README lists the common part). strings and integers cross as JSON (the stunt rows send no other kind); a `FAIL` throws an `Error`; `print` is `SAY`; no `CANCEL` hook: heard only in a call's reply, a loop is killed after the grace period.
+- **Tests.** `duktape/test_host_duktape_vm.ae`: "a callback reads its arguments' count and types", "a callback pushes a double, or nothing", "a syntax error is an error result", "an execution limit is reported unavailable, not silently ignored"; the sandboxed `env`, `readFile`, `writeFile`, `exec` specs in the same file.
+
 ## Containment table
 
 What a JavaScript script gets when it tries each row of stunt's catalogue (aether

@@ -260,6 +260,19 @@ That is the honest result for an engine with no I/O surface of its own, and
 for a bridge that adds none, not a gap in the table. The rows that remain are
 the host functions, the shared map and the host-checked rows.
 
+## What crosses the boundary
+
+The top-level README's first table says it in a line; this is the detail, each
+claim with the spec that backs it.
+
+- **In-process transport.** the engine (quickjs-ng, Aether's `contrib.quickjs`) is compiled into your program: a direct call; no transport.
+- **Types.** this bridge exports only `run(str)`: nothing comes back but 0 or -1. A script has `print`, `console.log` and, in a run with the shared map, `aether_map_get` and `aether_map_put` (str values). The engine's own API (`contrib.quickjs`) has handles, JSON, typed readers and functions, and is not re-exported here.
+- **Duplex.** one way: the host runs a script and waits.
+- **Callbacks.** none through this bridge.
+- **Errors and state.** -1, and a `[js]` line on stderr; a fresh runtime per script, with a 5 s absolute deadline (an interrupt stops it; Array.find under it needs the patched engine, see "Array.find" below); no state between runs.
+- **Contained child.** Contained child: `std.guest` over a `std.ipc` socketpair, 4-byte length-prefixed frames, JSON arguments and values, a granted file as a descriptor, guest-initiated calls answered one at a time, no nesting (the top-level README lists the common part). the worker mounts host functions with the engine's API (JSON in, `JSON.parse` out; a `FAIL` throws); `print` is `SAY`; no deadline or interrupt inside the worker, so `CANCEL` is heard only in a call's reply and a loop is killed after the grace period.
+- **Tests.** `quickjs/test_quickjs_bridge.ae`: "a script has print and console.log", "a script has no file, environment or process API", "modern JavaScript runs (ES2023)"; `quickjs/test_quickjs_find_interrupt.ae`; the child: `callback-greet`, `callback-add`, `map-*` rows (`quickjs/containment/checks.js`), `quickjs/containment/test_find.sh`.
+
 ## Containment table
 
 What a JavaScript script gets when it tries each row of stunt's catalogue (aether

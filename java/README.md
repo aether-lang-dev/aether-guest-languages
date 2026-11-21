@@ -332,6 +332,19 @@ from a run (`sh tests/run.sh --write-parity`) and checked against every run
 which host produced which column. Java reaches the system the same way before
 and after ae 0.884.0 (`AE_SPAWN_PIN`), so no cell has two sides.
 
+## What crosses the boundary
+
+The top-level README's first table says it in a line; this is the detail, each
+claim with the spec that backs it.
+
+- **In-process transport.** there is no in-process way: the bridge starts a JVM as a child process (with the agent jar when sandboxed).
+- **Types.** out: the JVM's exit status; the shared map through `AETHER_MAP_SHM` (the agent's `AetherMap`).
+- **Duplex.** none: the host starts it and waits.
+- **Callbacks.** none in the bridge.
+- **Errors and state.** a class that is not there is the JVM's 1; a JVM that cannot start is -1.
+- **Contained child.** Contained child: `std.guest` over a `std.ipc` socketpair, 4-byte length-prefixed frames, JSON arguments and values, a granted file as a descriptor, guest-initiated calls answered one at a time, no nesting (the top-level README lists the common part). a worker over `std.guest` written in Java; on Linux the JVM does not start inside the preload (it needs executable memory), so the child cannot run today.
+- **Tests.** `java/test_host_java.ae`: "java.run returns the JVM's exit status", "a class that is not there is the JVM's 1, a JVM that cannot start is -1", "java.run_sandboxed with the JDK read, with grant_jvm_runtime, and with none".
+
 ## Containment table
 
 What a Java program gets when it tries each row of stunt's catalogue (aether

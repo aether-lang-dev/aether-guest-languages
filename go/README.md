@@ -261,6 +261,19 @@ the preload is there to hold and does not, for Go; a row that **matches** in
 column 4 mostly does because the policy granted it, not because it was
 refused.
 
+## What crosses the boundary
+
+The top-level README's first table says it in a line; this is the detail, each
+claim with the spec that backs it.
+
+- **In-process transport.** there is no in-process way: the bridge starts a Go program as a child process.
+- **Types.** out: the child's exit status (a program that cannot start is -1, not 127). The environment and, with `..._with_map`, the shared map are the only values.
+- **Duplex.** none: the host starts it and waits for it to end.
+- **Callbacks.** none in the bridge.
+- **Errors and state.** exit status; -1 if it cannot start; one process per run.
+- **Contained child.** Contained child: `std.guest` over a `std.ipc` socketpair, 4-byte length-prefixed frames, JSON arguments and values, a granted file as a descriptor, guest-initiated calls answered one at a time, no nesting (the top-level README lists the common part). the worker is a Go program built for `std.guest`; a script is lines `call NAME [JSON]`, answered `VALUE <json>` or `FAIL <message>`, and `spin`; there is no interpreter to hand a script to.
+- **Tests.** `go/test_host_go.ae`: "go.run returns the child exit status", "a program that cannot start is -1, not 127", "go.run_sandboxed with grants and with empty"; `go/containment/test_ways.sh` (the four ways).
+
 ## Containment table
 
 What a Go program gets when it tries each row of stunt's catalogue (aether

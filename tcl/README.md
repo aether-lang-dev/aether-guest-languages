@@ -221,6 +221,19 @@ table below has each row. The table is generated from a run
 (`tests/parity.sh`), in the columns the host can run; the lines under it
 say which host produced which column.
 
+## What crosses the boundary
+
+The top-level README's first table says it in a line; this is the detail, each
+claim with the spec that backs it.
+
+- **In-process transport.** a direct C call into the embedded Tcl (`dlopen`ed libtcl); no transport.
+- **Types.** everything is a string underneath. in: str, int, strlist as globals. out: str, int, double, bool (typed results). A callback reads str, int, double, bool and pushes int, str, bool, nil, double.
+- **Duplex.** host calls the guest; the guest calls back mid-eval; a nested `eval` runs at global level and leaves the callback's arguments intact (tested).
+- **Callbacks.** host commands by name, namespaced ok.
+- **Errors and state.** a failing script is -1 with the error as the result; `raise_error`; a command limit and a time limit; one interpreter per VM handle, used by one thread (another thread is refused, not crashed).
+- **Contained child.** Contained child: `std.guest` over a `std.ipc` socketpair, 4-byte length-prefixed frames, JSON arguments and values, a granted file as a descriptor, guest-initiated calls answered one at a time, no nesting (the top-level README lists the common part). strings and integers cross as JSON (the stunt rows send no other kind); a `FAIL` is a Tcl error; `CANCEL` reaches a loop through a child interpreter.
+- **Tests.** `tcl/test_host_tcl_vm.ae`: "callbacks, globals, state kept between evals, namespaced commands", "typed results", "errors", "a nested eval runs at global level and leaves the callback's arguments intact", "the command limit and the time limit", "another thread is refused, and the VM works afterwards on its own".
+
 ## Containment table
 
 What a Tcl script gets when it tries each row of stunt's catalogue (aether
