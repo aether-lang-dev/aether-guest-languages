@@ -113,6 +113,27 @@ checks['map-overwrite-input'] = function () {
   return ['succeeded', 'input read back as ' + v];
 };
 
+// Not a row of stunt's catalogue: Array.prototype.find over a large array,
+// then every element checked (quickjs/test_quickjs_find_interrupt.ae has the
+// reason: a find stopped by a deadline freed an element twice in quickjs-ng
+// 0.18.0). The contained child's worker sets no deadline or interrupt, so no
+// find of its is ever stopped; this runs the same loops to their end in it
+// and in the bridge, and finds the array whole.
+checks['find-intact'] = function () {
+  var a = [];
+  for (var i = 0; i < 200001; i++) a.push({ n: i });
+  for (var k = 0; k < 10; k++) {
+    if (a.find(function (o) { return o.n < 0; }) !== undefined) return ['error', 'find found a negative'];
+    if (a.findIndex(function (o) { return o.n === 200000; }) !== 200000) return ['error', 'findIndex'];
+    if (a.findLast(function (o) { return o.n < 0; }) !== undefined) return ['error', 'findLast found a negative'];
+    if (a.findLastIndex(function (o) { return o.n === 0; }) !== 0) return ['error', 'findLastIndex'];
+  }
+  var fresh = [];
+  for (var j = 0; j < 1000; j++) fresh.push({ n: -1 });
+  for (var m = 0; m < a.length; m++) if (a[m].n !== m) return ['error', 'a[' + m + '] is no longer the object it held'];
+  return ['succeeded', '200,001 objects, 10 rounds of find, findIndex, findLast and findLastIndex, every element whole'];
+};
+
 function check_line(name, expect) {
   var fn = checks[name];
   if (fn === undefined) {

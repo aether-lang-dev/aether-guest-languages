@@ -1,0 +1,77 @@
+// quickjs-ng 0.18.0 freed an array element twice when a deadline stopped
+// Array.prototype.find (or findIndex, findLast, findLastIndex) after its
+// first step: the array then held an element that had been freed, and the
+// next garbage collection or read of it died. The fix is upstream's e22ce4de43
+// (unreleased as of 2026-11-21); Aether carries it from 0.934.0 as
+// contrib/quickjs/patches/0001-array-find-clear-value-after-release.patch,
+// applied to the amalgamation its releases ship, and this repository's bridge
+// compiles that engine (it has none of its own), so on 0.934.0 and later the
+// engine here is the patched one. Before 0.934.0 it is not, and the process
+// would abort, so these cases do not run there (tests/quickjs_env.sh sets
+// QUICKJS_PATCHED from the engine's patches directory).
+//
+// The first case is the engine alone with a 20 ms deadline, as the write-up
+// has it (sae's asks/quickjs-array-find-interrupt.md): find in a loop until
+// the deadline stops it, then every element is checked. The second is the
+// bridge's own run, whose deadline is its 5 s budget: the script loops find
+// until the bridge stops it, the bridge frees the runtime, and a freed
+// element would abort that free. Two lengths each: the engine reads the clock
+// every 10,000 polls, so a length that is a multiple of that can land every
+// check on step 0, which is harmless; the other is not a multiple.
+import contrib.quickjs
+import quickjs as bridge
+import std.os
+import std.spec
+import std.string
+
+fn find_intact(n: int) -> int {
+    q = quickjs.runtime(65536, 0)
+    setup = "var a = []; for (var i = 0; i < ${n}; i++) a.push({ n: i }); 0"
+    s, e1 = quickjs.eval(q, setup, "setup.js")
+    if e1 != "" { return -2 }
+    quickjs.release(q, s)
+    quickjs.set_deadline_ns(q, quickjs.now_ns() + 20000000)
+    _f, e2 = quickjs.eval(q, "for (;;) a.find(function (o) { return o.n < 0; })", "find.js")
+    if e2 == "" { return -3 }
+    quickjs.clear_deadline(q)
+    quickjs.clear_interrupted(q)
+    check = "var fresh = []; for (var j = 0; j < 1000; j++) fresh.push({ n: -1 }); var bad = -1; for (var i = 0; i < a.length; i++) { if (a[i].n !== i) { bad = i; break; } } bad"
+    v, e3 = quickjs.eval(q, check, "check.js")
+    if e3 != "" { return -4 }
+    bad = quickjs.to_int(q, v)
+    quickjs.release(q, v)
+    quickjs.dispose(q)
+    return bad
+}
+
+main() {
+    fw = spec.init()
+    patched = os.getenv("QUICKJS_PATCHED") == "1"
+
+    spec.describe(fw, "Array.prototype.find stopped by a deadline") {
+        spec.it("leaves every element of the array whole (the engine, 20 ms)") callback {
+            if !patched {
+                println("  not run: this ae's engine lacks upstream e22ce4de43 (it has it from 0.934.0)")
+                return
+            }
+            spec.assert_eq(find_intact(200001), -1, "200,001 objects: none freed")
+            spec.assert_eq(find_intact(200000), -1, "200,000 objects: none freed")
+        }
+
+        spec.it("ends a find loop in the bridge's own run without a fault (5 s each)") callback {
+            if !patched {
+                println("  not run: this ae's engine lacks upstream e22ce4de43 (it has it from 0.934.0)")
+                return
+            }
+            for n in [200001, 200000] {
+                script = "var a = []; for (var i = 0; i < ${n}; i++) a.push({ n: i }); for (;;) a.find(function (o) { return o.n < 0; });"
+                // The deadline stops it: run reports the failure and frees the
+                // runtime, which is where a freed element aborted.
+                spec.assert_eq(bridge.run(script), -1, "${n} objects: stopped by the deadline, the runtime freed")
+            }
+        }
+    }
+
+    _rc = spec.run_summary(fw)
+    return _rc
+}

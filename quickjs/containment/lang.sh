@@ -21,7 +21,7 @@
 
 LANG_TITLE=QuickJS
 # The bridge's specs, from the repository root.
-LANG_SPECS="quickjs/test_host_quickjs.ae quickjs/test_quickjs_bridge.ae"
+LANG_SPECS="quickjs/test_host_quickjs.ae quickjs/test_quickjs_bridge.ae quickjs/test_quickjs_find_interrupt.ae"
 # lang_runtime says what the run used, as LANG_RUNTIME_ENV.
 LANG_RUNTIME_ENV=QUICKJS_ENGINE
 LANG_NO_RUNTIME="no contrib.quickjs in this ae (needs a release that ships it)"
@@ -33,8 +33,8 @@ lang_version() { echo "quickjs-ng $QUICKJS_VERSION"; }
 LANG_CHECKS_ENV=QUICKJS_CHECKS
 LANG_CHECKS_FILE=checks.js
 LANG_WORKER_ENV=QUICKJS_WORKER
-# QuickJS's own tests beside the stunt ones: none.
-LANG_EXTRA_TESTS=""
+# QuickJS's own test beside the stunt ones: find over a large array.
+LANG_EXTRA_TESTS="$ROOT/quickjs/containment/test_find.sh"
 
 # Rows QuickJS cannot express, by name. Each prints LEFT OUT and why.
 left_out() {
