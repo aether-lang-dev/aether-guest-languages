@@ -90,13 +90,11 @@ checks["exec-bin-sh"] = function()
 end
 
 -- package.loadlib(path, "*") is a dlopen with RTLD_GLOBAL. Lua reports
--- dlerror()'s text, not errno. A dlopen that fails on its own always leaves
--- a dlerror() message; the preload's refusal returns NULL without one, which
--- Lua passes on as a nil message. So a nil message is the refusal, as is a
--- "Permission denied" or "Operation not permitted" in the text. From ae 0.893.0
--- (aether 80d0dd832) the preload sets a dlerror() message of its own, "<name>:
--- refused by the sandbox: dlopen of libc or the loader needs a native grant",
--- and that text is the refusal too.
+-- dlerror()'s text, not errno. The preload's refusal sets a dlerror() message
+-- of its own, "<name>: refused by the sandbox: dlopen of libc or the loader
+-- needs a native grant" (aether 80d0dd832), and that text is the refusal; so
+-- are a nil message and a "Permission denied" or "Operation not permitted" in
+-- the text, which a dlopen refused some other way leaves.
 local function loadlib(path)
   local f, msg, where = package.loadlib(path, "*")
   if f then return "succeeded", "loaded " .. path end

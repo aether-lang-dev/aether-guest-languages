@@ -35,7 +35,6 @@ trust the program, not by which is newest.
 | Go's own file, socket and process calls | not checked | not checked | **not checked**: Go makes the system calls itself | refused, beyond what the grants allow |
 | What it calls in libc (cgo) | not checked | not checked | checked against the grants (cgo's `getenv`; `dlopen` and `fork` are child-only rows) | checked, and the kernel layer beside them |
 | Platforms | everywhere Go runs | Linux (macOS: starts nothing, returns -1) | Linux | Linux with Landlock; macOS refuses to start it |
-| Needs | ae 0.875.0 | ae 0.875.0 | ae 0.875.0 | ae 0.878.0 (`std.guest`) |
 
 Ways 2 and 3 are one call. aether's bridge has no sandboxed run without the
 preload: `go.run_sandboxed` always starts the child with
@@ -240,11 +239,9 @@ is not held; column 3 is Linux with the preload.
 | `test_stunt_no_grants` | `-` | differs: open-etc-passwd not held, open-granted-file not held, write-granted-file not held, getenv-home not held, env-cached not held, connect-192.0.2.1 not held, connect-ipv4-mapped not held, exec-bin-sh not held, binding-read-etc-passwd left out, binding-read-granted-file left out, binding-getenv-home left out, callback-greet left out, callback-add left out, callback-unregistered left out, map-get left out, map-set left out, map-overwrite-input left out | differs: open-etc-passwd escapes, open-granted-file escapes, write-granted-file escapes, env-cached escapes, connect-192.0.2.1 escapes, connect-ipv4-mapped escapes, exec-bin-sh escapes, binding-read-etc-passwd left out, binding-read-granted-file left out, binding-getenv-home left out, callback-greet left out, callback-add left out, callback-unregistered left out | matches |
 | `test_stunt_write_granted` | `fs_write=$WORK/*` | differs: open-granted-file not held, binding-read-granted-file left out | differs: open-granted-file escapes, binding-read-granted-file left out | matches |
 
-- Column 2, ae from 0.884.0: macOS 27.2 arm64, ae 0.889.0, Go 1.27.3
-- Column 3, ae from 0.884.0: CachyOS, kernel 7.3.1 x86_64, ae 0.889.0, Go 1.27.3-X:nodwarf5
-- Column 3, ae before 0.884.0: CachyOS, kernel 7.3.1 x86_64, ae 0.878.0, Go 1.27.3-X:nodwarf5
-- Column 4, ae from 0.884.0: CachyOS, kernel 7.3.1 x86_64, ae 0.889.0, Go 1.27.3-X:nodwarf5
-- Column 4, ae before 0.884.0: CachyOS, kernel 7.3.1 x86_64, ae 0.878.0, Go 1.27.3-X:nodwarf5
+- Column 2: macOS 27.3 arm64, ae 0.934.0, Go 1.27.4
+- Column 3: CachyOS, kernel 7.3.5 x86_64, ae 0.934.0, Go 1.27.4-X:nodwarf5
+- Column 4: CachyOS, kernel 7.3.5 x86_64, ae 0.934.0, Go 1.27.4-X:nodwarf5
 <!-- stunt-parity:end -->
 
 The test names are stunt's, aether's `tests/integration/contrib_host_stunt`
@@ -252,8 +249,7 @@ at `AETHER_STUNT_REF` (`../ci/versions.env`), mirrored in
 `../tests/test_stunt_*.sh` with the same policies. The table is generated
 from a run (`sh tests/run.sh --write-parity`) and checked against every run
 (`tests/parity.sh`), in the columns the host can run; the lines under it say
-which host produced which column. Go reaches the system the same way before
-and after ae 0.884.0 (`AE_SPAWN_PIN`), so no cell has two sides.
+which host produced which column.
 
 Read the table with these in mind: a **left out** row is one a child
 process cannot do, not one that failed (below); an **escapes** row is one
@@ -287,7 +283,7 @@ the ways above: "child, Linux (preload)" is ways 2 and 3, "child, macOS"
 is way 2 where there is no preload (the bridge starts nothing; the rows
 here ran through `go.run`), and "contained child" is way 4. Every cell is
 a test outcome (`../tests/run.sh`): checked on macOS arm64 (Go 1.27) and
-CachyOS x86_64 with Landlock (Go 1.27; ae 0.889.0 and 0.878.0), and in CI
+CachyOS x86_64 with Landlock (Go 1.27), and in CI
 (Go 1.22).
 
 | Row | Child, Linux (preload) | Child, macOS | Contained child, Linux |

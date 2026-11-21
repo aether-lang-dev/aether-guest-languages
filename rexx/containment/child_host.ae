@@ -15,7 +15,7 @@
 // itself (RC 1, not mounted): no command reaches this host. Prints stunt's
 // line, or for a host-checked row (spin, oversize) how the guest ended, and
 // exits 0 when it matched. A script that ends in an error is judged by
-// policy.ended_in_error, as in process. Needs ae 0.878.0 or later.
+// policy.ended_in_error, as in process.
 
 @source("host_support.c")
 

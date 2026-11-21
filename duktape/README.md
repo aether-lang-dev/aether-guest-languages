@@ -31,7 +31,6 @@ stay supported: pick by how far you trust the script, not by which is newest.
 | Your host functions | not checked | checked against the grants | checked against the grants | checked against the grants; each call is a message the host answers |
 | The bridge's `env`, `readFile`, `writeFile`, `exec` | **not checked** | checked against the grants (every platform) | checked against the grants; `system()` held a second time | not given to the script at all |
 | Platforms | everywhere libduktape loads | same | Linux | Linux with Landlock; macOS refuses to start it |
-| Needs | ae 0.875.0 | ae 0.875.0 | ae 0.875.0 | ae 0.878.0 (`std.guest`) |
 
 ### 1. Embed: Duktape in your process, no containment
 
@@ -122,7 +121,7 @@ the process and libc and holds its libc calls to the same grants (Linux):
 LD_PRELOAD="$(ae cflags --libs | tr ' ' '\n' | sed -n 's/^-L//p' | head -1)/libaether_sandbox.so" ./myprog
 ```
 
-The same program, granted only `HOME`, run on CachyOS under ae 0.889.0, without
+The same program, granted only `HOME`, run on CachyOS, without
 the block, inside it, and inside it with the preload:
 
 | JavaScript does | 1. `run`, no block | 2. block | 3. block + `LD_PRELOAD` |
@@ -204,11 +203,9 @@ the rows that did not and how.
 | `test_stunt_no_grants` | `-` | differs: env-cached left out, connect-192.0.2.1 left out, connect-ipv4-mapped left out, dlopen-libm left out | differs: env-cached left out, connect-192.0.2.1 left out, connect-ipv4-mapped left out, dlopen-libm left out | differs: env-cached left out, connect-192.0.2.1 left out, connect-ipv4-mapped left out, fork left out, dlopen-libc-by-name left out, dlopen-libc-by-path left out, dlopen-libm left out, syscall-fn-openat left out, syscall-openat left out, syscall-socket left out |
 | `test_stunt_write_granted` | `fs_write=$WORK/*` | matches | matches | differs: write-granted-file stricter |
 
-- Column 2, ae from 0.884.0: macOS 27.2 arm64, ae 0.889.0, Duktape libduktape.207.20700.so
-- Column 3, ae from 0.884.0: CachyOS, kernel 7.3.1 x86_64, ae 0.889.0, Duktape libduktape.so.207
-- Column 3, ae before 0.884.0: CachyOS, kernel 7.3.1 x86_64, ae 0.878.0, Duktape libduktape.so.207
-- Column 4, ae from 0.884.0: CachyOS, kernel 7.3.1 x86_64, ae 0.889.0, Duktape libduktape.so.207
-- Column 4, ae before 0.884.0: CachyOS, kernel 7.3.1 x86_64, ae 0.878.0, Duktape libduktape.so.207
+- Column 2: macOS 27.3 arm64, ae 0.934.0, Duktape libduktape.207.20700.so
+- Column 3: CachyOS, kernel 7.3.5 x86_64, ae 0.934.0, Duktape libduktape.so.207
+- Column 4: CachyOS, kernel 7.3.5 x86_64, ae 0.934.0, Duktape libduktape.so.207
 <!-- stunt-parity:end -->
 
 The test names are stunt's, aether's `tests/integration/contrib_host_stunt` at

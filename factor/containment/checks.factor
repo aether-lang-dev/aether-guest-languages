@@ -197,12 +197,11 @@ CONSTANT: sockaddr-ipv4-mapped B{ 10 0 1 187 0 0 0 0 0 0 0 0 0 0 0 0 0 0 255 255
 
 ! ---- dlopen -----------------------------------------------------------------
 
-! dlopen, Factor's way (what DLL" " and add-library do). A dlopen that fails
-! on its own leaves a dlerror() message; the preload's refusal returns NULL
-! without one, so no message, or a "Permission denied" or "Operation not
-! permitted" in it, is the refusal; so is, from ae 0.893.0 (aether 80d0dd832),
-! the preload's own message, "<name>: refused by the sandbox: dlopen of libc or
-! the loader needs a native grant".
+! dlopen, Factor's way (what DLL" " and add-library do). The preload's refusal
+! sets a dlerror() message of its own, "<name>: refused by the sandbox: dlopen
+! of libc or the loader needs a native grant" (aether 80d0dd832), and that is
+! the refusal; so are no message and a "Permission denied" or "Operation not
+! permitted" in it, which a dlopen refused some other way leaves.
 :: load-library ( path -- outcome detail )
     [ path dlopen dll-valid? ] [ drop f ] recover :> ok
     ok [ "succeeded" path "loaded %s" sprintf ] [

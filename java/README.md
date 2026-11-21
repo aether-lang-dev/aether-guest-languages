@@ -38,7 +38,6 @@ below before ways 2, 3 and 4 on Linux: today a JVM does not start inside them.**
 | The JDK's own file, socket and process calls | not checked | not checked | would be seen by the preload (libc calls, below) | would be refused beyond what the grants allow |
 | **Today, on Linux** | works | **the JVM dies at startup** | **the JVM dies at startup** | **the JVM dies at startup** |
 | Platforms | everywhere a JDK runs | Linux (macOS: starts nothing, returns -1) | Linux | Linux with Landlock; macOS refuses to start it |
-| Needs | ae 0.875.0 | ae 0.875.0 | ae 0.875.0 | ae 0.878.0 (`std.guest`) |
 
 Ways 2 and 3 are one call, as for Go: `java.run_sandboxed` always starts the
 child with `libaether_sandbox.so` in `LD_PRELOAD`, and where the library does
@@ -141,7 +140,7 @@ on CachyOS (OpenJDK 25):
   needs.)
 - `ProcessBuilder`: libc `posix_spawn` of `$JAVA_HOME/lib/jspawnhelper`, which
   then `execve`s `/bin/sh`. A grant list therefore needs `exec` for
-  `jspawnhelper` (and, from ae 0.884.0, `fork`), besides `/bin/sh`.
+  `jspawnhelper` (and `fork`), besides `/bin/sh`.
 - `System.load(path)`: libc `dlopen`.
 - `System.getenv`: **not** libc. The JDK copies `environ` at its first use and
   never calls `getenv` again, so nothing the preload does to `getenv` reaches
@@ -176,7 +175,7 @@ Error occurred during initialization of VM
 Failed to mark memory page as executable - check if grsecurity/PaX is enabled
 ```
 
-(OpenJDK 25.0.5 on CachyOS, ae 0.889.0 and 0.878.0; with no sandbox source set
+(OpenJDK 25.0.5 on CachyOS; with no sandbox source set
 the preload is inert and the JVM starts. `-Xint` does not help: the template
 interpreter is generated machine code.) This is not a fault of this
 package. It is how `java.run_sandboxed` and `guest.launch` behave for any
@@ -317,11 +316,9 @@ the day that changes the rows come back.
 | `test_stunt_no_grants` | `-` | differs: open-etc-passwd not held, open-granted-file not held, write-granted-file not held, getenv-home not held, env-cached not held, connect-192.0.2.1 not held, connect-ipv4-mapped not held, exec-bin-sh not held, binding-read-etc-passwd left out, binding-read-granted-file left out, binding-getenv-home left out, callback-greet left out, callback-add left out, callback-unregistered left out, map-get left out, map-set left out, map-overwrite-input left out | differs: (the runtime does not start) blocked | differs: (the runtime does not start) blocked |
 | `test_stunt_write_granted` | `fs_write=$WORK/*` | differs: open-granted-file not held, binding-read-granted-file left out | differs: (the runtime does not start) blocked | differs: (the runtime does not start) blocked |
 
-- Column 2, ae from 0.884.0: macOS 27.2 arm64, ae 0.889.0, Java 21.0.13.0.3
-- Column 3, ae from 0.884.0: CachyOS, kernel 7.3.1 x86_64, ae 0.889.0, Java 25.0.5.0.3
-- Column 3, ae before 0.884.0: CachyOS, kernel 7.3.1 x86_64, ae 0.878.0, Java 25.0.5.0.3
-- Column 4, ae from 0.884.0: CachyOS, kernel 7.3.1 x86_64, ae 0.889.0, Java 25.0.5.0.3
-- Column 4, ae before 0.884.0: CachyOS, kernel 7.3.1 x86_64, ae 0.878.0, Java 25.0.5.0.3
+- Column 2: macOS 27.3 arm64, ae 0.934.0, Java 21.0.13.1
+- Column 3: CachyOS, kernel 7.3.5 x86_64, ae 0.934.0, Java 25.0.5.1
+- Column 4: CachyOS, kernel 7.3.5 x86_64, ae 0.934.0, Java 25.0.5.1
 <!-- stunt-parity:end -->
 
 The test names are stunt's, aether's `tests/integration/contrib_host_stunt`
@@ -329,8 +326,7 @@ at `AETHER_STUNT_REF` (`../ci/versions.env`), mirrored in
 `../tests/test_stunt_*.sh` with the same policies. The table is generated
 from a run (`sh tests/run.sh --write-parity`) and checked against every run
 (`tests/parity.sh`), in the columns the host can run; the lines under it say
-which host produced which column. Java reaches the system the same way before
-and after ae 0.884.0 (`AE_SPAWN_PIN`), so no cell has two sides.
+which host produced which column.
 
 ## What crosses the boundary
 
@@ -358,9 +354,8 @@ libc would see of it on Linux (a test outcome of
 [libghltrace.c](containment/libghltrace.c)), the third the result with **no
 wall** (`java.run` on macOS; the same rows on CachyOS with the worker started
 by `guest.launch_uncontained`), and the fourth what the walls do today. Every
-cell is a test outcome (`../tests/run.sh`): checked on macOS arm64 (JDK 21,
-ae 0.889.0) and CachyOS x86_64 (OpenJDK 25, kernel with Landlock; ae 0.889.0
-and 0.878.0), and in CI (OpenJDK 21).
+cell is a test outcome (`../tests/run.sh`): checked on macOS arm64 (JDK 21)
+and CachyOS x86_64 (OpenJDK 25, kernel with Landlock), and in CI (OpenJDK 21).
 
 | Row | Java's call, and what libc sees | No wall | Preload and contained child, Linux |
 |---|---|---|---|

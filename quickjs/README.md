@@ -1,7 +1,7 @@
 # quickjs: embedded JavaScript (QuickJS, ES2023)
 
 `import quickjs` lets an Aether program run JavaScript: [QuickJS](https://github.com/quickjs-ng/quickjs)
-(quickjs-ng 0.18, from ae 0.916.0), an embeddable ES2023 engine. It is the bridge that was
+(quickjs-ng 0.18), an embeddable ES2023 engine. It is the bridge that was
 aether's `contrib.host.quickjs`, moved here ([PROVENANCE.md](PROVENANCE.md)):
 the same functions under the same names, `quickjs.run`,
 `quickjs.run_sandboxed` and `quickjs.run_sandboxed_with_map`.
@@ -25,8 +25,7 @@ function you register through aether's engine module
 The bridge compiles no QuickJS of its own. `module.ae` imports aether's
 engine module, `contrib.quickjs`, whose C and pinned amalgamation (quickjs-ng
 0.18, `amalgamation.lock`) every aether release ships under
-`share/aether/contrib/quickjs/` (since well before this repository's
-`AE_PIN`; checked from 0.778.0 on). So there is **one copy of QuickJS and one
+`share/aether/contrib/quickjs/`. So there is **one copy of QuickJS and one
 pin, aether's**: this repository neither vendors the amalgamation nor repeats
 its version, and a newer `ae` brings a newer engine to this bridge unchanged.
 Nothing is loaded at run time (no `dlopen`, no soname, no environment
@@ -49,7 +48,6 @@ stay supported: pick by how far you trust the script, not by which is newest.
 | Your host functions | not checked | checked against the grants | checked against the grants | checked against the grants; each call is a message the host answers |
 | Time limit | 5 s per run | 5 s per run | 5 s per run | the host's deadline, then a kill |
 | Platforms | everywhere aether runs | same | Linux | Linux with Landlock; macOS refuses to start it |
-| Needs | ae 0.916.0 | ae 0.916.0 | ae 0.916.0 | ae 0.916.0 (`std.guest` is in 0.878.0; the engine's API, `set_deadline_ns` and a tuple-returning `to_string`, needs 0.916.0) |
 
 ### 1. Embed: QuickJS in your process, no containment
 
@@ -158,7 +156,7 @@ the process and libc and holds its libc calls to the same grants (Linux):
 LD_PRELOAD="$(ae cflags --libs | tr ' ' '\n' | sed -n 's/^-L//p' | head -1)/libaether_sandbox.so" ./myprog
 ```
 
-The same program, run on CachyOS under ae 0.889.0 with and without the
+The same program, run on CachyOS with and without the
 preload:
 
 | The script gets | 2. block, no preload | 3. block + `LD_PRELOAD` |
@@ -239,11 +237,9 @@ the rows that did not and how.
 | `test_stunt_no_grants` | `-` | differs: open-etc-passwd left out, open-granted-file left out, write-granted-file left out, getenv-home left out, env-cached left out, connect-192.0.2.1 left out, connect-ipv4-mapped left out, exec-bin-sh left out, dlopen-libm left out | differs: open-etc-passwd left out, open-granted-file left out, write-granted-file left out, getenv-home left out, env-cached left out, connect-192.0.2.1 left out, connect-ipv4-mapped left out, exec-bin-sh left out, dlopen-libm left out | differs: open-etc-passwd left out, open-granted-file left out, write-granted-file left out, getenv-home left out, env-cached left out, connect-192.0.2.1 left out, connect-ipv4-mapped left out, exec-bin-sh left out, fork left out, dlopen-libc-by-name left out, dlopen-libc-by-path left out, dlopen-libm left out, syscall-fn-openat left out, syscall-openat left out, syscall-socket left out |
 | `test_stunt_write_granted` | `fs_write=$WORK/*` | differs: write-granted-file left out, open-granted-file left out | differs: write-granted-file left out, open-granted-file left out | differs: write-granted-file left out, open-granted-file left out |
 
-- Column 2, ae from 0.884.0: macOS 27.2 arm64, ae 0.889.0, QuickJS quickjs-ng 0.17.0
-- Column 3, ae from 0.884.0: CachyOS, kernel 7.3.1 x86_64, ae 0.889.0, QuickJS quickjs-ng 0.17.0
-- Column 3, ae before 0.884.0: CachyOS, kernel 7.3.1 x86_64, ae 0.878.0, QuickJS quickjs-ng 0.17.0
-- Column 4, ae from 0.884.0: CachyOS, kernel 7.3.1 x86_64, ae 0.889.0, QuickJS quickjs-ng 0.17.0
-- Column 4, ae before 0.884.0: CachyOS, kernel 7.3.1 x86_64, ae 0.878.0, QuickJS quickjs-ng 0.17.0
+- Column 2: macOS 27.3 arm64, ae 0.934.0, QuickJS quickjs-ng 0.18.0
+- Column 3: CachyOS, kernel 7.3.5 x86_64, ae 0.934.0, QuickJS quickjs-ng 0.18.0
+- Column 4: CachyOS, kernel 7.3.5 x86_64, ae 0.934.0, QuickJS quickjs-ng 0.18.0
 <!-- stunt-parity:end -->
 
 The test names are stunt's, aether's `tests/integration/contrib_host_stunt` at
@@ -279,17 +275,14 @@ quickjs-ng 0.18.0 frees an array element twice when a deadline or interrupt
 stops `Array.prototype.find` (or `findIndex`, `findLast`, `findLastIndex`) after
 its first step; the array then holds a freed element and the next collection
 dies. This bridge sets a deadline (5 s, per script) and compiles aether's
-`contrib.quickjs`, so it has the fault wherever the engine does. Aether 0.934.0
+`contrib.quickjs`, so it has the fault wherever the engine does. Aether
 ships the engine patched (upstream's e22ce4de43, as
 `contrib/quickjs/patches/0001-array-find-clear-value-after-release.patch`,
 applied to the amalgamation by aether's fetch script), so nothing here copies or
-applies a patch: the engine is the patched one on 0.934.0 and later, and the
-unpatched 0.18.0 on older releases (the `AE_QUICKJS_PIN` job runs 0.916.0).
+applies a patch: the engine is the patched one.
 `test_quickjs_find_interrupt.ae` has the write-up's repro (200,001 and 200,000
 objects, a 20 ms deadline, every element checked afterwards) and the bridge's
-own deadline; it runs only where `QUICKJS_PATCHED=1` (`tests/quickjs_env.sh`
-sets it from the patch file) and aborts in `gc_decref_child` on 0.916.0 when
-forced. The contained child's worker sets no deadline or interrupt, so a `find`
+own deadline; on the unpatched engine it aborts in `gc_decref_child`. The contained child's worker sets no deadline or interrupt, so a `find`
 in it is never stopped (`containment/test_find.sh` runs the loops to their end
 in the bridge and in the worker and checks every element).
 

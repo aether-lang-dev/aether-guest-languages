@@ -170,14 +170,12 @@ sub fork_once {
     return ("error", "the forked child: status $?");
 }
 
-# DynaLoader::dl_load_file is a dlopen. A dlopen that fails on its own leaves
-# a dlerror() message; the preload's refusal returns NULL without one, so
-# dl_error() is empty or "(null) at ... line N." (DynaLoader formats the NULL
-# dlerror() returns into a message with perl's location on the end), and
-# "Permission denied" or "Operation not permitted" in it is the refusal too.
-# From ae 0.893.0 (aether 80d0dd832) the preload sets a dlerror() message of its
-# own, "<name>: refused by the sandbox: dlopen of libc or the loader needs a
-# native grant", and that text is the refusal as well.
+# DynaLoader::dl_load_file is a dlopen. The preload's refusal sets a dlerror()
+# message of its own, "<name>: refused by the sandbox: dlopen of libc or the
+# loader needs a native grant" (aether 80d0dd832), and that text is the
+# refusal; so are an empty dl_error() or "(null) at ... line N." (DynaLoader
+# formats a NULL dlerror() so) and "Permission denied" or "Operation not
+# permitted" in it, which a dlopen refused some other way leaves.
 sub load {
     my ($path) = @_;
     my $h = DynaLoader::dl_load_file($path, 0);

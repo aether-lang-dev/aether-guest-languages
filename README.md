@@ -101,7 +101,7 @@ worker's JSON reader but no test sends them, so no cell claims them.
 | Go, as a shared library | `import tinygo` | `load(path)` then `call_<ret>_<args>(symbol, ...)`: int, long, double, str, ptr, and owned-string results; any other signature through libffi when built with it. No tables, no structures | none: a Go library cannot call into Aether; error is the call's return value and `last_error()` for `load`; one Go runtime per process | the script is lines: `call SYMBOL arg<TAB>arg` with two strings in, one string out; nothing is mounted, no JSON | [tinygo](tinygo/README.md#what-crosses-the-boundary) |
 | Go, as a child process | `import go` | `run(binary)`, `run_script(path)`: starts a program; out: its exit status. Env and the shared map (`..._with_map`) are the only values | none; -1 if it cannot start (not 127) | a compiled-in worker: `call NAME [JSON]`, answers `VALUE json` or `FAIL msg`; no interpreter | [go](go/README.md#what-crosses-the-boundary) |
 | Java, as a JVM child | `import java` | `run(classpath, main)`: starts a JVM; out: its exit status; the shared map through `AETHER_MAP_SHM` | none; a class that is not there is the JVM's 1, no JVM is -1 | a worker over `std.guest` in Java; the JVM does not start inside the preload on Linux today | [java](java/README.md#what-crosses-the-boundary) |
-| Factor (experimental fork) | `import factor` | `eval(str)` returns what the script printed; `run(str)`; `set` and `get` a string key in the VM's global namespace; shared map by FFI words | none: the bridge has no host-function API; a stack-effect error comes back as text in the output, not as -1; one persistent VM per process | mounted functions work; no `CANCEL` hook; cannot start on ae 0.889.0 and later: the preload refuses its executable memory | [factor](factor/README.md#what-crosses-the-boundary) |
+| Factor (experimental fork) | `import factor` | `eval(str)` returns what the script printed; `run(str)`; `set` and `get` a string key in the VM's global namespace; shared map by FFI words | none: the bridge has no host-function API; a stack-effect error comes back as text in the output, not as -1; one persistent VM per process | mounted functions work; no `CANCEL` hook; cannot start: the preload refuses its executable memory | [factor](factor/README.md#what-crosses-the-boundary) |
 | Racket CS (and Rhombus) | `import racket`, `import rhombus` | `evaluate(str)` returns what was printed; `run(str)`; `set` and `get` string keys. Rhombus: the same calls on the same VM, module body in | by name (`register`); args int, str, typed by tag; returns int, str, bool, nil; `raise_error`; error is `error: <message>` text from `evaluate`, -1 from `run`, `last_error()`; definitions persist; one VM per process; nothing stops a run that does not end | none: Chez Scheme cannot run in the contained child (`racket/worker` is written and fails) | [racket](racket/README.md#what-crosses-the-boundary) |
 | Rexx, RexxAE (an engine written in Aether, from its own repository) | `import rexx`, over RexxAE's binary library (`import rexxae`) | `run(str)` returns 0, the `EXIT` code or -1; a fresh context per script with a 5 s limit. On RexxAE's API, values cross as JSON both ways: num, str, bool, null, arrays, objects | host functions by name and arity, called mid-expression: the engine suspends and resumes with the answer; `ADDRESS` commands are requests too (RC, RESULT, ERRORTEXT); a host's error answer ends the script (no `SIGNAL ON`); instruction budget per step, `rexxae_cancel` from any thread | the worker is RexxAE's own; a `FAIL` ends the script; the worker answers every `ADDRESS` itself (RC 1, not mounted); `CANCEL` heard every 1000 instructions, so a loop ends `ERROR cancelled by host` | [rexx](rexx/README.md#what-crosses-the-boundary) |
 <!-- language-boundary:end -->
@@ -119,14 +119,14 @@ first cell, so adding one needs no change to the tests.
 | [Lua](lua/README.md#four-ways-to-run-lua-from-aether) | embedded in the host process | system liblua, found at run time | Ubuntu 24.04: Lua 5.4 + child<br>macOS 15: Lua 5.5, 5.4 | 5.3, 5.5 (README, undated) | stable | instruction limit | macOS: 8 of 10 tests have a row not held; Linux preload: every row held; child: every row held |
 | [CPython](python/README.md#four-ways-to-run-python-from-aether) | embedded in the host process | system libpython, found at run time (free-threaded refused) | Ubuntu 24.04: Python 3.12 + child<br>macOS 15: Python 3.13 | 3.10 to 3.14 (README, undated); cachyos 3.14, 2026-11-21 | stable | instruction limit | macOS: 9 of 10 tests have a row not held; Linux preload: 1 of 10 tests have a row not held; child: every row held |
 | [Duktape](duktape/README.md#four-ways-to-run-javascript-from-aether) | embedded in the host process | system libduktape, found at run time | Ubuntu 24.04: Duktape 2.7 + child<br>macOS 15: Duktape 2.7 | none beyond CI | stable | none (reported unavailable) | macOS: every row held; Linux preload: every row held; child: every row held |
-| [QuickJS](quickjs/README.md#four-ways-to-run-javascript-from-aether) | engine compiled into your program | Aether's `contrib.quickjs`: quickjs-ng 0.18.0 as the ae release ships it (Array.find fix patched in from ae 0.934.0) | Ubuntu 24.04: quickjs-ng 0.18 + child<br>macOS 15: quickjs-ng 0.18 | none beyond CI | stable | 5 s deadline per script (in-process); none inside the worker (the host kills it) | macOS: every row held; Linux preload: every row held; child: every row held |
+| [QuickJS](quickjs/README.md#four-ways-to-run-javascript-from-aether) | engine compiled into your program | Aether's `contrib.quickjs`: quickjs-ng 0.18.0 as the ae release ships it (Array.find fix patched in) | Ubuntu 24.04: quickjs-ng 0.18 + child<br>macOS 15: quickjs-ng 0.18 | none beyond CI | stable | 5 s deadline per script (in-process); none inside the worker (the host kills it) | macOS: every row held; Linux preload: every row held; child: every row held |
 | [Tcl](tcl/README.md#four-ways-to-run-tcl-from-aether) | embedded in the host process | system libtcl, found at run time; one build serves 8.5, 8.6, 9.0 and 9.1 | Ubuntu 24.04: Tcl 8.6 + child<br>macOS 15: Tcl 8.6 (Homebrew tcl-tk@8)<br>macOS 15: Tcl 9.1 (Homebrew tcl-tk) | 8.5, 8.6 (README, undated); 9.0.4 with zipfs (the default) and without, private builds, in-process and as a child, cachyos, 2026-11-21; 9.1.0 (Homebrew, library in files), macOS CI, 2026-11-21 | stable | command limit, time limit | macOS: 9 of 10 tests have a row not held; Linux preload: 1 of 10 tests have a row not held; child: every row held |
 | [Perl](perl/README.md#four-ways-to-run-perl-from-aether) | embedded in the host process | system libperl (threaded), found at run time | Ubuntu 24.04: Perl 5.38 + child<br>macOS 15: Perl 5.34 (the system's) | 5.34 to 5.44 (README, undated) | stable | none | macOS: 9 of 10 tests have a row not held; Linux preload: every row held; child: every row held |
 | [CRuby](ruby/README.md#four-ways-to-run-ruby-from-aether) | embedded in the host process | system libruby, found at run time | Ubuntu 24.04: Ruby 3.2 + child<br>macOS 15: Ruby 4.0 (Homebrew) | 2.6 to 3.4 (README, undated); 4.0.10, a private build on cachyos, 2026-11-21 (CI runs Homebrew's 4.0.9 on macOS) | stable | line and call budget | macOS: 9 of 10 tests have a row not held; Linux preload: every row held; child: every row held |
 | [Go, shared library](tinygo/README.md#four-ways-to-run-go-from-aether) | compiled shared library loaded by the host | your Go library (`go build -buildmode=c-shared`); the bridge needs no Go | Ubuntu 24.04: Go (the runner's) + child<br>macOS 15: Go (the runner's) | Go 1.22, 1.27 (README, undated) | stable; the grant checks are the preload's and the child's only | none | macOS: 9 of 10 tests have a row not held; Linux preload: 9 of 10 tests have a row not held; child: 1 of 9 tests have a row not held |
 | [Go, child process](go/README.md#four-ways-to-run-go-from-aether) | separate runtime process | the `go` command or a built binary | Ubuntu 24.04: Go 1.22 + child<br>macOS 15: Go (the runner's) | 1.22, 1.27 (README, undated) | stable | the child's deadline and kill (contained child) | macOS: 9 of 10 tests have a row not held; Linux preload: 9 of 10 tests have a row not held; child: 1 of 9 tests have a row not held |
 | [Java, JVM child](java/README.md#four-ways-to-run-java-from-aether) | separate runtime process | the `java` command, JDK 21 or later | Ubuntu 24.04: OpenJDK 21 + child<br>macOS 15: JDK 21 (the runner's) | 21, 25 (README, undated) | stable; the JVM does not start in the preload on Linux | the child's deadline and kill | macOS: 9 of 10 tests have a row not held; Linux preload: runtime does not start; child: runtime does not start |
-| [Factor](factor/README.md#four-ways-to-run-factor-from-aether) | embedded in the host process | a fork of Factor with an embedding API, built from `aether-lang-dev/factor-language` at a pinned commit | Ubuntu 24.04: Factor embed-api fork + child | none beyond CI | experimental: a fork, and its child cannot start | none | macOS: not run; Linux preload: 1 of 10 tests have a row not held; child: runtime does not start |
+| [Factor](factor/README.md#four-ways-to-run-factor-from-aether) | embedded in the host process | a fork of Factor with an embedding API, built from `aether-lang-dev/factor-language` at a pinned commit | Ubuntu 24.04: Factor embed-api fork + child<br>macOS 15: none (compile check only) | none beyond CI | experimental: a fork, and its child cannot start | none | macOS: not run; Linux preload: 1 of 10 tests have a row not held; child: runtime does not start |
 | [Racket CS, Rhombus](racket/README.md#four-ways-to-run-racket-from-aether) | embedded in the host process | a Racket CS installation (Linux: `libracketcs.so` made from the distribution's `.a`) | Ubuntu 24.04 arm64: Racket 8.10 (apt)<br>macOS 15: Racket 9.3 (cask), with Rhombus | 8.10, 9.3 (README, undated) | stable in-process; no contained child | none | macOS: 9 of 10 tests have a row not held; Linux preload: every row held; child: not run |
 | [Rexx, RexxAE](rexx/README.md#four-ways-to-run-rexx-from-aether) | Aether engine linked into the host (RexxAE's binary library); in the child, RexxAE's worker | RexxAE (`aether-lang-dev/RexxAE`, its own repository, no release tags), built from source at the commit `REXXAE_REF` pins | Ubuntu 24.04: RexxAE at REXXAE_REF + child<br>macOS 15: RexxAE at REXXAE_REF | none beyond CI | a working slice of Rexx (RexxAE: 71 RexxJS builtins, 8 extensions); no I/O of its own, by design | 5 s per script (in-process); instruction budget per step; a builtin's result capped at 1 MiB; in the child, `CANCEL` every 1000 instructions | macOS: every row held; Linux preload: every row held; child: every row held |
 <!-- language-facts:end -->
@@ -135,7 +135,7 @@ first cell, so adding one needs no change to the tests.
 
 ```
 aether.toml            the package: exports every language directory (modules = "lua, python, duktape, tcl, perl, ruby, quickjs, tinygo, go, java, factor, racket, rhombus, rexx")
-ci/versions.env        toolchain pins (AE_PIN, AE_CHILD_PIN, AE_SPAWN_PIN, AEB_REF, AETHER_STUNT_REF),
+ci/versions.env        toolchain pins (AE_PIN, AEB_REF, AETHER_STUNT_REF),
                        and the commits of outside engines (FACTOR_FORK_REF, REXXAE_REF)
 lua/
   module.ae            import lua: the bridge's API
@@ -377,17 +377,9 @@ curl -fsSL https://raw.githubusercontent.com/aether-lang-dev/aeb/v0.340/get.sh \
   | AE_PIN=0.934.0 AEB_REF=v0.340 sh
 ```
 
-That is enough for the bridges and the in-process tests. The contained
-child needs `std.guest`, first published in ae 0.878.0 (`AE_CHILD_PIN`):
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/aether-lang-dev/aeb/v0.340/get.sh \
-  | AE_PIN=0.878.0 AEB_REF=v0.340 sh
-```
-
-The pins follow the rule used across the Aether family: a pin is the oldest
-version this repository has been verified against, and moves only in the
-commit that needs something newer, saying so.
+That installs everything the bridges, the in-process tests and the contained
+child need (the child is `std.guest`, part of that release). `AE_PIN` is the
+current Aether release, and the only one this repository is tested on.
 
 ## Tests
 
@@ -415,38 +407,29 @@ The containment rows build stunt from aether's source at
 `AETHER_SRC` to an aether checkout) to read its catalogue: release archives
 ship `contrib/host/stunt` without `stunt.c` and `stunt_main.c`. On Linux
 the in-process rows run under the release's `libaether_sandbox.so`; the
-child rows run where ae is 0.878.0 or later and the kernel has Landlock
+child rows run where the kernel has Landlock
 (`GHL_REQUIRE_CHILD=1` makes a missing child mode a failure, as CI does).
 
-CI (`.github/workflows/ci.yml`), one language per job, four jobs per
-language: Linux (Ubuntu 24.04) on `AE_PIN` (in-process and the contained child, required; Racket's child is probed and skipped), on `AE_CHILD_PIN`
-(in-process and contained child) and on `AE_SPAWN_PIN` (the same, on the
-first ae whose preload holds the exec rows), and macOS on `AE_PIN`. Linux
-installs only each language's runtime package, never a dev package:
-liblua5.4-dev (Lua), libpython3.12, libduktape207, tcl8.6 (QuickJS needs nothing installed), perl and
-libperl5.38t64, ruby and libruby3.2; macOS uses Homebrew's lua (5.5) and
-lua@5.4, python@3.13, duktape, tcl-tk and ruby, and the system perl (5.34).
-liblua5.4-dev (Lua), libpython3.12, libduktape207, tcl8.6, perl and
-libperl5.38t64, ruby and libruby3.2, golang-go (Go, with the runner's gcc for cgo); macOS uses Homebrew's lua (5.5) and
-lua@5.4, python@3.13, duktape, tcl-tk and ruby, the system perl (5.34), and the runner's Go.
-liblua5.4-dev (Lua), libpython3.12, libduktape207, tcl8.6, perl and
-libperl5.38t64, ruby and libruby3.2, golang-go (Go 1.22; gcc is the
-runner's); macOS uses Homebrew's lua (5.5) and lua@5.4, python@3.13,
-duktape, tcl-tk and ruby, the system perl (5.34), and the runner's Go
-(`brew install go` if it has none). Java needs only a JDK, openjdk-21-jdk-headless
-on Ubuntu 24.04 and a JDK 21 from the runner or `brew install openjdk@21` on
-macOS; its Linux child jobs pass with the JVM blocked by the preload, which the
-tests check (java/README.md).
+CI (`.github/workflows/ci.yml`), two jobs per language, both on `AE_PIN`: Linux
+(Ubuntu 24.04: in-process and the contained child, required; Racket's child is
+probed and skipped) and macOS (in-process). Linux installs only each language's
+runtime package, never a dev package: liblua5.4-dev (Lua), libpython3.12,
+libduktape207, tcl8.6, perl and libperl5.38t64, ruby and libruby3.2, golang-go
+(Go 1.22; gcc is the runner's), QuickJS needs nothing installed. macOS uses
+Homebrew's lua (5.5) and lua@5.4, python@3.13, duktape, tcl-tk and ruby, the
+system perl (5.34), and the runner's Go (`brew install go` if it has none).
+Java needs only a JDK, openjdk-21-jdk-headless on Ubuntu 24.04 and a JDK 21
+from the runner or `brew install openjdk@21` on macOS; its Linux job passes
+with the JVM blocked by the preload, which the tests check (java/README.md).
 
 Factor is the exception to "install the runtime package": a distribution's
 Factor has no embedding API, so its Linux jobs build the embed-api fork at
 `FACTOR_FORK_REF` and bootstrap its image (cached under the commit; the slow
 part is the bootstrap), and its macOS job only compiles the bridge, hosts and
-worker and checks that the specs and rows skip cleanly. Its contained-child
-jobs run with `GHL_REQUIRE_CHILD=1` like the others, and pass because the one
-known reason Factor cannot start there is named in `factor/containment/lang.sh`
-(factor/README.md, "4. A contained child").
-(`brew install go` if it has none). Racket: Ubuntu's `racket` package (8.10, which
+worker and checks that the specs and rows skip cleanly. Its Linux job runs the
+contained child with `GHL_REQUIRE_CHILD=1` like the others.
+
+Racket: Ubuntu's `racket` package (8.10, which
 brings `libracketcs.a`; the jobs make `libracketcs.so` from it) and, on macOS,
 `brew install --cask racket` (9.3) with `raco pkg install rhombus`; the
 contained child is never required for it, since it cannot run.

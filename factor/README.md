@@ -53,7 +53,7 @@ the image and maps the code heap executable). What the gate does not hold is
 Factor's `os-envs`, which reads the process's `environ` array without asking
 `getenv`, the same as Python's `os.environ`.
 
-The stronger answer, a contained child, **cannot start Factor on ae 0.889.0**:
+The stronger answer, a contained child, **cannot start Factor** (the shipped preload refuses its code heap):
 see "4. A contained child".
 
 ## Four ways to run Factor from Aether
@@ -68,8 +68,7 @@ process, and for Factor that one is blocked by the preload (below).
 | Your host functions | none: the shared map is the only channel | the map, checked against the grants | the map, checked against the grants | each call is a message the host answers (the tests' convention, below) |
 | Factor's own file, socket, process and FFI calls | not checked | **not checked** | checked against the grants (Linux), except `os-envs` | refused beyond what the host hands over |
 | Loading a vocabulary not loaded yet | yes | yes | only with a read grant on Factor's tree | only what the worker loaded before its lockdown |
-| Platforms | everywhere the fork's libfactor loads | same | Linux | **does not start** on ae 0.889.0 (Linux with Landlock otherwise) |
-| Needs | ae 0.875.0 | ae 0.875.0 | ae 0.875.0; the exec rows from 0.884.0 | ae 0.878.0 (`std.guest`) |
+| Platforms | everywhere the fork's libfactor loads | same | Linux | **does not start** (Linux with Landlock; blocked by the preload's refusal of executable memory) |
 
 ### 1. Embed: Factor in your process, no containment
 
@@ -166,7 +165,7 @@ the VM from the image and loads the script's vocabularies before it locks
 itself down, then runs the script with the bridge's `eval`. Build it with
 `ae build factor/worker/worker.ae -o build/factor-worker`.
 
-**On ae 0.889.0 it does not start.** `sandbox.spawn_socket` puts
+**It does not start.** `sandbox.spawn_socket` puts
 `libaether_sandbox.so` in every child, and the preload refuses any anonymous
 executable `mmap` and any `mprotect` to `PROT_EXEC`, whatever the grants
 ("Allow the dynamic linker and JIT runtimes to map their own code" says its
@@ -202,18 +201,17 @@ start with the shipped preload.
 |---|---|---|---|---|
 | `test_stunt_exec` | `exec=/bin/sh,fork` | not run: no Factor on macOS | matches | differs: (the runtime does not start) blocked |
 | `test_stunt_file_granted` | `fs_read=$WORK/stunt-fixture.txt,env=HOME` | not run: no Factor on macOS | matches | differs: (the runtime does not start) blocked |
-| `test_stunt_fork` | `fork` | not run: no Factor on macOS | from ae 0.884.0: matches; before: differs: exec-bin-sh escapes | differs: (the runtime does not start) blocked |
+| `test_stunt_fork` | `fork` | not run: no Factor on macOS | matches | differs: (the runtime does not start) blocked |
 | `test_stunt_host_checked` | `-` | not run: no Factor on macOS | differs: spin left out | differs: (the runtime does not start) blocked |
 | `test_stunt_native` | `native=*` | not run: no Factor on macOS | matches | differs: (the runtime does not start) blocked |
 | `test_stunt_nested` | `fs_read=$WORK/*\|fs_read=/etc/passwd` then `fs_read=$WORK/*,fs_read=/etc/passwd\|fs_read=$WORK/*` | not run: no Factor on macOS | matches | (no row of it runs this way) |
 | `test_stunt_net_allowed` | `tcp=192.0.2.1:443` | not run: no Factor on macOS | matches | differs: (the runtime does not start) blocked |
 | `test_stunt_net_other` | `tcp=198.51.100.1:443` | not run: no Factor on macOS | matches | differs: (the runtime does not start) blocked |
-| `test_stunt_no_grants` | `-` | not run: no Factor on macOS | from ae 0.884.0: differs: env-cached escapes; before: differs: env-cached escapes, exec-bin-sh escapes | differs: (the runtime does not start) blocked |
+| `test_stunt_no_grants` | `-` | not run: no Factor on macOS | differs: env-cached escapes | differs: (the runtime does not start) blocked |
 | `test_stunt_write_granted` | `fs_write=$WORK/*` | not run: no Factor on macOS | matches | differs: (the runtime does not start) blocked |
 
-- Column 3, ae from 0.884.0: CachyOS, kernel 7.3.5 x86_64, ae 0.934.0, Factor the embed-api fork at 6b88e3b758
-- Column 3, ae before 0.884.0: CachyOS, kernel 7.3.1 x86_64, ae 0.878.0, Factor the embed-api fork at c467127bc2 (before the -no-monitors commit)
-- Column 4, ae from 0.884.0: CachyOS, kernel 7.3.5 x86_64, ae 0.934.0, Factor the embed-api fork at 6b88e3b758
+- Column 3: CachyOS, kernel 7.3.5 x86_64, ae 0.934.0, Factor libfactor.a
+- Column 4: CachyOS, kernel 7.3.5 x86_64, ae 0.934.0, Factor libfactor.a
 <!-- stunt-parity:end -->
 
 The test names are stunt's, aether's `tests/integration/contrib_host_stunt`
@@ -248,7 +246,7 @@ ways above: "in-process, Linux (preload)" is way 3, and "contained child" is
 way 4, **measured with a copy of `libaether_sandbox.so` whose `mmap` and
 `mprotect` executable checks were removed**, since the shipped one does not
 let Factor start. The in-process column is a plain test outcome on CachyOS
-x86_64 with Landlock (ae 0.889.0 and 0.878.0), and in CI; the child column is
+x86_64 with Landlock and in CI; the child column is
 not checked by any test or job that runs on a shipped ae. Nothing of it is
 checked on macOS, which has no Factor here.
 
@@ -260,7 +258,7 @@ checked on macOS, which has no Factor here.
 | `getenv-home` (libc's `getenv`, through the FFI) | per policy | refused under every policy: the worker has no environment; `getenv` is a host function |
 | `env-cached` (`os-envs`, the `environ` array) | **escapes**: no `getenv` is asked | refused under every policy: the worker is started with no environment |
 | `connect-192.0.2.1`, `connect-ipv4-mapped` (FFI `socket`, `connect`) | per policy | refused under every policy: the worker's lockdown has no tcp grant |
-| `exec-bin-sh` (libc's `system()` and `run-process`) | per policy, from ae 0.884.0; before it **escapes** (`system()`) | refused under every policy, from ae 0.884.0 |
+| `exec-bin-sh` (libc's `system()` and `run-process`) | per policy | refused under every policy |
 | `fork` (FFI `fork`) | (child-only row) | refused under every policy: no fork grant |
 | `dlopen-libm` (`dlopen`) | loads | loads |
 | `dlopen-libc-by-name`, `dlopen-libc-by-path` (`dlopen`) | (child-only row) | refused under every policy, `native=*` included |
@@ -330,7 +328,7 @@ as its third argument. Once parsed, a vocabulary reads nothing.
 reason (it reads the image).
 
 **No read of Factor's tree is needed in-process any more (the fork's
-`-no-monitors`).** From ae 0.927.0 (aether #3751) a directory listing needs
+`-no-monitors`).** A directory listing needs (aether #3751)
 `fs_read` on the directory itself, and the VM's startup hook started a
 vocabulary monitor that opened inotify watches on the four vocabulary roots
 (`core`, `basis`, `extra`, `work`). A refused open did not come back as an
@@ -340,8 +338,8 @@ with `chmod 000` and no sandbox). The fork now starts the VM with
 `-no-monitors` (`vm/embed_api.cpp`, `embed_vm_init`; the fork's branch
 `embed-no-monitors`, commit 6b88e3b758, which `FACTOR_FORK_REF` names), so
 nothing lists those directories, and the stunt policy of a row is the stunt
-test's with no grant added. Until then the in-process host granted
-`fs_read` on `$FACTOR_HOME/*`; that grant is removed. The tests still end a
+test's with no grant added. The in-process host no longer grants
+`fs_read` on `$FACTOR_HOME/*`. The tests still end a
 hung row after `GHL_ROW_TIMEOUT` seconds (300), so a regression shows as a
 failure, not a wait.
 

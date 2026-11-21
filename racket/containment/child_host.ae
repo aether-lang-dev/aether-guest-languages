@@ -12,7 +12,7 @@
 // is the host's own here, its input frozen as the runtime freezes it. Prints
 // stunt's line, or for a host-checked row (spin, silent, oversize,
 // half-frame) how the
-// guest ended, and exits 0 when it matched. Needs ae 0.878.0 or later.
+// guest ended, and exits 0 when it matched.
 //
 // The worker boots Racket and requires what checks.rkt needs before it locks
 // itself down: after, it can read nothing (racket/worker/worker.ae).

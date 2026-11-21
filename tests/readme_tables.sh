@@ -55,10 +55,6 @@ def ci_cell(lang):
     return "<br>".join(parts) if parts else "none"
 
 # --- Containment, from each language's parity table ------------------------
-def side_current(cell):
-    m = re.match(r"from ae [^:]*: (.*?); before: ", cell)
-    return m.group(1) if m else cell
-
 def containment_cell(lang):
     text = open("%s/%s/README.md" % (root, lang)).read()
     m = re.search(r"<!-- stunt-parity:begin.*?-->\n(.*?)<!-- stunt-parity:end", text, re.S)
@@ -70,7 +66,7 @@ def containment_cell(lang):
         cells = [c.strip() for c in r.replace("\\|", "\x01").split("|")]
         # ['', test, policy, c2, c3, c4, '']
         for i, c in zip((2, 3, 4), cells[3:6]):
-            cols[i].append(side_current(c.replace("\x01", "|")))
+            cols[i].append(c.replace("\x01", "|"))
     names = {2: "macOS", 3: "Linux preload", 4: "child"}
     out = []
     for i in (2, 3, 4):

@@ -71,7 +71,7 @@ main() {
                 spec.assert_eq(java.run_sandboxed(some, classes, "ghl.examples.Exit"), -1, "no preload: nothing starts")
                 spec.assert_eq(java.run_sandboxed(runtime, classes, "ghl.examples.Exit"), -1, "no preload: nothing starts")
             } else {
-                // The JVM started (not -1). It ran (5) or, as of ae 0.889.0,
+                // The JVM started (not -1). It ran (5) or
                 // died at startup (1): the preload refuses it executable memory
                 // (java/containment/lang.sh, wall_blocks). 5 is the day that changes.
                 rc1 = java.run_sandboxed(some, classes, "ghl.examples.Exit")

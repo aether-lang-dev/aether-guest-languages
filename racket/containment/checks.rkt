@@ -136,12 +136,12 @@
                       (cons "succeeded" "the forked child ran")]
                      [else (cons "error" (format "the forked child: waitpid ~a, status ~a" r status))]))]))))
 
-;; ffi-lib is a dlopen. A dlopen that fails on its own leaves a dlerror()
-;; message, which Racket puts in the exception; the preload's refusal returns
-;; NULL without one. That, or "Permission denied" or "Operation not
-;; permitted" in the text, is the refusal. So is, from ae 0.893.0 (aether
-;; 80d0dd832), the preload's own dlerror() message, "<name>: refused by the
-;; sandbox: dlopen of libc or the loader needs a native grant".
+;; ffi-lib is a dlopen. The preload's refusal sets a dlerror() message of its
+;; own, "<name>: refused by the sandbox: dlopen of libc or the loader needs a
+;; native grant" (aether 80d0dd832), which Racket puts in the exception, and
+;; that is the refusal; so are no message and "Permission denied" or
+;; "Operation not permitted" in the text, which a dlopen refused some other
+;; way leaves.
 (define (dlopen-row path)
   (with-handlers ([exn:fail? (lambda (e)
                                (let ([m (exn-text e)])

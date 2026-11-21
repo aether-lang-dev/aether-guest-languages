@@ -72,8 +72,8 @@ proc check::env-cached {} {
 #
 # The command's stderr is sent to its stdout (2>@1). Without a redirection of
 # stderr, Tcl's exec first makes a temporary file for it (/tmp/tclXXXXXX, or
-# $TMPDIR/tclXXXXXX), which is a file creation: from ae 0.927.0 (aether #3751)
-# the preload checks that where it is made and wants fs_read and fs_write
+# $TMPDIR/tclXXXXXX), which is a file creation: the preload (aether #3751)
+# checks that where it is made and wants fs_read and fs_write
 # there, so a bare `exec` under the stunt policy `exec=/bin/sh,fork` fails with
 # "couldn't create error file for command: permission denied" before it forks.
 # This row asks whether the grants exec and fork alone let a shell start, and
@@ -176,12 +176,10 @@ proc check::connect-ipv4-mapped {} { return [connect_to ::ffff:192.0.2.1] }
 
 # load is a dlopen of the file, then a dlsym of <prefix>_Init. A library that
 # dlopen finds but has no such function ends "couldn't find procedure" (8.5)
-# or "cannot find symbol" (8.6): the load succeeded, as far as these rows go. A dlopen that fails on its own
-# leaves a dlerror() message; the preload's refusal returns NULL without one,
-# so the message ends where the dlerror text would begin. From ae 0.893.0
-# (aether 80d0dd832) the preload sets a dlerror() message of its own, "<name>:
-# refused by the sandbox: dlopen of libc or the loader needs a native grant",
-# and that text is the refusal as well.
+# or "cannot find symbol" (8.6): the load succeeded, as far as these rows go. The preload's refusal sets a
+# dlerror() message of its own, "<name>: refused by the sandbox: dlopen of libc
+# or the loader needs a native grant" (aether 80d0dd832), and that text is the
+# refusal.
 proc loadlib {path} {
     if {![catch {load $path Aethergl} res opts]} { return [list succeeded "loaded $path"] }
     if {[string first "couldn't find procedure" $res] >= 0 ||

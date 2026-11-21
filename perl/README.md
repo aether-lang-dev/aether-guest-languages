@@ -23,7 +23,6 @@ supported: pick by how far you trust the script, not by which is newest.
 | Perl's own file, socket, process and `DynaLoader` calls | not checked | **not checked** | checked against the grants (Linux) | refused, beyond what the host hands over |
 | Loading a module not loaded yet | yes | yes | only with a read grant on perl's library directories | only what the worker loaded before its lockdown |
 | Platforms | everywhere libperl loads | same | Linux | Linux with Landlock; macOS refuses to start it |
-| Needs | ae 0.875.0 | ae 0.875.0 | ae 0.875.0; `system` and backticks held from 0.884.0 | ae 0.878.0 (`std.guest`) |
 
 ### 1. Embed: Perl in your process, no containment
 
@@ -102,7 +101,7 @@ Perl and libc and holds Perl's own calls to the same grants (Linux):
 LD_PRELOAD="$(ae cflags --libs | tr ' ' '\n' | sed -n 's/^-L//p' | head -1)/libaether_sandbox.so" ./myprog
 ```
 
-A script granted only `HOME`, run on CachyOS (Perl 5.44) under ae 0.889.0,
+A script granted only `HOME`, run on CachyOS (Perl 5.44),
 first without the preload and then with it:
 
 | Perl does | without | with `LD_PRELOAD` |
@@ -131,9 +130,8 @@ Two things in it are Perl's own:
 It is a library interposer, not a kernel boundary: a raw system call made
 without libc is not seen, and macOS has no equivalent. Core Perl has no way
 to make one (the containment table has why); only the contained child's
-kernel layer holds those. `system` and backticks are held from ae 0.884.0
-(aether #3580): before it, Perl's `fork` followed by `execvp` escaped the
-preload. The containment table below has every row.
+kernel layer holds those. `system` and backticks are held (aether #3580;
+Perl's `fork` followed by `execvp`). The containment table below has every row.
 
 ### 4. A contained child, over `std.guest`
 
@@ -201,20 +199,18 @@ else the rows that did not and how.
 |---|---|---|---|---|
 | `test_stunt_exec` | `exec=/bin/sh,fork` | differs: open-etc-passwd not held | matches | differs: exec-bin-sh stricter, fork stricter |
 | `test_stunt_file_granted` | `fs_read=$WORK/stunt-fixture.txt,env=HOME` | differs: open-etc-passwd not held, write-granted-file not held, getenv-home left out | differs: getenv-home left out | differs: open-granted-file stricter, syscall-openat left out, getenv-home left out, env-cached stricter |
-| `test_stunt_fork` | `fork` | differs: exec-bin-sh not held, open-etc-passwd not held | from ae 0.884.0: matches; before: differs: exec-bin-sh escapes | differs: fork stricter |
+| `test_stunt_fork` | `fork` | differs: exec-bin-sh not held, open-etc-passwd not held | matches | differs: fork stricter |
 | `test_stunt_host_checked` | `-` | differs: spin left out | differs: spin left out | matches |
 | `test_stunt_native` | `native=*` | differs: open-etc-passwd not held | matches | differs: dlopen-libc-by-name stricter, dlopen-libc-by-path stricter |
 | `test_stunt_nested` | `fs_read=$WORK/*\|fs_read=/etc/passwd` then `fs_read=$WORK/*,fs_read=/etc/passwd\|fs_read=$WORK/*` | differs: open-etc-passwd not held, open-granted-file not held | matches | (no row of it runs this way) |
 | `test_stunt_net_allowed` | `tcp=192.0.2.1:443` | differs: open-etc-passwd not held | matches | differs: connect-192.0.2.1 stricter, connect-ipv4-mapped stricter, syscall-socket left out |
 | `test_stunt_net_other` | `tcp=198.51.100.1:443` | differs: connect-192.0.2.1 not held, connect-ipv4-mapped not held | matches | matches |
-| `test_stunt_no_grants` | `-` | differs: open-etc-passwd not held, open-granted-file not held, write-granted-file not held, getenv-home left out, connect-192.0.2.1 not held, connect-ipv4-mapped not held, exec-bin-sh not held | from ae 0.884.0: differs: getenv-home left out; before: differs: getenv-home left out, exec-bin-sh escapes | differs: getenv-home left out, syscall-openat left out, syscall-socket left out |
+| `test_stunt_no_grants` | `-` | differs: open-etc-passwd not held, open-granted-file not held, write-granted-file not held, getenv-home left out, connect-192.0.2.1 not held, connect-ipv4-mapped not held, exec-bin-sh not held | differs: getenv-home left out | differs: getenv-home left out, syscall-openat left out, syscall-socket left out |
 | `test_stunt_write_granted` | `fs_write=$WORK/*` | differs: open-granted-file not held | matches | differs: write-granted-file stricter |
 
-- Column 2, ae from 0.884.0: macOS 27.2 arm64, ae 0.889.0, Perl 5.34.1
-- Column 3, ae from 0.884.0: CachyOS, kernel 7.3.1 x86_64, ae 0.889.0, Perl 5.44.0
-- Column 3, ae before 0.884.0: CachyOS, kernel 7.3.1 x86_64, ae 0.878.0, Perl 5.44.0
-- Column 4, ae from 0.884.0: CachyOS, kernel 7.3.1 x86_64, ae 0.889.0, Perl 5.44.0
-- Column 4, ae before 0.884.0: CachyOS, kernel 7.3.1 x86_64, ae 0.878.0, Perl 5.44.0
+- Column 2: macOS 27.3 arm64, ae 0.934.0, Perl 5.34.1
+- Column 3: CachyOS, kernel 7.3.5 x86_64, ae 0.934.0, Perl 5.44.0
+- Column 4: CachyOS, kernel 7.3.5 x86_64, ae 0.934.0, Perl 5.44.0
 <!-- stunt-parity:end -->
 
 The test names are stunt's, aether's `tests/integration/contrib_host_stunt`
@@ -250,8 +246,8 @@ does not, as stunt expects. The columns are the ways above: "in-process,
 Linux (preload)" is way 3, "in-process, macOS" is way 2 where there is no
 preload, and "contained child" is way 4. Every cell is a test outcome
 (`../tests/run.sh`): checked on macOS arm64 (Perl 5.34, the system's),
-CachyOS x86_64 with Landlock (5.44; ae 0.889.0 and 0.878.0) and Ubuntu
-22.04 arm64 (5.34; preload and child, ae 0.888.0), and in CI.
+CachyOS x86_64 with Landlock (5.44), Ubuntu 22.04 x86_64 (5.34; preload and
+child) and in CI.
 
 | Row | In-process, Linux (preload) | In-process, macOS | Contained child, Linux |
 |---|---|---|---|
@@ -261,7 +257,7 @@ CachyOS x86_64 with Landlock (5.44; ae 0.889.0 and 0.878.0) and Ubuntu
 | `getenv-home` | **left out**: core Perl cannot ask libc's `getenv` | left out | left out |
 | `env-cached` (`%ENV`) | per policy: the bridge hides what the grants do not grant | same, without the preload | refused under every policy: the worker is started with no environment |
 | `connect-192.0.2.1`, `connect-ipv4-mapped` (`socket`, `connect`) | per policy | **not held** | refused under every policy: the worker's own lockdown has no tcp grant |
-| `exec-bin-sh` (`system` and backticks) | per policy, from ae 0.884.0; before it **escapes**: both fork and call `execvp` with no exec grant | **not held** | refused under every policy: the worker's lockdown has no fork grant |
+| `exec-bin-sh` (`system` and backticks) | per policy | **not held** | refused under every policy: the worker's lockdown has no fork grant |
 | `fork` (`fork`) | (child-only row) | (child-only row) | refused under every policy: the worker's lockdown has no fork grant |
 | `dlopen-libm` (`DynaLoader::dl_load_file`) | loads | loads | loads |
 | `dlopen-libc-by-name`, `dlopen-libc-by-path` (`dl_load_file`) | (child-only row) | (child-only row) | refused under every policy, `native=*` included |
@@ -300,11 +296,9 @@ What the table says:
 
 - **In-process is the easy default and is not containment on its own.**
   On Linux the preload holds Perl's file, socket, `fork` and `DynaLoader`
-  calls, and from ae 0.884.0 `system` and backticks too. Before 0.884.0
-  they escaped it: Perl's `system` forks and calls `execvp`, and that
-  preload neither refused the fork (a `fork()` in a sandbox with no fork
-  grant succeeds, observed on 0.878.0) nor saw the exec, which glibc's
-  `execvp` makes inside libc. On macOS nothing holds Perl's own calls at
+  calls, and `system` and backticks too (Perl's `system` forks and calls
+  `execvp`; the preload refuses the fork without a fork grant and sees the
+  exec, which glibc's `execvp` makes inside libc). On macOS nothing holds Perl's own calls at
   all. The host functions (`binding-*`), which check the grants themselves,
   hold everywhere, and so does `%ENV`.
 - **The contained child holds every row it runs**, on Linux, and is
@@ -326,9 +320,7 @@ What the table says:
   reads there.
 - The tests hold these cells, including the gaps: an **escapes** or **not
   held** row runs expecting the call to succeed, so the day the preload
-  holds it that test fails and this table is brought up to date. The
-  `exec-bin-sh` row is checked on either side of ae 0.884.0
-  (`AE_SPAWN_PIN` in `ci/versions.env`), from the ae the tests run on.
+  holds it that test fails and this table is brought up to date.
 - FreeBSD is not tested here (the preload's `fork()` has been seen to
   answer `ENOSYS` there for Python, which would be Perl's `system` as well).
 

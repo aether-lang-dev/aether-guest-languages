@@ -48,19 +48,6 @@ libc_row() {
     esac
 }
 
-# Rows the preload is there to hold but does not, for this language and this
-# ae: run expecting `succeed`, so the day the preload holds them this goes red
-# and the table in <lang>/README.md is brought up to date. exec-bin-sh is held
-# from AE_SPAWN_PIN on (aether #3580).
-escapes_preload() {
-    case "$1" in
-        exec-bin-sh)
-            ver_ge "$ae_ver" "$AE_SPAWN_PIN" && return 1
-            echo "ae $ae_ver predates $AE_SPAWN_PIN: os.execute is system(), and glibc starts /bin/sh with posix_spawn, a clone and an execve inside libc that this preload's execve and fork do not see" ;;
-        *) return 1 ;;
-    esac
-}
-
 # Rows the contained child refuses where the policy would allow them: the
 # std.guest worker locks itself down with no grants and is given no
 # environment, so a granted file reaches the script only as a descriptor
@@ -72,8 +59,7 @@ child_stricter() {
         getenv-home) echo "guest.launch gives the worker no environment: a variable comes through getenv" ;;
         dlopen-libc-*) echo "the worker's own lockdown has no native grant: the preload refuses it a handle on libc whatever the policy" ;;
         exec-bin-sh)
-            ver_ge "$ae_ver" "$AE_SPAWN_PIN" || return 1
-            echo "the worker's own lockdown has no exec or fork grant, and from ae $AE_SPAWN_PIN the preload holds system() to them" ;;
+            echo "the worker's own lockdown has no exec or fork grant, and the preload holds system() to them" ;;
         *) return 1 ;;
     esac
 }

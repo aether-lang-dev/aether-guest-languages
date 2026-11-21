@@ -146,15 +146,12 @@ rescue SystemCallError => e
   by_errno(e.errno, "fork: #{e.message}")
 end
 
-# Fiddle.dlopen is a dlopen. A dlopen that fails on its own leaves a
-# dlerror() message, which Fiddle raises as DLError. The preload's refusal
-# returns NULL without one, and Fiddle (1.1.x, in Ruby 3.4) raises only when
-# there is a message: it hands back a Handle holding NULL instead, so a
-# refusal is a Handle whose address is 0 (or, from a Fiddle that does raise,
-# a "Permission denied" or empty message). From ae 0.893.0 (aether 80d0dd832)
-# the preload sets a dlerror() message of its own, "<name>: refused by the
-# sandbox: dlopen of libc or the loader needs a native grant", which Fiddle
-# raises: that text is the refusal too.
+# Fiddle.dlopen is a dlopen. The preload's refusal sets a dlerror() message of
+# its own, "<name>: refused by the sandbox: dlopen of libc or the loader needs
+# a native grant" (aether 80d0dd832), which Fiddle raises as DLError: that text
+# is the refusal. A refusal with no message (Fiddle 1.1.x, in Ruby 3.4, hands
+# back a Handle holding NULL then) is a Handle whose address is 0, and a
+# "Permission denied" or empty message is one too.
 def dlopen_refusal(e, what)
   msg = e.message.to_s
   if msg == "" || msg == "(null)" || msg =~ /Permission denied|Operation not permitted|refused by the sandbox/

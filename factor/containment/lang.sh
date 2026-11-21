@@ -50,9 +50,6 @@ libc_row() {
 escapes_preload() {
     case "$1" in
         env-cached) echo "os-envs reads the process's environ array itself rather than asking getenv, so no interposer on getenv sees it" ;;
-        exec-bin-sh)
-            ver_ge "$ae_ver" "$AE_SPAWN_PIN" && return 1
-            echo "ae $ae_ver predates $AE_SPAWN_PIN: libc's system() starts /bin/sh with posix_spawn, a clone and an execve inside libc that this preload's execve and fork do not see" ;;
         *) return 1 ;;
     esac
 }
@@ -65,8 +62,7 @@ child_stricter() {
         connect-*) echo "the worker's own lockdown has no tcp grant: the preload refuses the connect whatever the policy" ;;
         fork) echo "the worker's own lockdown has no fork grant: the preload refuses fork whatever the policy" ;;
         exec-bin-sh)
-            ver_ge "$ae_ver" "$AE_SPAWN_PIN" || return 1
-            echo "the worker's own lockdown has no exec or fork grant, and from ae $AE_SPAWN_PIN the preload holds system() to them" ;;
+            echo "the worker's own lockdown has no exec or fork grant, and the preload holds system() to them" ;;
         *) return 1 ;;
     esac
 }

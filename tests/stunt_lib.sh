@@ -59,8 +59,8 @@ case "$(uname -s 2>/dev/null)" in
 esac
 command -v ae > /dev/null 2>&1 || die "ae is not on PATH"
 # A row that hangs is a failure, not a wait: a runtime that dies in a loop when
-# the preload refuses something it asked for (Factor, from ae 0.927.0, before
-# its grants were completed) otherwise held a CI job for its whole timeout.
+# the preload refuses something it asked for (Factor, before its grants were
+# completed) otherwise held a CI job for its whole timeout.
 # Exit 124 is timeout's. Skipped where there is no `timeout` (macOS).
 ROW_TIMEOUT=""
 command -v timeout > /dev/null 2>&1 && ROW_TIMEOUT="timeout ${GHL_ROW_TIMEOUT:-300}"
@@ -72,21 +72,13 @@ preload_fails() { return 1; }
 # default none (a language whose worker locks itself down, as std.guest.child
 # does, is held by that; one that cannot, like Go, has only the spawn's wall).
 child_escapes() { return 1; }
+# Rows the preload is there to hold but does not, for this language (the lang.sh
+# says why): run expecting `succeed`, so the day it holds them the run goes red.
+# By default none.
+escapes_preload() { return 1; }
 # And rows the language cannot express in-process only (the contained child
 # runs them): left_out is for both.
 left_out_inproc() { return 1; }
-# And rows it cannot say anything stable about in the contained child only,
-# with why (a language whose result there depends on its build, as Tcl's exec
-# does before AE_SPAWN_PIN): left out in the child, run in-process.
-left_out_child() { return 1; }
-# And rows that cannot run in the child on an ae older than some release, for a
-# reason of that release (Tcl's dlopen rows died on the NULL dlerror() the
-# preload left until ae 0.934.0). They are not run and not recorded: the
-# README's table says what the current release does. The run records the row as
-# "NOT RUN", which tests/parity.sh leaves out of both sides of its comparison
-# (and never writes over), so an older ae's run neither fails on the row nor
-# changes its cell. Printed, so the run says what it did not do.
-skip_child_old_ae() { return 1; }
 # A language whose runtime cannot start in a mode (wall_blocks inproc|child
 # prints why) and the text it dies with (BLOCK_MARK). By default none.
 wall_blocks() { return 1; }
@@ -201,48 +193,42 @@ if [ -n "$PRELOAD" ] && BLOCK_WHY="$(wall_blocks inproc)"; then
     fi
 fi
 
-# The contained child: std.guest (ae >= AE_CHILD_PIN) and a kernel that
-# spawn_socket can contain a child on (Linux with Landlock). GHL_REQUIRE_CHILD=1
+# The contained child: std.guest and a kernel that spawn_socket can contain a
+# child on (Linux with Landlock). GHL_REQUIRE_CHILD=1
 # (the CI job that is there to run it) makes its absence a failure.
 CHILD=0
 CHILD_BLOCKED=0
 CHILD_WHY=""
-ae_ver="$(ae version 2>/dev/null | awk 'NR == 1 { print $2 }')"
-ver_ge() { [ "$(printf '%s\n%s\n' "$2" "$1" | sort -V | head -1)" = "$2" ]; }
-if ! ver_ge "$ae_ver" "$AE_CHILD_PIN"; then
-    CHILD_WHY="ae $ae_ver has no std.guest (needs $AE_CHILD_PIN)"
+CHILD_HOST="$BUILD/$LANG_NAME-child-host"
+WORKER="$BUILD/$LANG_NAME-worker"
+build "$LANG_NAME/containment/child_host.ae" "$CHILD_HOST"
+if [ -n "$LANG_WORKER_BUILT" ]; then WORKER="$LANG_WORKER_BUILT"; else build "$LANG_NAME/worker/worker.ae" "$WORKER"; fi
+eval "export $LANG_WORKER_ENV=\"\$WORKER\""
+# The row that shows a child can run at all: a host function's answer by
+# default (callback-greet); a language with no host functions names
+# another that succeeds with no grants (lang.sh's LANG_PROBE).
+probe="${LANG_PROBE:-callback-greet}"
+(cd "$WORK" && "$CHILD_HOST" - "$probe" succeed) > "$TMP/probe.txt" 2>&1
+if grep -q "$probe: succeeded" "$TMP/probe.txt"; then
+    CHILD=1
+    [ "$PLAT" = linux ] || die "a child started on $PLAT, where spawn_socket should refuse" "$TMP/probe.txt"
+elif [ "$PLAT" = linux ] && CHILD_BLOCK_WHY="$(wall_blocks child)" && grep -q "$BLOCK_MARK" "$TMP/probe.txt"; then
+    # Checked, not assumed: the worker died with the mark.
+    CHILD_BLOCKED=1
+    CHILD_WHY="$CHILD_BLOCK_WHY"
+elif [ "$PLAT" = macos ] && grep -q "cannot contain a child on macOS, so nothing was started" "$TMP/probe.txt"; then
+    # Fails closed, as it should: that is checked, not skipped.
+    CHILD_WHY="guest.launch refuses on macOS and starts nothing (checked: $(tail -1 "$TMP/probe.txt" | cut -c1-90)...)"
 else
-    CHILD_HOST="$BUILD/$LANG_NAME-child-host"
-    WORKER="$BUILD/$LANG_NAME-worker"
-    build "$LANG_NAME/containment/child_host.ae" "$CHILD_HOST"
-    if [ -n "$LANG_WORKER_BUILT" ]; then WORKER="$LANG_WORKER_BUILT"; else build "$LANG_NAME/worker/worker.ae" "$WORKER"; fi
-    eval "export $LANG_WORKER_ENV=\"\$WORKER\""
-    # The row that shows a child can run at all: a host function's answer by
-    # default (callback-greet); a language with no host functions names
-    # another that succeeds with no grants (lang.sh's LANG_PROBE).
-    probe="${LANG_PROBE:-callback-greet}"
-    (cd "$WORK" && "$CHILD_HOST" - "$probe" succeed) > "$TMP/probe.txt" 2>&1
-    if grep -q "$probe: succeeded" "$TMP/probe.txt"; then
-        CHILD=1
-        [ "$PLAT" = linux ] || die "a child started on $PLAT, where spawn_socket should refuse" "$TMP/probe.txt"
-    elif [ "$PLAT" = linux ] && CHILD_BLOCK_WHY="$(wall_blocks child)" && grep -q "$BLOCK_MARK" "$TMP/probe.txt"; then
-        # Checked, not assumed: the worker died with the mark.
+    CHILD_WHY="the contained child did not start: $(tail -1 "$TMP/probe.txt")"
+    # A language whose runtime cannot start in the child at all, for a
+    # reason that is known and documented (lang.sh's lang_child_blocked,
+    # given the probe's output), is not a child that failed to start by
+    # accident: GHL_REQUIRE_CHILD does not fail on it, and the day the
+    # block is lifted the probe passes and the child mode runs.
+    if type lang_child_blocked > /dev/null 2>&1 && why="$(lang_child_blocked "$TMP/probe.txt")"; then
+        CHILD_WHY="$why"
         CHILD_BLOCKED=1
-        CHILD_WHY="$CHILD_BLOCK_WHY"
-    elif [ "$PLAT" = macos ] && grep -q "cannot contain a child on macOS, so nothing was started" "$TMP/probe.txt"; then
-        # Fails closed, as it should: that is checked, not skipped.
-        CHILD_WHY="guest.launch refuses on macOS and starts nothing (checked: $(tail -1 "$TMP/probe.txt" | cut -c1-90)...)"
-    else
-        CHILD_WHY="the contained child did not start: $(tail -1 "$TMP/probe.txt")"
-        # A language whose runtime cannot start in the child at all, for a
-        # reason that is known and documented (lang.sh's lang_child_blocked,
-        # given the probe's output), is not a child that failed to start by
-        # accident: GHL_REQUIRE_CHILD does not fail on it, and the day the
-        # block is lifted the probe passes and the child mode runs.
-        if type lang_child_blocked > /dev/null 2>&1 && why="$(lang_child_blocked "$TMP/probe.txt")"; then
-            CHILD_WHY="$why"
-            CHILD_BLOCKED=1
-        fi
     fi
 fi
 if [ "$CHILD" = 0 ] && [ "$CHILD_BLOCKED" = 1 ]; then
@@ -263,11 +249,10 @@ policy() { POLICY="$1"; }
 
 # ---- what the README's Stunt parity table is made from ----------------------
 
-# One line per outcome: test, column, ae side of AE_SPAWN_PIN, row, kind.
+# One line per outcome: test, column, row, kind.
 # The columns are the ways of lua/README.md's "Four ways": 2 the sandbox
 # block with no preload, 3 the same under LD_PRELOAD, 4 the contained child.
 PARITY="$BUILD/parity-$LANG_NAME.tsv"
-if ver_ge "$ae_ver" "$AE_SPAWN_PIN"; then SIDE=from; else SIDE=before; fi
 # FreeBSD's preload is not Linux's: its runs are recorded apart (3f), and
 # the table, whose column 3 is Linux's, does not take them.
 inproc_column() {
@@ -277,7 +262,7 @@ inproc_column() {
 }
 record() {   # record <mode> <check> <kind>
     case "$1" in inproc) col="$(inproc_column)" ;; *) col=4 ;; esac
-    printf '%s\t%s\t%s\t%s\t%s\n' "${STUNT_TEST:-stunt}" "$col" "$SIDE" "$2" "$3" >> "$PARITY"
+    printf '%s\t%s\t%s\t%s\n' "${STUNT_TEST:-stunt}" "$col" "$2" "$3" >> "$PARITY"
 }
 
 RAN=0
@@ -379,17 +364,6 @@ stunt_inproc() {
 }
 
 stunt_child() {
-    if why="$(skip_child_old_ae "$1")"; then
-        printf '  [NOT RUN] %s (child): %s\n' "$1" "$why"
-        record child "$1" "NOT RUN"
-        return
-    fi
-    if why="$(left_out_child "$1")"; then
-        printf '  [LEFT OUT] %s (child): %s\n' "$1" "$why"
-        LEFT=$((LEFT + 1))
-        record child "$1" "LEFT OUT"
-        return
-    fi
     if [ "$2" = refused ] && why="$(child_escapes "$1")"; then
         run_one "ESCAPES" child succeed "$1"
         printf '             (%s)\n' "$why"

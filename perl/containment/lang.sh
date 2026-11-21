@@ -49,19 +49,6 @@ libc_row() {
     esac
 }
 
-# Rows the preload is there to hold but does not, for Perl and this ae: run
-# expecting `succeed`, so the day they are held this goes red and the table
-# in perl/README.md is brought up to date. exec-bin-sh is held from
-# AE_SPAWN_PIN on (aether #3580).
-escapes_preload() {
-    case "$1" in
-        exec-bin-sh)
-            ver_ge "$ae_ver" "$AE_SPAWN_PIN" && return 1
-            echo "ae $ae_ver predates $AE_SPAWN_PIN: Perl's system and backticks fork and then call execvp, and the preload before it neither refuses that fork (a plain fork() in a sandbox with no fork grant succeeds, observed) nor sees the exec, which glibc's execvp makes inside libc" ;;
-        *) return 1 ;;
-    esac
-}
-
 # Rows the contained child refuses where the policy would allow them: the
 # std.guest worker locks itself down with no grants and is given no
 # environment, so a granted file reaches the script only as a descriptor

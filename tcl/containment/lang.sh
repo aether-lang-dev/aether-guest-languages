@@ -43,47 +43,12 @@ libc_row() {
     esac
 }
 
-# Rows not run in the contained child before ae 0.934.0 (AE_DLERROR_PIN): Tcl's
-# load of a library the preload refuses (dlopen-libc-by-name, -by-path) used to
-# kill the worker. The preload returned NULL from dlopen without setting
-# dlerror(), and Tcl 8.6's TclpDlopen formats that dlerror() with Tcl_ObjPrintf
-# ("%s") and dereferences NULL: SIGSEGV, the worker KILLED, the script never
-# sees a refusal. From 0.934.0 a refused dlopen always leaves a non-NULL
-# dlerror() (aether #3799), so the rows run and Tcl answers "refused".
-skip_child_old_ae() {
-    case "$1" in
-        dlopen-libc-*)
-            ver_ge "$ae_ver" "$AE_DLERROR_PIN" && return 1
-            echo "ae $ae_ver predates $AE_DLERROR_PIN: a refused dlopen leaves a NULL dlerror(), which Tcl 8.6's load formats and dies on (SIGSEGV in TclpDlopen)" ;;
-        *) return 1 ;;
-    esac
-}
-
-# Rows left out in the contained child only. Before AE_SPAWN_PIN the worker's
-# exec is not held by the preload (execvp reaches execve inside libc, aether
-# #3580), so what happens there is up to how this Tcl build starts a program:
-# Ubuntu 22.04's Tcl 8.6.12 does it with fork (strace: a plain clone), which the
-# worker refuses, and the shell does not start; the GitHub runner's Ubuntu 24.04
-# Tcl 8.6.14 starts it (CI, 2026-11-21; why it differs was not looked into). A
-# row that comes out by the Tcl build is not a row.
-left_out_child() {
-    case "$1" in
-        exec-bin-sh)
-            ver_ge "$ae_ver" "$AE_SPAWN_PIN" && return 1
-            echo "ae $ae_ver predates $AE_SPAWN_PIN: the worker's exec is not held, and whether the shell starts depends on the Tcl build (22.04's 8.6.12 forks with fork and is refused; the runner's 8.6.14 starts it)" ;;
-        *) return 1 ;;
-    esac
-}
-
 # Rows the preload is there to hold but does not, for Tcl and this ae: run
 # expecting `succeed`, so the day it holds them this goes red and the table in
 # tcl/README.md is brought up to date.
 escapes_preload() {
     case "$1" in
         env-cached) echo "\$env is the copy of the environment Tcl took in Tcl_Init, before any sandbox: reading it is an array read, which no libc interposer sees" ;;
-        exec-bin-sh)
-            ver_ge "$ae_ver" "$AE_SPAWN_PIN" && return 1
-            echo "ae $ae_ver predates $AE_SPAWN_PIN: Tcl's exec is vfork and execvp, and glibc's execvp reaches execve inside libc, past the preload's execve wrapper" ;;
         *) return 1 ;;
     esac
 }
@@ -98,7 +63,7 @@ child_stricter() {
         open-granted-file|write-granted-file) echo "the worker's own lockdown: a granted file comes as a descriptor, through read_file" ;;
         env-cached) echo "guest.launch gives the worker no environment: a variable comes through getenv" ;;
         connect-*) echo "the worker's own lockdown has no tcp grant: the preload refuses the connect whatever the policy" ;;
-        dlopen-libc-*) echo "the worker's own lockdown has no native grant: the preload refuses it a handle on libc whatever the policy (Tcl's load now answers with an error it can catch, from ae $AE_DLERROR_PIN)" ;;
+        dlopen-libc-*) echo "the worker's own lockdown has no native grant: the preload refuses it a handle on libc whatever the policy (Tcl's load answers with an error it can catch)" ;;
         exec-bin-sh) echo "the worker's own lockdown has no fork grant, and Tcl's exec forks, which is refused whatever the policy" ;;
         *) return 1 ;;
     esac

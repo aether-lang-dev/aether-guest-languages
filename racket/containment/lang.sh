@@ -59,8 +59,7 @@ child_stricter() {
         connect-*) echo "the worker's own lockdown has no tcp grant: the preload refuses the connect whatever the policy" ;;
         fork) echo "the worker's own lockdown has no fork grant: the preload refuses fork whatever the policy" ;;
         exec-bin-sh)
-            ver_ge "$ae_ver" "$AE_SPAWN_PIN" || return 1
-            echo "the worker's own lockdown has no exec or fork grant, and from ae $AE_SPAWN_PIN the preload holds system() to them" ;;
+            echo "the worker's own lockdown has no exec or fork grant, and the preload holds system() to them" ;;
         *) return 1 ;;
     esac
 }

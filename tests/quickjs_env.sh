@@ -12,12 +12,6 @@ quickjs_engine() {
         export QUICKJS_ENGINE="$dir"
         QUICKJS_VERSION="$(sed -n 's/^QUICKJS_VERSION=//p' "$dir/amalgamation.lock")"
         export QUICKJS_VERSION
-        # Aether 0.934.0 and later carry upstream's Array.find fix as a patch
-        # applied to the amalgamation it ships (contrib/quickjs/patches/):
-        # the engine is the patched one when that file is there.
-        QUICKJS_PATCHED=0
-        ls "$dir"/patches/*array-find* > /dev/null 2>&1 && QUICKJS_PATCHED=1
-        export QUICKJS_PATCHED
         return 0
     fi
     return 1

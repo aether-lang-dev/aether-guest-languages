@@ -12,7 +12,7 @@
 // are no host functions to answer: the bridge has none, and the worker
 // mounts none. Prints stunt's line, or for a host-checked row (spin, silent,
 // oversize, half-frame) how the guest ended, and exits 0 when it matched.
-// Needs ae 0.878.0 or later.
+//
 //
 // The worker loads the library before it locks itself down (its first
 // argument): after, it can open nothing.

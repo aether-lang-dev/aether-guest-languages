@@ -46,7 +46,6 @@ is newest.
 | `os.Getenv`, `os.Environ` | the process's | the process's | **not held**: Go's copy from load time | the worker has no environment |
 | Goroutines on other threads | | | **not held**: grant levels are per thread | |
 | Platforms | everywhere the library loads | same | Linux | Linux with Landlock; macOS refuses to start it |
-| Needs | ae 0.875.0 | ae 0.875.0 | ae 0.875.0 | ae 0.878.0 (`std.guest`) |
 
 The short version: for a Go library, **ways 2 and 3 are not containment**.
 Way 2 adds nothing, because the bridge checks nothing and the library cannot
@@ -146,7 +145,7 @@ net.Dial 192.0.2.1:443     let through (timed out)
 dlopen libc (cgo)          loaded
 ```
 
-(CachyOS, ae 0.889.0, Go 1.27.3, no preload; macOS prints the same.) Use
+(CachyOS, Go 1.27.3, no preload; macOS prints the same.) Use
 this way for a library you trust, where the block's only role is to hold
 what the *host's* code does around the call. It is also how the stunt
 tests below call the library, so that their policies are in force.
@@ -161,7 +160,7 @@ LD_PRELOAD="$(ae cflags --libs | tr ' ' '\n' | sed -n 's/^-L//p' | head -1)/liba
 ```
 
 The same program and library, granted only `HOME`, run on CachyOS (Go
-1.27.3, ae 0.889.0), first without the preload and then with it:
+1.27.3), first without the preload and then with it:
 
 | Go does | without | with `LD_PRELOAD` |
 |---|---|---|
@@ -279,11 +278,9 @@ else the rows that did not and how.
 | `test_stunt_no_grants` | `-` | differs: open-etc-passwd not held, open-granted-file not held, write-granted-file not held, getenv-home not held, env-cached not held, connect-192.0.2.1 not held, connect-ipv4-mapped not held, exec-bin-sh not held, binding-read-etc-passwd left out, binding-read-granted-file left out, binding-getenv-home left out, callback-greet left out, callback-add left out, callback-unregistered left out, map-get left out, map-set left out, map-overwrite-input left out | differs: open-etc-passwd escapes, open-granted-file escapes, write-granted-file escapes, env-cached escapes, connect-192.0.2.1 escapes, connect-ipv4-mapped escapes, exec-bin-sh escapes, binding-read-etc-passwd left out, binding-read-granted-file left out, binding-getenv-home left out, callback-greet left out, callback-add left out, callback-unregistered left out, map-get left out, map-set left out, map-overwrite-input left out | differs: binding-read-etc-passwd left out, binding-read-granted-file left out, binding-getenv-home left out, callback-greet left out, callback-add left out, callback-unregistered left out, map-get left out, map-set left out, map-overwrite-input left out |
 | `test_stunt_write_granted` | `fs_write=$WORK/*` | differs: open-granted-file not held, binding-read-granted-file left out | differs: open-granted-file escapes, binding-read-granted-file left out | differs: binding-read-granted-file left out |
 
-- Column 2, ae from 0.884.0: macOS 27.2 arm64, ae 0.889.0, Go 1.27.3
-- Column 3, ae from 0.884.0: CachyOS, kernel 7.3.1 x86_64, ae 0.889.0, Go 1.27.3-X:nodwarf5
-- Column 3, ae before 0.884.0: CachyOS, kernel 7.3.1 x86_64, ae 0.878.0, Go 1.27.3-X:nodwarf5
-- Column 4, ae from 0.884.0: CachyOS, kernel 7.3.1 x86_64, ae 0.889.0, Go 1.27.3-X:nodwarf5
-- Column 4, ae before 0.884.0: CachyOS, kernel 7.3.1 x86_64, ae 0.878.0, Go 1.27.3-X:nodwarf5
+- Column 2: macOS 27.3 arm64, ae 0.934.0, Go 1.27.4
+- Column 3: CachyOS, kernel 7.3.5 x86_64, ae 0.934.0, Go 1.27.4-X:nodwarf5
+- Column 4: CachyOS, kernel 7.3.5 x86_64, ae 0.934.0, Go 1.27.4-X:nodwarf5
 <!-- stunt-parity:end -->
 
 The test names are stunt's, aether's `tests/integration/contrib_host_stunt`
@@ -330,7 +327,7 @@ grants it and refused where it does not, as stunt expects. The columns are
 the ways above: "in-process, Linux (preload)" is way 3, "in-process, macOS"
 is way 2 where there is no preload, and "contained child" is way 4. Every
 cell is a test outcome (`../tests/run.sh`): checked on macOS arm64 (Go
-1.27) and CachyOS x86_64 with Landlock (Go 1.27; ae 0.889.0 and 0.878.0),
+1.27) and CachyOS x86_64 with Landlock (Go 1.27),
 and in CI.
 
 | Row | Done in Go with | In-process, Linux (preload) | In-process, macOS | Contained child, Linux |
@@ -342,7 +339,7 @@ and in CI.
 | `env-cached` | `os.Getenv`, `os.Environ` | **escapes**: Go's copy from load | **not held** | refused under every policy: the worker has no environment |
 | `connect-192.0.2.1` | `net.DialTimeout` | **escapes** | **not held** | no tcp grant: refused (seccomp, at `socket`); granted: per policy; a grant for **another** address: **escapes** |
 | `connect-ipv4-mapped` | `syscall.Socket(AF_INET6)`, `syscall.Connect` | **escapes** | **not held** | the same as `connect-192.0.2.1` |
-| `exec-bin-sh` | `os/exec` and `syscall.ForkExec` | **escapes** (both sides of ae 0.884.0) | **not held** | per policy (seccomp: refused without an exec grant, and without a fork grant) |
+| `exec-bin-sh` | `os/exec` and `syscall.ForkExec` | **escapes** | **not held** | per policy (seccomp: refused without an exec grant, and without a fork grant) |
 | `fork` | `clone(SIGCHLD)` by `syscall.RawSyscall` | (child-only row) | (child-only row) | per policy (seccomp: refused without a fork grant) |
 | `dlopen-libm` | `C.dlopen` (cgo) | loads | loads | loads |
 | `dlopen-libc-by-name`, `dlopen-libc-by-path` | `C.dlopen` (cgo) | (child-only row) | (child-only row) | refused under every policy, `native=*` included: the worker's lockdown, on the thread that took it |
@@ -376,9 +373,8 @@ of their own), in
   `syscall()`), on the thread that holds the level, and **nothing else**:
   `os`, `net`, `os/exec` and `syscall` make their system calls without
   libc, so the file, the socket, the shell and the environment copy all
-  escape. This is true on both sides of ae 0.884.0 (`AE_SPAWN_PIN`), which
-  made the preload hold `system()` and `posix_spawn`: Go does not call
-  them. The tests run these rows expecting success, so the day Go goes
+  escape. The preload holds `system()` and `posix_spawn`, and Go does not
+  call them. The tests run these rows expecting success, so the day Go goes
   through libc or the preload grows a seccomp layer, they go red and this
   table is brought up to date. On macOS nothing holds Go's calls at all.
 - **The contained child holds every row but one**, by the kernel. The
@@ -523,8 +519,7 @@ convention. There are no host functions to mount.
 [containment/child_host.ae](containment/child_host.ae) is a complete host.
 
 What a Go library needs of the process after the lockdown, and whether the
-sandbox's spawn allows it, from the tests on CachyOS (ae 0.889.0 and
-0.878.0):
+sandbox's spawn allows it, from the tests on CachyOS:
 
 - **Threads: yes.** The Go runtime starts several at load (the scheduler's
   `sysmon`, the GC's workers) and more as goroutines block; the contained

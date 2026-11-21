@@ -42,18 +42,6 @@ libc_row() {
     esac
 }
 
-# Rows the preload is there to hold but does not, for Ruby and this ae: run
-# expecting `succeed`, so the day they are held this goes red and the table
-# in ruby/README.md is brought up to date.
-escapes_preload() {
-    case "$1" in
-        exec-bin-sh)
-            ver_ge "$ae_ver" "$AE_SPAWN_PIN" && return 1
-            echo "ae $ae_ver predates $AE_SPAWN_PIN: Kernel#system and backticks start /bin/sh with fork or posix_spawn, a clone and an execve this preload's execve and fork may not see" ;;
-        *) return 1 ;;
-    esac
-}
-
 # Rows where the preload itself fails, run expecting an error. FreeBSD's
 # preload answers fork() and system() with ENOSYS even when fork and exec are
 # granted (posix_spawn and vfork get through), so Kernel#system and backticks
@@ -78,8 +66,7 @@ child_stricter() {
         connect-*) echo "the worker's own lockdown has no tcp grant: the preload refuses the connect whatever the policy" ;;
         fork) echo "the worker's own lockdown has no fork grant: the preload refuses Kernel#fork whatever the policy" ;;
         exec-bin-sh)
-            ver_ge "$ae_ver" "$AE_SPAWN_PIN" || return 1
-            echo "the worker's own lockdown has no exec or fork grant, and from ae $AE_SPAWN_PIN the preload holds system() and spawning to them" ;;
+            echo "the worker's own lockdown has no exec or fork grant, and the preload holds system() and spawning to them" ;;
         *) return 1 ;;
     esac
 }

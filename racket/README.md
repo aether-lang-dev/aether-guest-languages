@@ -37,13 +37,12 @@ child, does not work for Racket at all ([4](#4-a-contained-child-does-not-work))
 Every claim below is a test outcome from one of these, and nothing else was
 run:
 
-| Where | Racket | ae | Ran |
-|---|---|---|---|
-| macOS 27.2 arm64 | 9.3 CS, `brew install --cask racket` (Racket.framework); `raco pkg install rhombus` for Rhombus | 0.889.0 | the specs (racket and rhombus), the containment rows in-process (column 2), the examples |
-| Ubuntu 24.04 arm64, in a podman container (Linux 7.1, Landlock present, gcc 13) | 8.10 CS, `apt install racket`; `libracketcs.so` made from `/usr/lib/libracketcs.a` | 0.889.0 | the specs (racket; no rhombus: 8.10 has none), the containment rows in-process under the preload (column 3), the examples, the contained child (it starts, boots Racket, and dies: [4](#4-a-contained-child-does-not-work)) |
+| Where | Racket | Ran |
+|---|---|---|
+| macOS 27.2 arm64 | 9.3 CS, `brew install --cask racket` (Racket.framework); `raco pkg install rhombus` for Rhombus | the specs (racket and rhombus), the containment rows in-process (column 2), the examples |
+| Ubuntu 24.04 arm64, in a podman container (Linux 7.1, Landlock present, gcc 13) | 8.10 CS, `apt install racket`; `libracketcs.so` made from `/usr/lib/libracketcs.a` | the specs (racket; no rhombus: 8.10 has none), the containment rows in-process under the preload (column 3), the examples, the contained child (it starts, boots Racket, and dies: [4](#4-a-contained-child-does-not-work)) |
 
-Not run: any ae older than 0.889.0 (the pins in `../ci/versions.env` are the
-repository's; Racket is verified against none but 0.889.0), FreeBSD, Windows,
+Not run: FreeBSD, Windows,
 Racket BC, and any Racket other than the two above. **x86_64 Linux cannot use
 the distribution's archive:** Ubuntu 24.04's x86_64 `libracketcs.a` is not
 position-independent (`ld: relocation R_X86_64_PC32 against symbol stderr can
@@ -199,9 +198,6 @@ work for Racket.
 | Racket's own file, socket, process, `getenv` and FFI calls | not checked | **not checked** | checked against the grants (Linux), all of them | **does not work**: Chez Scheme cannot run under the child's preload |
 | `(require ...)` of a module not required yet | yes | yes | only with a read grant on the collects directory | n/a |
 | Platforms | everywhere the library loads | same | Linux | Linux with Landlock; macOS refuses to start it |
-| Needs | ae 0.875.0 | ae 0.875.0 | ae 0.875.0 | ae 0.878.0 (`std.guest`) |
-
-(The ae versions are the repository's pins; Racket was run on 0.889.0 only.)
 
 ### 1. Embed: Racket in your process, no containment
 
@@ -276,7 +272,7 @@ LD_PRELOAD="$(ae cflags --libs | tr ' ' '\n' | sed -n 's/^-L//p' | head -1)/liba
 ```
 
 The program from way 2, with `USER=paul` in the environment, on Ubuntu 24.04
-arm64 (Racket 8.10, ae 0.889.0), first without the preload and then with it:
+arm64 (Racket 8.10), first without the preload and then with it:
 
 | Racket does | without | with `LD_PRELOAD` |
 |---|---|---|
@@ -349,8 +345,8 @@ else the rows that did not and how.
 | `test_stunt_no_grants` | `-` | differs: open-etc-passwd not held, open-granted-file not held, write-granted-file not held, getenv-home not held, env-cached left out, connect-192.0.2.1 not held, connect-ipv4-mapped not held, exec-bin-sh not held | differs: env-cached left out | does not run (way 4) |
 | `test_stunt_write_granted` | `fs_write=$WORK/*` | differs: open-granted-file not held | matches | does not run (way 4) |
 
-- Column 2, ae from 0.884.0: macOS 27.2 arm64, ae 0.889.0, Racket 9.3
-- Column 3, ae from 0.884.0: Ubuntu 24.04.5 LTS, kernel 7.1.10 aarch64, ae 0.889.0, Racket 8.10
+- Column 2: macOS 27.3 arm64, ae 0.934.0, Racket 9.3
+- Column 3: Ubuntu 24.04.5 LTS, kernel 7.1.10 aarch64, ae 0.889.0, Racket 8.10
 <!-- stunt-parity:end -->
 
 The test names are stunt's, aether's `tests/integration/contrib_host_stunt`
@@ -386,7 +382,7 @@ grants it and refused where it does not, as stunt expects. The columns are
 the ways above: "in-process, Linux (preload)" is way 3, "in-process, macOS"
 is way 2 where there is no preload, and the contained child is way 4, which
 does not run. Every cell is a test outcome (`../tests/run.sh`): macOS arm64
-(Racket 9.3) and Ubuntu 24.04 arm64 (Racket 8.10), ae 0.889.0.
+(Racket 9.3) and Ubuntu 24.04 arm64 (Racket 8.10).
 
 | Row | In-process, Linux (preload) | In-process, macOS | Contained child, Linux |
 |---|---|---|---|
@@ -417,8 +413,8 @@ the child. Their claims are therefore none. What the table does say:
 
 - **On Linux the preload holds all of Racket's own calls that stunt tries
   in-process**, `getenv` included, and `subprocess` is held at the fork's
-  exec, in every ae version (Racket forks and execs itself; there is no
-  `system()` escape as in Lua and Python before ae 0.884.0). It does so with
+  exec, (Racket forks and execs itself; there is no `system()` to escape through,
+  as there is in Lua and Python). It does so with
   Chez's code allocator unaffected, because the preload refuses anonymous
   executable memory only in a process started under the sandbox.
 - **On macOS nothing holds Racket's own calls**; the host functions hold.

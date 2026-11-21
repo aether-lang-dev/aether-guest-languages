@@ -69,7 +69,7 @@ a program that only uses `racket.*` never pays for it.
 map in both directions with `fib0..fib9` written by Racket and read through
 `rhombus.get`) passes on macOS 27.2 arm64 with Racket 9.3 and
 `raco pkg install rhombus` (the version `download.rhombus-lang.org`'s catalog
-gave on 2026-11-05), ae 0.889.0. It was not run anywhere else: Ubuntu 24.04's
+gave on 2026-11-05). It was not run anywhere else: Ubuntu 24.04's
 Racket 8.10 has no `rhombus` collection, and `tests/run.sh` leaves the spec
 out where `(collection-file-path "main.rkt" "rhombus")` fails, so it never
 runs there.

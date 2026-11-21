@@ -6,7 +6,7 @@
 #   tests/parity.sh write <lang>    rewrite the README's table from it
 #
 # tests/stunt_lib.sh appends every outcome to build/parity-<lang>.tsv (test,
-# column, ae side, row, kind), and tests/run.sh clears it before a language's
+# column, row, kind), and tests/run.sh clears it before a language's
 # containment run, then calls this. One table row per stunt test
 # (tests/test_stunt_*.sh, named after aether's contrib_host_stunt tests at
 # AETHER_STUNT_REF), one column per way the checks run in:
@@ -22,14 +22,9 @@
 # hosts that can run each column, and a line under it says which host
 # produced which.
 #
-# The exec rows differ either side of AE_SPAWN_PIN (ci/versions.env), so a
-# cell holds both sides when they differ: "from ae X: ...; before: ...". A
-# run reads and writes its own side; a cell with one value stands for both
-# until a run on the other side says otherwise.
 set -u
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-. "$ROOT/ci/versions.env"
 
 what="${1:-}"
 lang="${2:-}"
@@ -53,47 +48,18 @@ for t in "$SCRIPT_DIR"/test_stunt_*.sh; do
 done
 
 out="$ROOT/build/parity-$lang.md"
-awk -v what="$what" -v pin="$AE_SPAWN_PIN" -v provfile="$PROV" -v out="$out" -F '\t' '
+awk -v what="$what" -v provfile="$PROV" -v out="$out" -F '\t' '
 function kindtext(k) { k = tolower(k); return k }
-function sidevalue(cell, side,    i, f, b) {
-    # "from ae X: A; before: B" or a single value for both.
-    i = index(cell, "; before: ")
-    if (substr(cell, 1, 8) != "from ae " || i == 0) return cell
-    f = substr(cell, 1, i - 1); sub(/^from ae [^:]*: /, "", f)
-    b = substr(cell, i + 10)
-    return side == "from" ? f : b
-}
-function compose(f, b) {
-    if (f == b) return f
-    if (f == "") return b
-    if (b == "") return f
-    return "from ae " pin ": " f "; before: " b
-}
-# A README cell without the rows t, c did not run: "differs: a x, b y" minus
-# the items whose row name is in notrun[t, c]; nothing left is "matches".
-function strip(cell, t, c,    body, n, parts, i, name, out) {
-    if (!((t, c) in notrun) || substr(cell, 1, 9) != "differs: ") return cell
-    body = substr(cell, 10); n = split(body, parts, ", "); out = ""
-    for (i = 1; i <= n; i++) {
-        name = parts[i]; sub(/ .*/, "", name)
-        if (index(notrun[t, c], " " name " ")) continue
-        out = out (out == "" ? "" : ", ") parts[i]
-    }
-    return out == "" ? "matches" : "differs: " out
-}
 function trim(s) { gsub(/^ +| +$/, "", s); return s }
 FILENAME == ARGV[1] {   # the tests
     ntests++; tname[ntests] = $1; tpol[$1] = $2; next
 }
 FILENAME == ARGV[2] {   # the results
-    t = "test_" $1; c = $2; side = $3
+    t = "test_" $1; c = $2
     if (c !~ /^[234]$/) { other[c] = 1; next }   # a column the table has not (3f)
-    ran[c] = side; seen[t, c] = 1
-    # A row this ae could not run (stunt_lib.sh skip_child_old_ae): it is left
-    # out of the comparison, and a cell holding it is not rewritten.
-    if ($5 == "NOT RUN") { notrun[t, c] = notrun[t, c] " " $4 " "; next }
-    if ($5 != "PASS") {
-        item = $4 " " kindtext($5)
+    ran[c] = 1; seen[t, c] = 1
+    if ($4 != "PASS") {
+        item = $3 " " kindtext($4)
         if (index("\n" diff[t, c] "\n", "\n" item "\n") == 0)
             diff[t, c] = diff[t, c] (diff[t, c] == "" ? "" : "\n") item
     }
@@ -109,7 +75,7 @@ FILENAME == ARGV[3] {   # the README
         n = split(row, cell, "|")
         t = trim(cell[2]); gsub(/`/, "", t)
         for (c = 2; c <= 4; c++) old[t, c] = trim(cell[c + 2])
-    } else if ($0 ~ /^- Column [234], /) {
+    } else if ($0 ~ /^- Column [234]: /) {
         key = substr($0, 1, index($0, ":") - 1)
         oldprov[key] = substr($0, index($0, ":") + 2)
     }
@@ -118,7 +84,6 @@ FILENAME == ARGV[3] {   # the README
 END {
     while ((getline line < provfile) > 0) host = line
     for (c in ran) {
-        side = ran[c]
         for (i = 1; i <= ntests; i++) {
             t = tname[i]
             # A test with no row stunt runs this way (nested: in-process only).
@@ -140,9 +105,9 @@ END {
             t = tname[i]
             if (!((t, c) in cur)) continue
             checked++
-            want = strip(sidevalue(old[t, c], ran[c]), t, c)
+            want = old[t, c]
             if (want != cur[t, c]) {
-                printf "  [FAIL] parity: %s, column %s (ae %s %s): the README says \"%s\", this run \"%s\"\n", t, c, ran[c], pin, want, cur[t, c]
+                printf "  [FAIL] parity: %s, column %s: the README says \"%s\", this run \"%s\"\n", t, c, want, cur[t, c]
                 bad++
             }
         }
@@ -155,12 +120,9 @@ END {
     for (c = 2; c <= 4; c++) for (i = 1; i <= ntests; i++) {
         t = tname[i]
         o = old[t, c]
-        if (!((t, c) in cur) || ((t, c) in notrun)) { new[t, c] = o; continue }
-        f = sidevalue(o, "from"); b = sidevalue(o, "before")
-        if (ran[c] == "from") { f = cur[t, c]; if (b == "") b = f } else { b = cur[t, c]; if (f == "") f = b }
-        new[t, c] = compose(f, b)
+        new[t, c] = ((t, c) in cur) ? cur[t, c] : o
     }
-    for (c in ran) oldprov["- Column " c ", ae " ran[c] " " pin] = host
+    for (c in ran) oldprov["- Column " c] = host
     sec = "<!-- stunt-parity:begin: generated by sh tests/run.sh --write-parity, from build/parity-*.tsv -->\n"
     sec = sec "| stunt test | policy | 2. Sandbox block, no preload | 3. Under `LD_PRELOAD` | 4. Contained child |\n"
     sec = sec "|---|---|---|---|---|\n"
@@ -169,8 +131,8 @@ END {
         sec = sec "| `" t "` | " tpol[t] " | " new[t, 2] " | " new[t, 3] " | " new[t, 4] " |\n"
     }
     sec = sec "\n"
-    for (c = 2; c <= 4; c++) for (s = 1; s <= 2; s++) {
-        key = "- Column " c ", ae " (s == 1 ? "from" : "before") " " pin
+    for (c = 2; c <= 4; c++) {
+        key = "- Column " c
         if (key in oldprov) sec = sec key ": " oldprov[key] "\n"
     }
     sec = sec "<!-- stunt-parity:end -->"

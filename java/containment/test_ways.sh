@@ -155,11 +155,6 @@ else
     grep -q "^java.run_sandboxed: 0" "$TMP/ways.txt" || die "examples/ways.ae: java.run_sandboxed" "$TMP/ways.txt"
 fi
 echo "  [PASS] examples/ways.ae: ways 1 to 3 as README.md shows them"
-if [ -z "${CHILD_HOST:-}" ]; then
-    echo "  [SKIP] examples/contained.ae: ae $ae_ver has no std.guest"
-    echo "  [PASS] $NAME"
-    exit 0
-fi
 (cd "$ROOT" && ae build java/examples/contained.ae -o "$BUILD/java-contained") > "$TMP/ex.log" 2>&1 ||
     die "examples/contained.ae did not build" "$TMP/ex.log"
 (cd "$WORK" && "$BUILD/java-contained" "$JAVA_CLASSES") > "$TMP/contained.txt" 2>&1

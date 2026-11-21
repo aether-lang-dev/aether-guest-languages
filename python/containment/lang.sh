@@ -44,9 +44,6 @@ libc_row() {
 escapes_preload() {
     case "$1" in
         env-cached) echo "os.environ is the copy of the environment CPython took when it started, before any sandbox: reading it is a dict lookup, which no libc interposer sees" ;;
-        exec-bin-sh)
-            ver_ge "$ae_ver" "$AE_SPAWN_PIN" && return 1
-            echo "ae $ae_ver predates $AE_SPAWN_PIN: os.system is system(), and glibc starts /bin/sh with posix_spawn, a clone and an execve inside libc that this preload's execve and fork do not see; subprocess, which uses posix_spawn too on CPython 3.13 and later, gets through the same way" ;;
         *) return 1 ;;
     esac
 }
@@ -75,8 +72,7 @@ child_stricter() {
         connect-*) echo "the worker's own lockdown has no tcp grant: the preload refuses the connect whatever the policy" ;;
         fork) echo "the worker's own lockdown has no fork grant: the preload refuses os.fork whatever the policy" ;;
         exec-bin-sh)
-            ver_ge "$ae_ver" "$AE_SPAWN_PIN" || return 1
-            echo "the worker's own lockdown has no exec or fork grant, and from ae $AE_SPAWN_PIN the preload holds system() to them" ;;
+            echo "the worker's own lockdown has no exec or fork grant, and the preload holds system() to them" ;;
         *) return 1 ;;
     esac
 }

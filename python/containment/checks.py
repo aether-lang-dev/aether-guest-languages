@@ -164,13 +164,12 @@ def fork_once():
     return "error", "the forked child: status %d" % st
 
 
-# ctypes.CDLL is a dlopen. A dlopen that fails on its own leaves a dlerror()
-# message, which ctypes raises as OSError; the preload's refusal returns
-# NULL without one, and ctypes then says only "dlopen() error" (3.10 to
-# 3.14). That, or a "Permission denied" or "Operation not permitted" in the
-# text, is the refusal. From ae 0.893.0 (aether 80d0dd832) the preload sets a
-# dlerror() message of its own, "<name>: refused by the sandbox: dlopen of libc
-# or the loader needs a native grant", and that text is the refusal too.
+# ctypes.CDLL is a dlopen. The preload's refusal sets a dlerror() message of
+# its own, "<name>: refused by the sandbox: dlopen of libc or the loader needs
+# a native grant" (aether 80d0dd832), which ctypes raises as OSError, and that
+# text is the refusal. So are "dlopen() error" (all ctypes says without a
+# message, 3.10 to 3.14) and a "Permission denied" or "Operation not
+# permitted" in the text, which a dlopen refused some other way leaves.
 def dlopen_refusal(e, what):
     msg = str(e)
     if msg in ("dlopen() error", "") or "Permission denied" in msg or "Operation not permitted" in msg or "refused by the sandbox" in msg:
