@@ -75,6 +75,10 @@ child_escapes() { return 1; }
 # And rows the language cannot express in-process only (the contained child
 # runs them): left_out is for both.
 left_out_inproc() { return 1; }
+# And rows it cannot say anything stable about in the contained child only,
+# with why (a language whose result there depends on its build, as Tcl's exec
+# does before AE_SPAWN_PIN): left out in the child, run in-process.
+left_out_child() { return 1; }
 # A language whose runtime cannot start in a mode (wall_blocks inproc|child
 # prints why) and the text it dies with (BLOCK_MARK). By default none.
 wall_blocks() { return 1; }
@@ -364,6 +368,12 @@ stunt_inproc() {
 }
 
 stunt_child() {
+    if why="$(left_out_child "$1")"; then
+        printf '  [LEFT OUT] %s (child): %s\n' "$1" "$why"
+        LEFT=$((LEFT + 1))
+        record child "$1" "LEFT OUT"
+        return
+    fi
     if [ "$2" = refused ] && why="$(child_escapes "$1")"; then
         run_one "ESCAPES" child succeed "$1"
         printf '             (%s)\n' "$why"

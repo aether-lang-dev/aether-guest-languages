@@ -44,6 +44,22 @@ libc_row() {
     esac
 }
 
+# Rows left out in the contained child only. Before AE_SPAWN_PIN the worker's
+# exec is not held by the preload (execvp reaches execve inside libc, aether
+# #3580), so what happens there is up to how this Tcl build starts a program:
+# Ubuntu 22.04's Tcl 8.6.12 does it with fork (strace: a plain clone), which the
+# worker refuses, and the shell does not start; the GitHub runner's Ubuntu 24.04
+# Tcl 8.6.14 starts it (CI, 2026-11-21; why it differs was not looked into). A
+# row that comes out by the Tcl build is not a row.
+left_out_child() {
+    case "$1" in
+        exec-bin-sh)
+            ver_ge "$ae_ver" "$AE_SPAWN_PIN" && return 1
+            echo "ae $ae_ver predates $AE_SPAWN_PIN: the worker's exec is not held, and whether the shell starts depends on the Tcl build (22.04's 8.6.12 forks with fork and is refused; the runner's 8.6.14 starts it)" ;;
+        *) return 1 ;;
+    esac
+}
+
 # Rows the preload is there to hold but does not, for Tcl and this ae: run
 # expecting `succeed`, so the day it holds them this goes red and the table in
 # tcl/README.md is brought up to date.
