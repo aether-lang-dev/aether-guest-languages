@@ -346,7 +346,7 @@ else the rows that did not and how.
 | `test_stunt_write_granted` | `fs_write=$WORK/*` | differs: open-granted-file not held | matches | does not run (way 4) |
 
 - Column 2: macOS 27.3 arm64, ae 0.934.0, Racket 9.3
-- Column 3: Ubuntu 24.04.5 LTS, kernel 7.1.10 aarch64, ae 0.889.0, Racket 8.10
+- Column 3: Ubuntu 24.04.5 LTS, kernel 7.1.10 aarch64, ae 0.889.0, Racket 8.10 (a podman run on the Mac; the column is checked against the current ae by the Linux arm64 CI job at every push, and was not rewritten from a run on it)
 <!-- stunt-parity:end -->
 
 The test names are stunt's, aether's `tests/integration/contrib_host_stunt`
