@@ -26,8 +26,7 @@ here (`containment/checks.js`), run in every mode that applies.
 
 The bridge needs QuickJS, and aether has it already: the engine module
 `contrib/quickjs/` (`module.ae`, `aether_quickjs.c`, the pinned amalgamation
-`amalgamation.lock`: quickjs-ng 0.17.0, SHA-256
-`a0955463c74809173a253ff87365095e6972e8b171cfb6aa8a1e781adf35cfeb`). It stays
+`amalgamation.lock`: quickjs-ng 0.18.0 from 0.915.0 on; 0.17.0 before). It stays
 in aether (sae and others use it), and every release archive ships it,
 amalgamation included, under `share/aether/contrib/quickjs/` (present in
 every release installed here from 0.778.0 to 0.889.0). So `module.ae` keeps
@@ -38,8 +37,8 @@ This was chosen over vendoring the amalgamation into this repository
 because that would put a second copy of QuickJS, and a second pin to keep
 current, beside aether's, for no gain: a release install provides the engine
 to a `@source` bridge, and the specs and the containment tests run against
-it. The pin that applies is therefore whatever the `ae` in use ships (0.17.0
-in 0.889.0); it is not repeated in `ci/versions.env`.
+it. The pin that applies is therefore whatever the `ae` in use ships (0.18.0
+in 0.931.0); it is not repeated in `ci/versions.env`.
 
 Keeping in step with aether: the bridge's C declares the engine's `qjs_*`
 functions with `extern` (there is no header shared with the engine), and

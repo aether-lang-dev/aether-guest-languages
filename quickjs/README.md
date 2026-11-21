@@ -1,7 +1,7 @@
 # quickjs: embedded JavaScript (QuickJS, ES2023)
 
 `import quickjs` lets an Aether program run JavaScript: [QuickJS](https://github.com/quickjs-ng/quickjs)
-(quickjs-ng 0.18, from ae 0.915.0), an embeddable ES2023 engine. It is the bridge that was
+(quickjs-ng 0.18, from ae 0.916.0), an embeddable ES2023 engine. It is the bridge that was
 aether's `contrib.host.quickjs`, moved here ([PROVENANCE.md](PROVENANCE.md)):
 the same functions under the same names, `quickjs.run`,
 `quickjs.run_sandboxed` and `quickjs.run_sandboxed_with_map`.
@@ -49,7 +49,7 @@ stay supported: pick by how far you trust the script, not by which is newest.
 | Your host functions | not checked | checked against the grants | checked against the grants | checked against the grants; each call is a message the host answers |
 | Time limit | 5 s per run | 5 s per run | 5 s per run | the host's deadline, then a kill |
 | Platforms | everywhere aether runs | same | Linux | Linux with Landlock; macOS refuses to start it |
-| Needs | ae 0.915.0 | ae 0.915.0 | ae 0.915.0 | ae 0.915.0 (`std.guest` is in 0.878.0; the engine's API needs 0.915.0) |
+| Needs | ae 0.916.0 | ae 0.916.0 | ae 0.916.0 | ae 0.916.0 (`std.guest` is in 0.878.0; the engine's API, `set_deadline_ns` and a tuple-returning `to_string`, needs 0.916.0) |
 
 ### 1. Embed: QuickJS in your process, no containment
 
@@ -271,7 +271,7 @@ as stunt expects. The columns are the ways above: "in-process, Linux (preload)"
 is way 3, "in-process, macOS" is way 2 where there is no preload, and
 "contained child" is way 4. Every cell is a test outcome (`../tests/run.sh`):
 checked on macOS arm64 and on CachyOS x86_64, kernel 7.3 with Landlock
-(quickjs-ng 0.17.0), and in CI.
+(quickjs-ng 0.18), and in CI.
 
 | Row | In-process, Linux (preload) | In-process, macOS | Contained child, Linux |
 |---|---|---|---|

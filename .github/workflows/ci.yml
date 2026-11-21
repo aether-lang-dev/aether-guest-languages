@@ -4,7 +4,8 @@ name: CI
 # releases). The in-process jobs run on AE_PIN; the contained-child jobs need
 # std.guest, so AE_CHILD_PIN. The *-spawn jobs run on AE_SPAWN_PIN, the first
 # ae whose preload holds os.execute / os.system, so both sides of that line are
-# checked. Each job runs one language (GUEST_LANG), and
+# checked. quickjs is the exception: it builds only on AE_QUICKJS_PIN or later,
+# so it has no spawn job and its child job runs there. Each job runs one language (GUEST_LANG), and
 # each run also checks the language's README "Stunt parity" table for the
 # columns it can run (tests/parity.sh).
 
@@ -231,7 +232,7 @@ jobs:
   # every ae release ships with its pinned amalgamation, compiled into the
   # program, so the jobs need only ae.
   linux-quickjs:
-    name: Linux (in-process, quickjs-ng 0.17.0)
+    name: Linux (in-process, quickjs-ng 0.18)
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -246,37 +247,22 @@ jobs:
         run: GUEST_LANG=quickjs sh tests/run.sh
 
   linux-quickjs-child:
-    name: Linux (in-process and contained child, quickjs-ng 0.17.0)
+    name: Linux (in-process and contained child, quickjs-ng 0.18, ae AE_QUICKJS_PIN)
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - name: ae (AE_CHILD_PIN)
+      - name: ae (AE_QUICKJS_PIN, the oldest ae quickjs builds on)
         run: |
           . ci/versions.env
           curl -fsSL "https://raw.githubusercontent.com/aether-lang-dev/aeb/$AEB_REF/get.sh" \
-            | AE_PIN="$AE_CHILD_PIN" AEB_REF="$AEB_REF" sh
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-      - run: ae version
-      - name: Specs and containment rows, the child required
-        run: GUEST_LANG=quickjs GHL_REQUIRE_CHILD=1 sh tests/run.sh
-
-  linux-quickjs-spawn:
-    name: Linux (in-process and contained child, quickjs-ng 0.17.0, ae AE_SPAWN_PIN)
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v4
-      - name: ae (AE_SPAWN_PIN)
-        run: |
-          . ci/versions.env
-          curl -fsSL "https://raw.githubusercontent.com/aether-lang-dev/aeb/$AEB_REF/get.sh" \
-            | AE_PIN="$AE_SPAWN_PIN" AEB_REF="$AEB_REF" sh
+            | AE_PIN="$AE_QUICKJS_PIN" AEB_REF="$AEB_REF" sh
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - run: ae version
       - name: Specs and containment rows, the child required
         run: GUEST_LANG=quickjs GHL_REQUIRE_CHILD=1 sh tests/run.sh
 
   macos-quickjs:
-    name: macOS (in-process, quickjs-ng 0.17.0)
+    name: macOS (in-process, quickjs-ng 0.18)
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
@@ -747,13 +733,16 @@ jobs:
       - uses: actions/checkout@v4
       - name: Fork ref
         id: ref
-        run: . ci/versions.env && echo "ref=$FACTOR_FORK_REF" >> "$GITHUB_OUTPUT"
+        run: |
+          . ci/versions.env
+          echo "ref=$FACTOR_FORK_REF" >> "$GITHUB_OUTPUT"
+          echo "boot=$(echo "$FACTOR_BOOT_IMAGE_SHA256" | cut -c1-12)" >> "$GITHUB_OUTPUT"
       - name: Fork build (cache)
         id: cache
         uses: actions/cache@v4
         with:
           path: factor-language
-          key: factor-fork-${{ steps.ref.outputs.ref }}-ubuntu-24.04
+          key: factor-fork-${{ steps.ref.outputs.ref }}-boot-${{ steps.ref.outputs.boot }}-ubuntu-24.04
       - name: Build the fork and bootstrap its image
         if: steps.cache.outputs.cache-hit != 'true'
         run: |
@@ -763,7 +752,8 @@ jobs:
           git init -q . && git remote add origin "$FACTOR_FORK_REPO"
           git fetch -q --depth 1 origin "$FACTOR_FORK_REF" && git checkout -q FETCH_HEAD
           make -j"$(nproc)" linux-x86-64
-          curl -fsSLO "$FACTOR_BOOT_IMAGE_URL"
+          cp "$GITHUB_WORKSPACE/$FACTOR_BOOT_IMAGE" boot.unix-x86.64.image
+          echo "$FACTOR_BOOT_IMAGE_SHA256  boot.unix-x86.64.image" | sha256sum -c -
           ./factor -i=boot.unix-x86.64.image
           test -f factor.image
       - name: ae (AE_PIN)
@@ -784,13 +774,16 @@ jobs:
       - uses: actions/checkout@v4
       - name: Fork ref
         id: ref
-        run: . ci/versions.env && echo "ref=$FACTOR_FORK_REF" >> "$GITHUB_OUTPUT"
+        run: |
+          . ci/versions.env
+          echo "ref=$FACTOR_FORK_REF" >> "$GITHUB_OUTPUT"
+          echo "boot=$(echo "$FACTOR_BOOT_IMAGE_SHA256" | cut -c1-12)" >> "$GITHUB_OUTPUT"
       - name: Fork build (cache)
         id: cache
         uses: actions/cache@v4
         with:
           path: factor-language
-          key: factor-fork-${{ steps.ref.outputs.ref }}-ubuntu-24.04
+          key: factor-fork-${{ steps.ref.outputs.ref }}-boot-${{ steps.ref.outputs.boot }}-ubuntu-24.04
       - name: Build the fork and bootstrap its image
         if: steps.cache.outputs.cache-hit != 'true'
         run: |
@@ -800,7 +793,8 @@ jobs:
           git init -q . && git remote add origin "$FACTOR_FORK_REPO"
           git fetch -q --depth 1 origin "$FACTOR_FORK_REF" && git checkout -q FETCH_HEAD
           make -j"$(nproc)" linux-x86-64
-          curl -fsSLO "$FACTOR_BOOT_IMAGE_URL"
+          cp "$GITHUB_WORKSPACE/$FACTOR_BOOT_IMAGE" boot.unix-x86.64.image
+          echo "$FACTOR_BOOT_IMAGE_SHA256  boot.unix-x86.64.image" | sha256sum -c -
           ./factor -i=boot.unix-x86.64.image
           test -f factor.image
       - name: ae (AE_CHILD_PIN)
@@ -824,13 +818,16 @@ jobs:
       - uses: actions/checkout@v4
       - name: Fork ref
         id: ref
-        run: . ci/versions.env && echo "ref=$FACTOR_FORK_REF" >> "$GITHUB_OUTPUT"
+        run: |
+          . ci/versions.env
+          echo "ref=$FACTOR_FORK_REF" >> "$GITHUB_OUTPUT"
+          echo "boot=$(echo "$FACTOR_BOOT_IMAGE_SHA256" | cut -c1-12)" >> "$GITHUB_OUTPUT"
       - name: Fork build (cache)
         id: cache
         uses: actions/cache@v4
         with:
           path: factor-language
-          key: factor-fork-${{ steps.ref.outputs.ref }}-ubuntu-24.04
+          key: factor-fork-${{ steps.ref.outputs.ref }}-boot-${{ steps.ref.outputs.boot }}-ubuntu-24.04
       - name: Build the fork and bootstrap its image
         if: steps.cache.outputs.cache-hit != 'true'
         run: |
@@ -840,7 +837,8 @@ jobs:
           git init -q . && git remote add origin "$FACTOR_FORK_REPO"
           git fetch -q --depth 1 origin "$FACTOR_FORK_REF" && git checkout -q FETCH_HEAD
           make -j"$(nproc)" linux-x86-64
-          curl -fsSLO "$FACTOR_BOOT_IMAGE_URL"
+          cp "$GITHUB_WORKSPACE/$FACTOR_BOOT_IMAGE" boot.unix-x86.64.image
+          echo "$FACTOR_BOOT_IMAGE_SHA256  boot.unix-x86.64.image" | sha256sum -c -
           ./factor -i=boot.unix-x86.64.image
           test -f factor.image
       - name: ae (AE_SPAWN_PIN)

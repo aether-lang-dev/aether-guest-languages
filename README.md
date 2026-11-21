@@ -63,7 +63,7 @@ the tests.
 | Lua 5.3, 5.4, 5.5 | `import lua` | `lua/worker` (std.guest) | [lua/README.md](lua/README.md#containment-table) |
 | CPython 3.10 to 3.14 | `import python` | `python/worker` (std.guest) | [python/README.md](python/README.md#containment-table) |
 | JavaScript, Duktape 2.x (ES5.1) | `import duktape` (`import js`, the alias) | `duktape/worker` (std.guest) | [duktape/README.md](duktape/README.md#containment-table) |
-| JavaScript, QuickJS (quickjs-ng 0.17.0, ES2023) | `import quickjs` | `quickjs/worker` (std.guest) | [quickjs/README.md](quickjs/README.md#containment-table) |
+| JavaScript, QuickJS (quickjs-ng 0.18, ES2023) | `import quickjs` | `quickjs/worker` (std.guest) | [quickjs/README.md](quickjs/README.md#containment-table) |
 | Tcl 8.5, 8.6 (9.0 in principle) | `import tcl` | `tcl/worker` (std.guest) | [tcl/README.md](tcl/README.md#containment-table) |
 | Perl 5 (threaded), 5.34 to 5.44 tested | `import perl` | `perl/worker` (std.guest) | [perl/README.md](perl/README.md#containment-table) |
 | CRuby 2.6 to 3.4 (checked) | `import ruby` | `ruby/worker` (std.guest) | [ruby/README.md](ruby/README.md#containment-table) |
@@ -435,7 +435,7 @@ The QuickJS bridge was copied from aether at `2609ec841`
 What changes: no `make contrib` step; and a script now has `print` and
 `console.log` (aether's could only compute). The engine is not copied:
 the bridge imports aether's `contrib.quickjs`, which every release ships with
-its pinned quickjs-ng 0.17.0, so there is still one copy of QuickJS and one
+its pinned quickjs-ng 0.18, so there is still one copy of QuickJS and one
 pin. QuickJS has no I/O of its own (`quickjs-libc` is not compiled in), so
 most of stunt's rows are left out and nothing in it needs the preload
 (quickjs/README.md).
