@@ -6,8 +6,7 @@
 #   tests/readme_tables.sh check    fail when the README's table disagrees with them
 #   tests/readme_tables.sh write    rewrite those two columns in place
 #
-#   "CI today"      .github/workflows/ci.yml: every job on AE_PIN (the current
-#                   ae) gives its runner, the job's GHL_CI_RUNTIME label, and
+#   "CI today"      .github/workflows/ci.yml: every job (all run the current ae, AE_PIN) gives its runner, the job's GHL_CI_RUNTIME label, and
 #                   "+ child" when it runs with GHL_REQUIRE_CHILD=1. tests/run.sh
 #                   checks the label against the runtime it found, on Actions.
 #   "Containment"   <lang>/README.md's Stunt parity table (itself written from
@@ -36,8 +35,8 @@ for job in re.split(r"\n(?=  [a-z0-9-]+:\n)", ci)[1:]:
     langs = re.findall(r"GUEST_LANG=(\w+)", job)
     if not langs:
         continue
-    pins = set(re.findall(r'AE_PIN="\$(\w+)"', job))
-    if pins != {"AE_PIN"}:
+    # The ae of the job: the toolchain action installs AE_PIN.
+    if "uses: ./.github/actions/toolchain" not in job:
         continue
     ro = re.search(r"runs-on: (\S+)", job).group(1)
     lab = re.search(r'GHL_CI_RUNTIME: "([^"]*)"', job)
