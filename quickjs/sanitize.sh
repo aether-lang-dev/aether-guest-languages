@@ -49,7 +49,7 @@ export QUICKJS_WORKER="$ROOT/build/quickjs-worker"
 WORK="$OUT/work"
 mkdir -p "$WORK"
 n=0
-for c in types host-types nested fail-caught fail-uncaught script-error cancel-loop cancel-catch cancel-in-call loglevel unmounted; do
+for c in types host-types nested fail-caught fail-uncaught script-error cancel-loop cancel-catch cancel-in-call loglevel unmounted strings; do
     if (cd "$WORK" && GHL_UNCONTAINED=1 "$ROOT/build/quickjs-worker-cases" "$c") > "$OUT/uncontained-$c.txt" 2>&1 &&
        ! grep -q "Sanitizer" "$OUT/uncontained-$c.txt"; then
         n=$((n + 1))
@@ -57,7 +57,7 @@ for c in types host-types nested fail-caught fail-uncaught script-error cancel-l
         echo "  [FAIL] uncontained $c"; sed 's/^/    /' "$OUT/uncontained-$c.txt" | head -40; fails=$((fails + 1))
     fi
 done
-echo "  uncontained worker, LeakSanitizer on: $n of 11 worker cases clean"
+echo "  uncontained worker, LeakSanitizer on: $n of 12 worker cases clean"
 if GHL_UNCONTAINED=1 GUEST_LANG=quickjs sh "$ROOT/tests/test_boundary.sh" > "$OUT/uncontained-boundary.txt" 2>&1 &&
    ! grep -q "Sanitizer" "$OUT/uncontained-boundary.txt"; then
     echo "  uncontained worker, LeakSanitizer on: $(tail -1 "$OUT/uncontained-boundary.txt" | sed 's/^ *//')"

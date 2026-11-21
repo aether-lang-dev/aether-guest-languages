@@ -15,7 +15,7 @@ fi
 BHOST="$BUILD/quickjs-worker-cases"
 build quickjs/containment/worker_cases.ae "$BHOST"
 n=0
-for c in cancel-catch loglevel fail-uncaught script-error unmounted host-types; do
+for c in cancel-catch loglevel fail-uncaught script-error unmounted host-types strings; do
     out="$TMP/worker-case.txt"
     (cd "$WORK" && $ROW_TIMEOUT "$BHOST" "$c") > "$out" 2>&1 || {
         echo "  [FAIL] $NAME: $c"

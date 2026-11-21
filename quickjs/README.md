@@ -303,7 +303,7 @@ The same cases (`tests/boundary.py run-inproc`) against this language's bridge i
 | `str` | ok | ok | same | same |
 | `str-empty` | ok | ok | same | same |
 | `str-nonascii` | ok | ok | same | same |
-| `str-nul` | differs: the host saw ["a"] | differs: the host saw ["a"] | same | same |
+| `str-nul` | ok | ok | same | same |
 | `str-astral` | ok | ok | same | same |
 | `str-60k` | ok | ok | same | same |
 | `int` | ok | ok | same | same |
@@ -474,10 +474,10 @@ with the runtime). The rest, call by call:
 | `vm_new()`, `vm_new_capped(kb)` | a VM on a runtime of its own, with `print` and `console.log`; the second caps the heap | the caller's VM; null if it cannot be made |
 | `vm_free(vm)` | frees the runtime, every value and host function | `@frees`: the caller's hold ends; refused from inside one of the VM's own evals (the caller of that eval frees it) |
 | `vm_register(vm, name, fn)` | a `@c_callback (vm: ptr) -> int` as the function `name`; dotted names make objects; 0 or -1 | `fn` is a code address, not owned; the closure is the VM's |
-| `vm_set_global_str`, `_int`, `_strlist`, `_json` | `globalThis[name] = ...` | the value is copied in; `_strlist`'s list stays the caller's; `_json` returns "" or the parse error |
-| `vm_eval(vm, code)` | runs code and the promise jobs it queues; 0 or -1 | the result is the VM's, released by the next eval or `vm_pop_result` |
+| `vm_set_global_str`, `_int`, `_strlist`, `_json` | `globalThis[name] = ...`; each returns "" when set, else why not (a name with a NUL, JSON text with a raw NUL, a JSON parse error) | the value is copied in; `_strlist`'s list stays the caller's; a string keeps its NUL |
+| `vm_eval(vm, code)` | runs code and the promise jobs it queues; 0 or -1 (and -1, refused, for code with a NUL in it) | the result is the VM's, released by the next eval or `vm_pop_result` |
 | `vm_result_type`, `_int`, `_double`, `_bool` | the result, read | nothing handed out |
-| `vm_result_str`, `vm_result_json` | the result as a string (a string, or an error's message), or as JSON | the VM's text, valid until the next eval or `vm_pop_result` |
+| `vm_result_str`, `vm_result_json` | the result as a string (a string, or an error's message), or as JSON | a new Aether string, the caller's, with the text's length (a NUL is kept) |
 | `vm_result_bytes` | a `Uint8Array` result | a new `std.bytes` handle, the caller's to free |
 | `vm_pop_result(vm)` | releases the result | |
 | `vm_set_time_limit(vm, ms, every)` | per outermost eval; "" when set | |
@@ -486,11 +486,70 @@ with the runtime). The rest, call by call:
 | `vm_set_user(vm, p)`, `vm_user(vm)` | a pointer of the host's for its callbacks | the pointer stays the caller's |
 | `vm_busy(vm)` | 1 while one of its evals runs | |
 | `arg_count`, `arg_type`, `arg_int`, `arg_double`, `arg_bool` | a callback's arguments (1-based) | nothing handed out |
-| `arg_str`, `arg_json` | a string argument, or any as JSON | the VM's text, valid until the callback returns |
+| `arg_str`, `arg_json` | a string argument, or any as JSON | a new Aether string, the caller's, with the text's length (a NUL is kept) |
 | `arg_bytes` | a `Uint8Array` argument | a new `std.bytes` handle, the caller's to free |
-| `push_int`, `_str`, `_bool`, `_nil`, `_double`, `_json` | the callback's value (the last push) | copied in; `push_json` returns 0, or -1 for bad JSON |
+| `push_int`, `_str`, `_bool`, `_nil`, `_double`, `_json` | the callback's value (the last push) | copied in, a string with its length; `push_json` returns 0, or -1 for bad JSON (and for a raw NUL, which also raises an Error in the script) |
 | `push_bytes(vm, b)` | a `Uint8Array` of a copy of `b` | `b` stays the caller's |
-| `raise_error(vm, msg)` | `return` it: the script sees `Error(msg)` after the callback returns | a push before it is dropped |
+| `raise_error(vm, msg)` | `return` it: the script sees `Error(msg)` after the callback returns, a NUL in `msg` kept | a push before it is dropped |
+
+### Strings, NUL and surrogates
+
+A JavaScript string holds a NUL like any other character, so every string
+that crosses here carries its length, in both directions: `arg_str`,
+`push_str`, `vm_result_str`, `vm_set_global_str`, `_strlist`, `raise_error`'s
+message, an error's message in a result, and the JSON readers and writers
+(which spell a NUL `\u0000`, as JSON does). The grid under "Boundary tests,
+in-process" reads `ok` for `str-nul`, and the contained child's reads `ok`.
+Before 2026-11-21 these were C strings and cut a string at its NUL, silently.
+
+How, because `contrib.quickjs` is only half length-aware (Aether 0.934.0):
+it reads a string out with its length (`to_string`) but takes strings in as C
+strings (`new_string`, `eval`, `throw_error`, `parse_json`) and keeps an
+error as C text. So the bridge reads out by length and returns an Aether
+string made from the bytes; makes a string with a NUL from the pieces between
+its NULs, joined by a small JavaScript function the VM keeps; reads an error
+by catching it again in JavaScript (a function the VM keeps calls the engine's
+`rethrow` inside a `try` and gives back `String(e)`), which also means a
+message that itself holds `\n    at ` is no longer cut; and throws a
+`raise_error` message with a NUL through a second function. None of these is
+visible to a script (they are handles in the VM, not globals), and the VM
+releases them. The ask for the engine to take lengths itself is
+[asks/contrib-quickjs-length-aware-strings.md](../asks/contrib-quickjs-length-aware-strings.md).
+
+What cannot cross is **refused, loudly, naming the reason** (`refused: it
+holds an embedded NUL; ...`, the words Tcl's refusal uses, which the grid
+reads as `refused`), never cut:
+
+- script text given to `vm_eval`, `run`, `run_sandboxed` and
+  `run_sandboxed_with_map` (the engine evaluates a C string; -1 and the reason
+  as the error; write `\0` inside a string literal instead);
+- JSON text with a raw NUL, which is not JSON (`vm_set_global_json` says so;
+  `push_json` returns -1 and also raises an Error in the script, since the
+  callback may not look at the -1);
+- the name of a global (`vm_set_global_*` returns the reason) or of a host
+  function (`vm_register` returns -1): cut, it would be another name;
+- a key or a value of the shared map, in the script's `aether_map_get` and
+  `aether_map_put` (an Error the script can catch): Aether's runtime stores C
+  strings there, not this bridge ([asks/shared-map-nul.md](../asks/shared-map-nul.md)).
+
+UTF-16: a character beyond the BMP crosses as **real four-byte UTF-8** in both
+directions (checked in-process and in the child; QuickJS never produces
+CESU-8, which Duktape's bridge had to be taught to avoid). A **lone surrogate**
+cannot be UTF-8; the engine writes it as the three bytes of the half (WTF-8),
+and the bridge hands the host **U+FFFD** instead, so every string the host
+reads is valid UTF-8. In-process and in the child alike, because it is one
+bridge. The JSON readers (`vm_result_json`, `arg_json`) keep the half exactly,
+as its `\udXXX` escape, and `push_json` and `vm_set_global_json` read it
+back: JSON is the lossless way to move a string that has one. A host string
+is decoded as the engine decodes any: a bad byte is U+FFFD, a pair written as
+two three-byte halves (CESU-8) is joined into one character, and the three
+bytes of a lone half make a lone half in the script. Backed by the specs
+"a NUL crosses, both ways, at every string crossing", "an error message keeps
+its NUL, in the script's error and the host's", "what cannot carry a NUL is
+refused, saying why, and nothing is cut" and "a character past the BMP is
+UTF-8, both ways, and a lone surrogate is U+FFFD" (`test_host_quickjs_vm.ae`),
+the shared map's case in `test_host_quickjs.ae`, and the worker's `strings`
+case.
 
 How it compares with the four, function for function (`yes` is the same call
 and meaning, `-` is none):
@@ -498,7 +557,7 @@ and meaning, `-` is none):
 | | Lua | Python | Duktape | Tcl | QuickJS |
 |---|---|---|---|---|---|
 | `vm_new`, `vm_free`, `vm_register`, `vm_eval`, `vm_pop_result` | yes | yes | yes | yes | yes (`vm_free` is `@frees`) |
-| `vm_set_global_str`, `_int`, `_strlist` | yes | yes | yes | yes | yes |
+| `vm_set_global_str`, `_int`, `_strlist` | yes | yes | yes | yes | yes (returns "" or why not) |
 | `vm_result_type`, `_int`, `_str`, `_bool` | yes | yes | yes | yes | yes |
 | `vm_result_double` | - | yes | - | yes | yes |
 | `vm_result_bytes`, `arg_bytes`, `push_bytes` | - | yes | - | - | yes (a `Uint8Array`) |
@@ -574,20 +633,27 @@ holds that. The worker's runtime has a 64 MiB heap cap.
   shared map.
 - A thrown error from `run` is printed to stderr as `[js] ...` with its
   stack and the call returns `-1`; a VM's `vm_result_str` has it without the
-  stack.
+  stack. (A message with a NUL is printed whole, the stack lines after it.)
+- The VM keeps four JavaScript functions no script can see, made when the VM
+  is: `rethrow` (a host function whose body is the engine's `rethrow`) and
+  three small ones, a catcher (`String(e)` of what `rethrow` throws), a thrower
+  (`throw new Error(m)`) and a joiner (`a.join('\0')`): the strings section
+  says what for. A VM whose heap is too small for them keeps working and falls
+  back to the engine's own C text for an error (cut at a NUL).
 
 ## Tests
 
 - [`test_host_quickjs.ae`](test_host_quickjs.ae): the bridge, through
   `import quickjs`: a script evaluates, a thrown error is a failure, host
-  functions are held to the grants in force, the shared map round trips, the
+  functions are held to the grants in force, the shared map round trips and
+  refuses a NUL, script text with a NUL is refused, the
   grant stack is left as found, `init`/`finalize` are idempotent. Moved from
   aether but for the import and the file the host function reads
   (`/etc/hosts`: `/etc/hostname` is not on macOS).
 - [`test_host_quickjs_vm.ae`](test_host_quickjs_vm.ae): the two-way VM, case
   for case with `lua/test_host_lua_vm.ae`, `python/test_host_python_vm.ae`,
   `tcl/test_host_tcl_vm.ae` and `duktape/test_host_duktape_vm.ae` where QuickJS
-  has the thing (24 cases): typed arguments and results, bytes, JSON, errors
+  has the thing (28 cases, four of them the strings section above): typed arguments and results, bytes, JSON, errors
   and `raise_error`, nested evals, the time limit, a cancel cell set from
   another thread, two VMs that share nothing, memory flat over 10,000 rounds;
   and the refusals: an unregistered name, bad names, wrong argument types, a
@@ -600,7 +666,8 @@ holds that. The worker's runtime has a 64 MiB heap cap.
   cases beside the shared boundary tests: a cancel the script tries to catch,
   a `LOGLEVEL` during a loop that is not a cancel, an uncaught `FAIL` and the
   script's own error as `ERROR`, an unmounted name, the JSON types of a host's
-  answer.
+  answer, and `strings`: a NUL, an emoji and a lone surrogate through `print`
+  and an error, byte for byte.
 - `../tests/test_stunt_*.sh`, `../tests/test_catalogue.sh` and
   `../tests/test_boundary.sh`: the containment table and the boundary grid
   above.

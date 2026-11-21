@@ -84,3 +84,10 @@ main() {
     quickjs.dispose(q)
 }
 ```
+
+Update 2026-11-21: the bridge no longer cuts at `"\n    at "`: it reads an
+error by catching what the engine's `rethrow` throws, in a `try` in a small
+JavaScript function the VM keeps, and takes `String(e)` from that (which also
+keeps a NUL in a message, see `contrib-quickjs-length-aware-strings.md`). A
+`last_exception` handle would still replace that function and the second run of
+a thrown object's own `toString` it costs.

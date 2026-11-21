@@ -86,6 +86,10 @@ fn script_of(c: string) -> string {
     if c == "cancel-in-call" { return "try { slow(); } catch (e) { print('caught', e.message); } for (;;) {}" }
     if c == "loglevel" { return "const t0 = Date.now(); while (Date.now() - t0 < 700) {} print(greet('x'));" }
     if c == "unmounted" { return "try { nope(); } catch (e) { print(e.name); }" }
+    // Strings the bridge once cut or got wrong: a NUL (print, an error's message, the
+    // error that ends the script), a character past the BMP and a lone
+    // surrogate (U+FFFD).
+    if c == "strings" { return "print('a\\0b'); print('\\u{1F600}'); print('x\\ud800y'); try { throw new Error('e\\0f') } catch (e) { print(e.message.length) } throw new Error('end\\0msg');" }
     return ""
 }
 
@@ -102,7 +106,31 @@ fn check(c: string, s: *Seen) -> string {
     if c == "cancel-in-call" { return expect(s, "caught cancelled by host: host says stop", "ERROR", "cancelled by host: host says stop") }
     if c == "loglevel" { return expect(s, "hello", "DONE", "") }
     if c == "unmounted" { return expect(s, "ReferenceError", "DONE", "") }
+    if c == "strings" {
+        // Byte for byte: "a NUL b", the emoji as UTF-8, U+FFFD in "x y", 3, and the error whole.
+        if bytes(s.says) != "97 0 98|240 159 152 128|120 239 191 189 121|51" { return "said bytes ${bytes(s.says)}" }
+        if s.end != "ERROR" { return "ended ${s.end}" }
+        if bytes(s.text) != "69 114 114 111 114 58 32 101 110 100 0 109 115 103" { return "the error was bytes ${bytes(s.text)}" }
+        return ""
+    }
     return "no such case"
+}
+
+// A string's bytes as decimal numbers, with | where the string has one: what a
+// comparison that stops at a NUL cannot say.
+fn bytes(t: string) -> string {
+    out = ""
+    n = string.length(t)
+    i = 0
+    while i < n {
+        c = string.char_at(t, i)
+        if c == 124 { out = "${out}|" } else {
+            if i > 0 && string.char_at(t, i - 1) != 124 { out = "${out} " }
+            out = "${out}${c}"
+        }
+        i = i + 1
+    }
+    return out
 }
 
 fn expect(s: *Seen, says: string, end: string, text: string) -> string {

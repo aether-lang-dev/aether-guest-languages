@@ -39,11 +39,24 @@
 // else. vm_free's parameter is @frees, so a use of the local after it is a
 // compile error (E0903). Every engine handle is the VM's own (the result,
 // a callback's arguments and pushed value, the host functions' closures)
-// and the VM releases it. A string a reader returns is the VM's: a result's
-// until the next eval or pop_result, an argument's until the callback
-// returns; copy it to keep it. A std.bytes handle a reader returns is the
-// caller's to free; one given to push_bytes stays the caller's (it is
-// copied). A cell given to vm_set_cancel_cell stays the caller's.
+// and the VM releases it. A string a reader returns (vm_result_str, arg_str,
+// the JSON readers) is an Aether string of its own, made from the engine's
+// bytes and their length: the caller's, the VM keeps nothing of it. A std.bytes
+// handle a reader returns is the caller's to free; one given to push_bytes
+// stays the caller's (it is copied). A cell given to vm_set_cancel_cell stays
+// the caller's.
+//
+// Strings. A JavaScript string holds a NUL like any character, and so does what
+// crosses here, in both directions: arg_str, push_str, vm_result_str,
+// vm_set_global_str and _strlist, raise_error's message and an error's message
+// all carry their length. What cannot cross is refused, naming the reason, and
+// never cut: script text with a NUL (the engine reads it as a C string), JSON
+// text with a raw NUL (it is not JSON), the name of a global or a host function,
+// and a key or value of the shared map (Aether's runtime keeps C strings). A
+// character beyond the BMP crosses as four-byte UTF-8, and a lone surrogate,
+// which UTF-8 cannot hold, as U+FFFD (the engine's own conversion); the JSON
+// readers write it as its \udXXX escape and JSON in reads it back, so JSON is
+// the lossless way for one.
 //
 // A script has `print` and `console.log` (stdout) and no other way out:
 // quickjs-libc (the engine's own file, network and OS modules) is not
@@ -98,7 +111,8 @@ const QJS_TFLOAT = 8
 // --- the C (aether_host_quickjs.c) -------------------------------------------
 extern qjsb_new(memory_kb: int) -> ptr
 extern qjsb_engine(vm: ptr) -> ptr
-extern qjsb_name_ok(name: string) -> int
+extern qjsb_set_helpers(vm: ptr, rethrow_fn: int)
+extern qjsb_name_ok(name: @aether string) -> int
 extern qjsb_leaf(name: string) -> string
 extern qjsb_install(vm: ptr, name: string, f: int) -> int
 extern qjsb_dispatch(vm: ptr, host_fn: ptr, this_h: int, args: int) -> int
@@ -125,6 +139,13 @@ vm_new() -> ptr { return vm_new_capped(0) }
 vm_new_capped(memory_kb: int) -> ptr {
     vm = qjsb_new(memory_kb)
     if vm == null { return null }
+    // The function the VM reads an error through: throws, again, the error the
+    // engine last recorded (qjs_rethrow), so JavaScript can catch it as a value
+    // and its text come out with its length (a NUL in a message is not cut).
+    rethrow_fn = qjs_engine.function(qjsb_engine(vm), "rethrow", 0, |q2: ptr, this_h: int, args: int| {
+        return qjs_engine.rethrow(q2)
+    })
+    qjsb_set_helpers(vm, rethrow_fn)
     _p = vm_register(vm, "print", qjsb_print_fn())
     _c = vm_register(vm, "console.log", qjsb_print_fn())
     return vm
@@ -151,20 +172,27 @@ vm_register(vm: @keep ptr, name: string, host_fn: @keep ptr) -> int {
 }
 
 // Globals, set on globalThis before (or between) evals.
-extern quickjs_vm_set_global_str(vm: ptr, name: string, value: string)
+//
+// Each setter returns "" when it set the value, else why it did not. A string
+// keeps its NUL (it arrives by its length). A name with a NUL is refused
+// ("the global's name: refused: it holds an embedded NUL; ..."): cut, it would
+// be another name. JSON text with a raw NUL is refused too (it is not JSON).
+extern quickjs_vm_set_global_str(vm: ptr, name: @aether string, value: @aether string) -> string
 // Exact to 2**53, as any JavaScript number.
-extern quickjs_vm_set_global_int(vm: ptr, name: string, value: long)
-// A std.list of strings, as an array.
-extern quickjs_vm_set_global_strlist(vm: ptr, name: string, items: ptr)
+extern quickjs_vm_set_global_int(vm: ptr, name: @aether string, value: long) -> string
+// A std.list of strings, as an array (each keeps its NUL).
+extern quickjs_vm_set_global_strlist(vm: ptr, name: @aether string, items: ptr) -> string
 // The value JSON text describes (array, object, number, bool, null): "" when
 // set, else the parse error.
-extern quickjs_vm_set_global_json(vm: ptr, name: string, json: string) -> string
+extern quickjs_vm_set_global_json(vm: ptr, name: @aether string, json: @aether string) -> string
 
 // Runs code at global level, then the promise jobs it queued. 0 with the
 // completion value as the result (statements give undefined: QJS_TNIL), or
 // -1 with the error as the result: QJS_TERR, result_str "TypeError: msg"
 // (String(e), without the stack). Nested evals (from a callback) are allowed.
-extern quickjs_vm_eval(vm: ptr, code: string) -> int
+// Script text with a NUL in it is refused (-1, the reason as the error): the
+// engine reads script text as a C string. Write \0 inside a string literal.
+extern quickjs_vm_eval(vm: ptr, code: @aether string) -> int
 extern quickjs_vm_result_type(vm: ptr) -> int
 // Numbers read either way: a float as an int truncates (saturating, NaN 0); a
 // bool reads 1 or 0; a BigInt that fits 64 bits reads as its value, a bigger
@@ -172,13 +200,13 @@ extern quickjs_vm_result_type(vm: ptr) -> int
 extern quickjs_vm_result_int(vm: ptr) -> long
 extern quickjs_vm_result_double(vm: ptr) -> float
 // A string result, or an error's message; "" for other types.
-extern quickjs_vm_result_str(vm: ptr) -> string
+extern quickjs_vm_result_str(vm: ptr) -> string @heap
 // 1 only for true.
 extern quickjs_vm_result_bool(vm: ptr) -> int
 // A Uint8Array result as a new std.bytes handle (caller frees); null otherwise.
 extern quickjs_vm_result_bytes(vm: ptr) -> ptr
 // JSON.stringify of the result ("" when it has no JSON form).
-extern quickjs_vm_result_json(vm: ptr) -> string
+extern quickjs_vm_result_json(vm: ptr) -> string @heap
 extern quickjs_vm_pop_result(vm: ptr)
 // 1 while one of this VM's evals is running.
 extern quickjs_vm_busy(vm: ptr) -> int
@@ -203,25 +231,25 @@ extern quickjs_vm_user(vm: ptr) -> ptr
 // as nil. A string is never converted from another type (arg_str of 5 is "").
 extern quickjs_arg_count(vm: ptr) -> int
 extern quickjs_arg_type(vm: ptr, i: int) -> int
-extern quickjs_arg_str(vm: ptr, i: int) -> string
+extern quickjs_arg_str(vm: ptr, i: int) -> string @heap
 extern quickjs_arg_int(vm: ptr, i: int) -> long
 extern quickjs_arg_bool(vm: ptr, i: int) -> int
 extern quickjs_arg_double(vm: ptr, i: int) -> float
 extern quickjs_arg_bytes(vm: ptr, i: int) -> ptr
-extern quickjs_arg_json(vm: ptr, i: int) -> string
+extern quickjs_arg_json(vm: ptr, i: int) -> string @heap
 // The last push is the value; return 1 to return it, 0 for undefined.
 extern quickjs_push_int(vm: ptr, v: long)
-extern quickjs_push_str(vm: ptr, v: string)
+extern quickjs_push_str(vm: ptr, v: @aether string)
 extern quickjs_push_bool(vm: ptr, v: int)
 extern quickjs_push_nil(vm: ptr)
 extern quickjs_push_double(vm: ptr, v: float)
 // `b` is a std.bytes handle; the bytes are copied into a Uint8Array.
 extern quickjs_push_bytes(vm: ptr, b: ptr)
 // The value JSON text describes; 0, or -1 (nothing pushed) for bad JSON.
-extern quickjs_push_json(vm: ptr, json: string) -> int
+extern quickjs_push_json(vm: ptr, json: @aether string) -> int
 // `return quickjs.raise_error(vm, msg)`: the script sees Error(msg), which
 // it can catch, after the callback has returned (so its defers run).
-extern quickjs_raise_error(vm: ptr, msg: string) -> int
+extern quickjs_raise_error(vm: ptr, msg: @aether string) -> int
 
 // --- Tier 1: fire-and-forget --------------------------------------------------
 

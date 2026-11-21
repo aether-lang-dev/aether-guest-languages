@@ -65,6 +65,12 @@ host_give(vm: ptr) -> int {
         inproc.emit("NOAPI", "the harness's value is not JSON: ${err}")
         return 0
     }
+    rc = give_value(vm, v)
+    json.json_free(v)
+    return rc
+}
+
+fn give_value(vm: ptr, v: ptr) -> int {
     kind = json.type(v)
     if kind == json.JSON_NULL { quickjs.push_nil(vm); return 1 }
     if kind == json.JSON_BOOL { quickjs.push_bool(vm, json.json_get_bool(v)); return 1 }

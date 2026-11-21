@@ -6,6 +6,7 @@ import std.spec
 import std.sandbox
 import std.fs
 import std.mem
+import std.string
 
 @extern("malloc") c_malloc(size: int) -> ptr
 @extern("free") c_free(p: ptr)
@@ -97,6 +98,36 @@ main() {
 
             spec.assert_str_eq(aether_shared_map_get(map, "reply"), "hello Alice", "aether_map_put reply matches")
             spec.assert_str_eq(aether_shared_map_get(map, "doubled"), "10", "aether_map_put doubled matches")
+
+            aether_shared_map_revoke_token(token)
+            aether_shared_map_free(map)
+        }
+
+        // The shared map is Aether's runtime's, and keeps C strings: a NUL in a
+        // key or a value cannot be stored whole, so a script that tries is told
+        // (an Error it can catch) and nothing is stored cut.
+        spec.it_when(have_qjs, "the shared map refuses a NUL, saying why, and script text with one is refused", reason) callback {
+            dummy = sandbox.new("dummy") {}
+            defer sandbox.free(dummy)
+            token_buf = c_malloc(8)
+            map = aether_shared_map_new(token_buf)
+            token = mem.get_long(token_buf, 0)
+            c_free(token_buf)
+            aether_shared_map_put(map, "present", "yes")
+
+            script = "const t = (f) => { try { f(); return 'no error' } catch (e) { return e.message } }; aether_map_put('r1', t(() => aether_map_put('k\\0x', 'v'))); aether_map_put('r2', t(() => aether_map_put('k2', 'a\\0b'))); aether_map_put('r3', t(() => aether_map_get('present\\0x'))); aether_map_put('plain', 'ok')"
+            spec.assert_eq(quickjs.run_sandboxed_with_map(dummy, script, token), 0, "the script ran to its end")
+            spec.assert_str_eq(aether_shared_map_get(map, "plain"), "ok", "an ordinary put still works")
+            spec.assert_true(string.contains(aether_shared_map_get(map, "r1"), "aether_map_put: the key: refused: it holds an embedded NUL") == 1, "a key: ${aether_shared_map_get(map, "r1")}")
+            spec.assert_true(string.contains(aether_shared_map_get(map, "r2"), "aether_map_put: the value: refused: it holds an embedded NUL") == 1, "a value: ${aether_shared_map_get(map, "r2")}")
+            spec.assert_true(string.contains(aether_shared_map_get(map, "r3"), "aether_map_get: the key: refused: it holds an embedded NUL") == 1, "a key to get, not cut into one that is there: ${aether_shared_map_get(map, "r3")}")
+            spec.assert_true(aether_shared_map_get(map, "k") != "v", "no key was stored cut to k")
+            spec.assert_true(aether_shared_map_get(map, "k2") != "a", "no value was stored cut to a")
+
+            spec.assert_not_eq(quickjs.run("var a = 1;\0var b = 2;"), 0, "run: script text with a NUL")
+            spec.assert_not_eq(quickjs.run_sandboxed(dummy, "var a = 1;\0var b = 2;"), 0, "run_sandboxed: the same")
+            spec.assert_not_eq(quickjs.run_sandboxed_with_map(dummy, "var a = 1;\0var b = 2;", token), 0, "run_sandboxed_with_map: the same")
+            spec.assert_eq(quickjs.run("var s = 'a\\0b'; if (s.length !== 3) throw new Error('cut');"), 0, "a NUL written as an escape in a string literal is fine")
 
             aether_shared_map_revoke_token(token)
             aether_shared_map_free(map)
