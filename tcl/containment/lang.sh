@@ -27,7 +27,6 @@ left_out() {
         connect-ipv4-mapped)
             [ "$PLAT" = macos ] || return 1
             echo "macOS has no preload to hold it, and the system's Tcl 8.5 resolves no IPv6 literal (socket ::ffff:192.0.2.1 443 fails in getaddrinfo, granted or not)" ;;
-        dlopen-libc-*) echo "Tcl 8.6's load formats the NULL dlerror() of a refused dlopen and dies (SIGSEGV in TclpDlopen): the worker is killed, the script never sees a refusal" ;;
         fork) echo "Tcl has no fork (exec forks and execs in one step: exec-bin-sh)" ;;
         syscall-*) echo "Tcl has no syscall() and no way to run machine code without a compiled extension" ;;
         half-frame) echo "a Tcl script cannot write to a descriptor it is not given a path for: the worker's socket is not one it can open" ;;
@@ -40,6 +39,22 @@ left_out() {
 libc_row() {
     case "$1" in
         open-*|write-*|env-cached|connect-*|exec-bin-sh|dlopen-*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# Rows not run in the contained child before ae 0.934.0 (AE_DLERROR_PIN): Tcl's
+# load of a library the preload refuses (dlopen-libc-by-name, -by-path) used to
+# kill the worker. The preload returned NULL from dlopen without setting
+# dlerror(), and Tcl 8.6's TclpDlopen formats that dlerror() with Tcl_ObjPrintf
+# ("%s") and dereferences NULL: SIGSEGV, the worker KILLED, the script never
+# sees a refusal. From 0.934.0 a refused dlopen always leaves a non-NULL
+# dlerror() (aether #3799), so the rows run and Tcl answers "refused".
+skip_child_old_ae() {
+    case "$1" in
+        dlopen-libc-*)
+            ver_ge "$ae_ver" "$AE_DLERROR_PIN" && return 1
+            echo "ae $ae_ver predates $AE_DLERROR_PIN: a refused dlopen leaves a NULL dlerror(), which Tcl 8.6's load formats and dies on (SIGSEGV in TclpDlopen)" ;;
         *) return 1 ;;
     esac
 }
@@ -83,6 +98,7 @@ child_stricter() {
         open-granted-file|write-granted-file) echo "the worker's own lockdown: a granted file comes as a descriptor, through read_file" ;;
         env-cached) echo "guest.launch gives the worker no environment: a variable comes through getenv" ;;
         connect-*) echo "the worker's own lockdown has no tcp grant: the preload refuses the connect whatever the policy" ;;
+        dlopen-libc-*) echo "the worker's own lockdown has no native grant: the preload refuses it a handle on libc whatever the policy (Tcl's load now answers with an error it can catch, from ae $AE_DLERROR_PIN)" ;;
         exec-bin-sh) echo "the worker's own lockdown has no fork grant, and Tcl's exec forks, which is refused whatever the policy" ;;
         *) return 1 ;;
     esac

@@ -198,17 +198,17 @@ else the rows that did not and how.
 | `test_stunt_file_granted` | `fs_read=$WORK/stunt-fixture.txt,env=HOME` | differs: open-etc-passwd not held, write-granted-file not held, getenv-home left out | differs: getenv-home left out | differs: open-granted-file stricter, syscall-fn-openat left out, syscall-openat left out, getenv-home left out, env-cached stricter |
 | `test_stunt_fork` | `fork` | differs: exec-bin-sh not held, open-etc-passwd not held | from ae 0.884.0: matches; before: differs: exec-bin-sh escapes | from ae 0.884.0: differs: fork left out; before: differs: fork left out, exec-bin-sh left out |
 | `test_stunt_host_checked` | `-` | matches | matches | differs: half-frame left out |
-| `test_stunt_native` | `native=*` | differs: open-etc-passwd not held | matches | differs: dlopen-libc-by-name left out, dlopen-libc-by-path left out |
+| `test_stunt_native` | `native=*` | differs: open-etc-passwd not held | matches | differs: dlopen-libc-by-name stricter, dlopen-libc-by-path stricter |
 | `test_stunt_nested` | `fs_read=$WORK/*\|fs_read=/etc/passwd` then `fs_read=$WORK/*,fs_read=/etc/passwd\|fs_read=$WORK/*` | differs: open-etc-passwd not held, open-granted-file not held | matches | (no row of it runs this way) |
 | `test_stunt_net_allowed` | `tcp=192.0.2.1:443` | differs: connect-ipv4-mapped left out, open-etc-passwd not held | matches | differs: connect-192.0.2.1 stricter, connect-ipv4-mapped stricter, syscall-socket left out |
 | `test_stunt_net_other` | `tcp=198.51.100.1:443` | differs: connect-192.0.2.1 not held, connect-ipv4-mapped left out | matches | matches |
-| `test_stunt_no_grants` | `-` | differs: open-etc-passwd not held, open-granted-file not held, write-granted-file not held, getenv-home left out, env-cached not held, connect-192.0.2.1 not held, connect-ipv4-mapped left out, exec-bin-sh not held | from ae 0.884.0: differs: getenv-home left out, env-cached escapes; before: differs: getenv-home left out, env-cached escapes, exec-bin-sh escapes | from ae 0.884.0: differs: getenv-home left out, fork left out, dlopen-libc-by-name left out, dlopen-libc-by-path left out, syscall-fn-openat left out, syscall-openat left out, syscall-socket left out; before: differs: getenv-home left out, exec-bin-sh left out, fork left out, dlopen-libc-by-name left out, dlopen-libc-by-path left out, syscall-fn-openat left out, syscall-openat left out, syscall-socket left out |
+| `test_stunt_no_grants` | `-` | differs: open-etc-passwd not held, open-granted-file not held, write-granted-file not held, getenv-home left out, env-cached not held, connect-192.0.2.1 not held, connect-ipv4-mapped left out, exec-bin-sh not held | from ae 0.884.0: differs: getenv-home left out, env-cached escapes; before: differs: getenv-home left out, env-cached escapes, exec-bin-sh escapes | from ae 0.884.0: differs: getenv-home left out, fork left out, syscall-fn-openat left out, syscall-openat left out, syscall-socket left out; before: differs: getenv-home left out, exec-bin-sh left out, fork left out, syscall-fn-openat left out, syscall-openat left out, syscall-socket left out |
 | `test_stunt_write_granted` | `fs_write=$WORK/*` | differs: open-granted-file not held | matches | differs: write-granted-file stricter |
 
 - Column 2, ae from 0.884.0: macOS 27.2 arm64, ae 0.889.0, Tcl 8.5.9
-- Column 3, ae from 0.884.0: CachyOS, kernel 7.3.1 x86_64, ae 0.889.0, Tcl 8.6.16
+- Column 3, ae from 0.884.0: CachyOS, kernel 7.3.5 x86_64, ae 0.934.0, Tcl 8.6.16
 - Column 3, ae before 0.884.0: Ubuntu 22.04.5 LTS, kernel 6.8.0 x86_64, ae 0.878.0, Tcl 8.6.12
-- Column 4, ae from 0.884.0: CachyOS, kernel 7.3.1 x86_64, ae 0.889.0, Tcl 8.6.16
+- Column 4, ae from 0.884.0: CachyOS, kernel 7.3.5 x86_64, ae 0.934.0, Tcl 8.6.16
 - Column 4, ae before 0.884.0: Ubuntu 22.04.5 LTS, kernel 6.8.0 x86_64, ae 0.878.0, Tcl 8.6.12
 <!-- stunt-parity:end -->
 
@@ -247,7 +247,7 @@ CI.
 | `exec-bin-sh` (`exec ... 2>@1`, stderr redirected, see below) | per policy, from ae 0.884.0; before it **escapes**: `execvp` reaches `execve` inside libc | **not held** | from ae 0.884.0: refused under every policy: the worker's own lockdown has no `fork` grant, and `exec` forks; before: left out (the worker's `exec` is not held then, so what happens is the Tcl build's: Ubuntu 22.04's 8.6.12 forks with `fork` and is refused, the runner's 8.6.14 starts the shell) |
 | `fork` | (left out: Tcl has no fork) | (left out) | (left out) |
 | `dlopen-libm` (`load`) | loads | loads | loads |
-| `dlopen-libc-by-name`, `dlopen-libc-by-path` (`load`) | (child-only row) | (child-only row) | (left out: the worker **dies** on the refusal, below) |
+| `dlopen-libc-by-name`, `dlopen-libc-by-path` (`load`) | (child-only row) | (child-only row) | refused under every policy, `native=*` included (stricter than stunt: the worker has no native grant); from ae 0.934.0 `load` gets an error it can catch, before it the worker **dies** on the refusal (below) |
 | `syscall-fn-openat`, `syscall-openat`, `syscall-socket` | (child-only row) | (child-only row) | (left out: Tcl has no `syscall()` and runs no machine code) |
 | `binding-read-etc-passwd`, `binding-read-granted-file`, `binding-getenv-home` (host commands) | per policy | per policy | per policy; a granted file goes down as a descriptor |
 | `callback-greet`, `callback-add` | work | work | work |
@@ -292,15 +292,18 @@ What the table says:
   `Tcl_Init` the worker locks itself down and reads nothing more, so the
   script has only the part of Tcl's library the worker's warm-up used (the
   worker's second argument; see below). No row reads there.
-- **`load` of a refused `dlopen` kills the worker.** The preload refuses a
-  handle on libc by returning NULL from `dlopen` without setting
-  `dlerror()`. Tcl 8.6.16's `TclpDlopen` formats that `dlerror()` with
-  `Tcl_ObjPrintf("%s")` and dereferences NULL: the worker dies with SIGSEGV
-  and the host reports `KILLED`. The attempt is stopped, but the script
-  never gets a refusal it could catch, so the two `dlopen-libc-*` rows
-  cannot be answered "refused" in Tcl and are left out. (A script in Tcl
-  that runs `load` on a library the preload refuses crashes the same way
-  in-process.)
+- **`load` of a refused `dlopen` killed the worker, before ae 0.934.0.** The
+  preload refuses a handle on libc by returning NULL from `dlopen`; until
+  aether #3799 (0.934.0) it did not set `dlerror()`. Tcl 8.6's `TclpDlopen`
+  formats that `dlerror()` with `Tcl_ObjPrintf("%s")` and dereferences NULL:
+  the worker died with SIGSEGV and the host reported `KILLED`. From 0.934.0
+  a refused `dlopen` always leaves a non-NULL `dlerror()`, and `load` gives
+  the script `couldn't load file "libc.so.6": ... refused by the sandbox`,
+  which `catch` sees. The two `dlopen-libc-*` rows therefore run in the child
+  from 0.934.0 (`AE_DLERROR_PIN`) and are refused under every policy,
+  `native=*` too, as in Lua's worker. On an older ae they are not run
+  (`tests/stunt_lib.sh`, `skip_child_old_ae`; the parity check leaves them
+  out of its comparison there), since the answer would be a killed worker.
 - **A refused `socket()` reads as "host is unreachable".** In the contained
   child with no tcp grant, seccomp refuses `socket(AF_INET, SOCK_STREAM)`
   with `EPERM`; Tcl tries each address, finds none it can open, and reports

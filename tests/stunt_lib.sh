@@ -79,6 +79,14 @@ left_out_inproc() { return 1; }
 # with why (a language whose result there depends on its build, as Tcl's exec
 # does before AE_SPAWN_PIN): left out in the child, run in-process.
 left_out_child() { return 1; }
+# And rows that cannot run in the child on an ae older than some release, for a
+# reason of that release (Tcl's dlopen rows died on the NULL dlerror() the
+# preload left until ae 0.934.0). They are not run and not recorded: the
+# README's table says what the current release does. The run records the row as
+# "NOT RUN", which tests/parity.sh leaves out of both sides of its comparison
+# (and never writes over), so an older ae's run neither fails on the row nor
+# changes its cell. Printed, so the run says what it did not do.
+skip_child_old_ae() { return 1; }
 # A language whose runtime cannot start in a mode (wall_blocks inproc|child
 # prints why) and the text it dies with (BLOCK_MARK). By default none.
 wall_blocks() { return 1; }
@@ -368,6 +376,11 @@ stunt_inproc() {
 }
 
 stunt_child() {
+    if why="$(skip_child_old_ae "$1")"; then
+        printf '  [NOT RUN] %s (child): %s\n' "$1" "$why"
+        record child "$1" "NOT RUN"
+        return
+    fi
     if why="$(left_out_child "$1")"; then
         printf '  [LEFT OUT] %s (child): %s\n' "$1" "$why"
         LEFT=$((LEFT + 1))

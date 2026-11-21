@@ -69,6 +69,18 @@ function compose(f, b) {
     if (b == "") return f
     return "from ae " pin ": " f "; before: " b
 }
+# A README cell without the rows t, c did not run: "differs: a x, b y" minus
+# the items whose row name is in notrun[t, c]; nothing left is "matches".
+function strip(cell, t, c,    body, n, parts, i, name, out) {
+    if (!((t, c) in notrun) || substr(cell, 1, 9) != "differs: ") return cell
+    body = substr(cell, 10); n = split(body, parts, ", "); out = ""
+    for (i = 1; i <= n; i++) {
+        name = parts[i]; sub(/ .*/, "", name)
+        if (index(notrun[t, c], " " name " ")) continue
+        out = out (out == "" ? "" : ", ") parts[i]
+    }
+    return out == "" ? "matches" : "differs: " out
+}
 function trim(s) { gsub(/^ +| +$/, "", s); return s }
 FILENAME == ARGV[1] {   # the tests
     ntests++; tname[ntests] = $1; tpol[$1] = $2; next
@@ -77,6 +89,9 @@ FILENAME == ARGV[2] {   # the results
     t = "test_" $1; c = $2; side = $3
     if (c !~ /^[234]$/) { other[c] = 1; next }   # a column the table has not (3f)
     ran[c] = side; seen[t, c] = 1
+    # A row this ae could not run (stunt_lib.sh skip_child_old_ae): it is left
+    # out of the comparison, and a cell holding it is not rewritten.
+    if ($5 == "NOT RUN") { notrun[t, c] = notrun[t, c] " " $4 " "; next }
     if ($5 != "PASS") {
         item = $4 " " kindtext($5)
         if (index("\n" diff[t, c] "\n", "\n" item "\n") == 0)
@@ -125,7 +140,7 @@ END {
             t = tname[i]
             if (!((t, c) in cur)) continue
             checked++
-            want = sidevalue(old[t, c], ran[c])
+            want = strip(sidevalue(old[t, c], ran[c]), t, c)
             if (want != cur[t, c]) {
                 printf "  [FAIL] parity: %s, column %s (ae %s %s): the README says \"%s\", this run \"%s\"\n", t, c, ran[c], pin, want, cur[t, c]
                 bad++
@@ -140,7 +155,7 @@ END {
     for (c = 2; c <= 4; c++) for (i = 1; i <= ntests; i++) {
         t = tname[i]
         o = old[t, c]
-        if (!((t, c) in cur)) { new[t, c] = o; continue }
+        if (!((t, c) in cur) || ((t, c) in notrun)) { new[t, c] = o; continue }
         f = sidevalue(o, "from"); b = sidevalue(o, "before")
         if (ran[c] == "from") { f = cur[t, c]; if (b == "") b = f } else { b = cur[t, c]; if (f == "") f = b }
         new[t, c] = compose(f, b)
