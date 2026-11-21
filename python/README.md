@@ -141,7 +141,8 @@ import std.list
 
 main() {
     perms = sandbox.new("python") {
-        grant_fs_read("/usr/lib/python3.14/*")      // CPython lists and reads its standard library to start
+        grant_fs_read("/usr/lib/python3.14")        // the directory itself, listed since ae 0.927.0 needs it
+        grant_fs_read("/usr/lib/python3.14/*")      // and what is under it: CPython lists and reads its standard library to start
     }
     args = list.new()
     list.add(args, "libpython3.14.so.1.0")
@@ -285,7 +286,10 @@ What the table says:
   the policy. Before 0.884.0 process start followed the policy too
   (seccomp lets `execve` through only with an exec grant).
 - **The contained child's policy has one grant more than stunt's**: a read
-  of the standard library's directories (`sysconfig.get_paths()["stdlib"]`
+  of each of the standard library's directories and of what is under them
+  (`<dir>` and `<dir>/*`: from ae 0.927.0 listing a directory is checked
+  against a grant on the directory itself, and `<dir>/*` does not cover it;
+  before 0.927.0 the second was enough), for the directories (`sysconfig.get_paths()["stdlib"]`
   and `["platstdlib"]`), which `../tests/stunt_lib.sh` passes as
   `GHL_PYTHON_STDLIB` and `containment/child_host.ae` adds to every policy.
   CPython cannot start without it: `spawn_socket`'s Landlock floor lets the
