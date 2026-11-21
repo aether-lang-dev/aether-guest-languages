@@ -176,19 +176,6 @@ fn mounts_py(h: *child.Host) -> string {
     return "${out}]\n"
 }
 
-// The names the prelude defines for the script: a host function mounted
-// under one of them would be shadowed by it, so the worker refuses the mount.
-fn reserved(h: *child.Host) -> string {
-    n = child.mount_count(h)
-    i = 0
-    while i < n {
-        name, _min, _max = child.mount_at(h, i)
-        if name == "export" { return name }
-        i = i + 1
-    }
-    return ""
-}
-
 main() {
     h, err = child.open("python-worker")
     if err != "" {
@@ -216,9 +203,8 @@ main() {
         }
         python.vm_pop_result(vm)
     }
-    taken = reserved(h)
-    if taken != "" {
-        child.error(h, "python-worker: cannot mount '${taken}': the worker defines it for the script")
+    if child.is_mounted(h, "export") {
+        child.error(h, "python-worker: cannot mount 'export': the worker defines it for the script")
         exit(1)
     }
     ghl_keep(h as ptr)

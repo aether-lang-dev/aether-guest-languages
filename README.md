@@ -89,11 +89,12 @@ current release and against the workers' own runs:
   Aether's `(value, err)`), calling mounted host functions on the way as a
   script does, and `END` (`guest.end`) finishes it with `DONE 0`; the two sides
   strictly alternate, nothing nests and there are no ids, and a worker that
-  exports nothing behaves exactly as before. The usual shape is notify then
-  fetch: the host invokes an export with only an id (`on_txn("123456")`) and
-  the export fetches what it needs through a mounted function; the pull
-  pattern, a guest looping on a mounted `next_event`, needs no verb at all
-  (aether's `docs/design/guest-host-calls-guest.md` compares the two).
+  exports nothing behaves exactly as before. An invocation may carry its whole
+  input as arguments, any JSON value up to the frame limit; a small
+  notification the export answers by phoning home through a mounted function
+  (`on_txn("123456")`, then `txn_details(id)`) is one suggested practice beside
+  it, and the pull pattern, a guest looping on a mounted `next_event`, needs no
+  verb at all (aether's `docs/design/guest-host-calls-guest.md` compares them).
 - **Callbacks.** The host mounts functions by name with an arity
   (`guest.mount`); the worker makes each a name of its language, and a call's
   arguments and answer are JSON. An unmounted name is the language's own error.

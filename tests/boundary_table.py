@@ -34,6 +34,7 @@ INPROC = dict(name="boundary-inproc", file="boundary-inproc-%s.tsv", where="the 
 INVOKE_SPECIAL = [("relay", "an export that calls a mounted host function"), ("state", "state between invocations (a counter, three calls)"),
                   ("raise", "an export that raises, then another call"), ("loop", "a cancel inside an export's loop"),
                   ("wait", "a cancel while an export waits on a host call"), ("big", "a 100,000-byte `RETURN`"),
+                  ("args", "three arguments of different types"), ("big-arg", "a 100,000-byte `INVOKE` argument"),
                   ("unexported", "`INVOKE` of a name the guest did not export"), ("end", "`END`"),
                   ("none", "a script that exports nothing"),
                   ("txn", "notify, then fetch: two transactions, an unknown id")]

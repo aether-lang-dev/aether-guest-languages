@@ -37,3 +37,4 @@ x:reenter	export("via", function(v) return reenter(v) end)
 x:flood	for i = 0, 299 do export("f" .. i, function() return i end) end
 x:malformed	export("two words", function() return 1 end)
 x:txn	local pending = { txn_start("deposit"), txn_start("refund") }@NL@local seen = 0@NL@export("on_txn", function(id)@NL@  local d, err = txn_details(id)@NL@  if not d then error(err, 0) end@NL@  seen = seen + 1@NL@  return string.format("%d %s %d", seen, d.kind, d.amount)@NL@end)
+x:pick	export("pick", function(a, b, c) return b end)

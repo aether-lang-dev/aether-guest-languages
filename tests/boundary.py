@@ -361,6 +361,20 @@ def main_invoke(lang, host, work, out):
         if o and o[0][0] == "RETURN": return "crossed", ""
         return "other", why_not(ev)
     special("big", "x:big", [I("big", "[]")], j_big)
+    # A direct call carries its whole input: several arguments, and one past
+    # the frame limit (the host's to refuse or the worker's to fail on).
+    def j_pick(ev):
+        o = outcomes(ev)
+        if o and o[0] == ("RETURN", '"two"'): return "ok", ""
+        return "differs", why_not(ev)
+    special("args", "x:pick", [I("pick", '[1,"two",3.5]')], j_pick)
+    def j_bigarg(ev):
+        o = outcomes(ev)
+        if o and o[0][0] == "NOSEND": return "refused by the host, nothing sent", short(o[0][1])
+        if o and o[0][0] == "RETURN": return "crossed", ""
+        k, t = end_of(ev)
+        return "refused: " + k.lower(), short(t)
+    special("big-arg", "x:back", [I("back", json.dumps(["x" * 100000]))], j_bigarg)
     def j_unexported(ev):
         o = outcomes(ev)
         if o and o[0][0] == "NOSEND" and "does not export" in o[0][1] and len(o) > 1 and o[1][0] == "RETURN":

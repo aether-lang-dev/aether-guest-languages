@@ -23,3 +23,18 @@ v:null	nil
 v:array	[1, "a", 2.5]
 v:map	{"k" => "v", "n" => 1}
 v:nested	{"a" => [1, {"b" => "x"}], "c" => {"d" => 2.5}}
+# The other direction (tests/boundary.py run-invoke): scripts that export methods for the host to call. x:make returns @V@; x:back hands its argument back.
+x:make	export def make = @V@
+x:back	export def back(v) = v
+x:relay	export def relay(v) = echo(v)
+x:count	$n = 0@NL@export def count = ($n += 1)@NL@export def boom = raise(ArgumentError, "boom")
+x:loop	export def spin@NL@  loop do@NL@    _x = 1@NL@  end@NL@end
+x:wait	export def wait = slow("x")
+x:silent	export def hush@NL@  ObjectSpace.each_object(TracePoint) { |t| t.disable }@NL@  loop do@NL@    _x = 1@NL@  end@NL@end
+x:big	export def big = "x" * 100000
+x:none	x = 1
+x:reenter	export def via(v) = reenter(v)
+x:flood	300.times { |i| export("f#{i}") { i } }
+x:malformed	export("two words") { 1 }
+x:txn	$pending = [txn_start("deposit"), txn_start("refund")]@NL@$seen = 0@NL@export def on_txn(id)@NL@  d = txn_details(id)@NL@  $seen += 1@NL@  "#{$seen} #{d["kind"]} #{d["amount"]}"@NL@end
+x:pick	export def pick(a, b, c) = b

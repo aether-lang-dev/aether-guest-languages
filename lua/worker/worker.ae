@@ -231,19 +231,6 @@ fn mounts_lua(h: *child.Host) -> string {
     return "${out}}\n"
 }
 
-// A mounted name the prelude defines for the script itself, which would
-// shadow the host's function: "" or the name.
-fn reserved(h: *child.Host) -> string {
-    n = child.mount_count(h)
-    i = 0
-    while i < n {
-        name, _min, _max = child.mount_at(h, i)
-        if name == "export" { return name }
-        i = i + 1
-    }
-    return ""
-}
-
 main() {
     h, err = child.open("lua-worker")
     if err != "" {
@@ -262,9 +249,8 @@ main() {
         child.error(h, "lua-worker: cannot load liblua (AETHER_LUA_SONAME)")
         exit(1)
     }
-    taken = reserved(h)
-    if taken != "" {
-        child.error(h, "lua-worker: cannot mount '${taken}': the worker defines it for the script")
+    if child.is_mounted(h, "export") {
+        child.error(h, "lua-worker: cannot mount 'export': the worker defines it for the script")
         exit(1)
     }
     ghl_keep(h as ptr)

@@ -19,3 +19,18 @@ v:int-min	-9223372036854775808
 v:float	1.5
 v:bool-true	true
 v:bool-false	false
+# The other direction (tests/boundary.py run-invoke): scripts that export commands for the host to call. x:make returns @V@; x:back hands its argument back.
+x:make	proc make {} { return @V@ }@NL@export make
+x:back	proc back {v} { return $v }@NL@export back
+x:relay	proc relay {v} { return [echo $v] }@NL@export relay
+x:count	set n 0@NL@proc count {} { incr ::n }@NL@proc boom {} { error boom }@NL@export count boom
+x:loop	proc spin {} { while 1 {} }@NL@export spin
+x:wait	proc wait {} { slow x }@NL@export wait
+x:silent	proc hush {} { expr {7**20000000} }@NL@export hush
+x:big	proc big {} { string repeat x 100000 }@NL@export big
+x:none	set x 1
+x:reenter	proc via {v} { reenter $v }@NL@export via
+x:flood	for {set i 0} {$i < 300} {incr i} { proc f$i {} [list return $i]; export f$i }
+x:malformed	proc {two words} {} { return 1 }@NL@export {two words}
+x:txn	set pending [list [txn_start deposit] [txn_start refund]]@NL@set seen 0@NL@proc on_txn {id} {@NL@    set d [txn_details $id]@NL@    incr ::seen@NL@    return "$::seen [dict get $d kind] [dict get $d amount]"@NL@}@NL@export on_txn
+x:pick	proc pick {a b c} { return $b }@NL@export pick

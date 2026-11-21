@@ -37,3 +37,4 @@ x:reenter	export_fn("via", function (v) { return reenter(v); });
 x:flood	for (var i = 0; i < 300; i++) export_fn("f" + i, (function (k) { return function () { return k; }; })(i));
 x:malformed	export_fn("two words", function () { return 1; });
 x:txn	var pending = [txn_start("deposit"), txn_start("refund")];@NL@var seen = 0;@NL@export_fn("on_txn", function (id) {@NL@  var d = txn_details(id);@NL@  seen++;@NL@  return seen + " " + d.kind + " " + d.amount;@NL@});
+x:pick	export_fn("pick", function (a, b, c) { return b; });

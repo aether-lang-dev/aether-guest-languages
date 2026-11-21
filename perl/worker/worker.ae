@@ -14,6 +14,18 @@
 //                       host's answer decoded back to Perl (a granted file
 //                       is {granted => true, text => ...}); a FAIL dies with
 //                       the message; a CANCEL dies "cancelled by host: ..."
+//   export NAME ...     marks subs for the host to call by name once the
+//                       script has ended (export NAME => sub {...} gives the
+//                       code itself). A script that exported anything ends
+//                       with READY and its names instead of DONE, and serves:
+//                       each INVOKE calls the sub with its JSON arguments in
+//                       the same interpreter (the script's package variables,
+//                       lexicals its subs closed over and modules as it left
+//                       them), in scalar context, and is answered RETURN and
+//                       the value as JSON, or RAISE and the die message, after
+//                       which it serves on; END ends it with DONE 0. The names
+//                       are fixed at READY. `export` is the worker's: a host
+//                       cannot mount it.
 //   the end             DONE 0, or ERROR and the script's $@ (with its
 //                       "at (eval N) line N." and newline)
 //
@@ -47,9 +59,34 @@ extern ghl_kept() -> ptr
 
 @source("worker_support.c")
 
-// The Host the callbacks below answer through (one per process).
+// What the callbacks answer through (one per process): the Host, and what
+// the prelude last handed back with __out (perl.run returns no value).
+struct Worker {
+    h: *child.Host
+    out: string
+}
+
+fn worker() -> *Worker {
+    return ghl_kept() as *Worker
+}
+
 fn host() -> *child.Host {
-    return ghl_kept() as *child.Host
+    return worker().h
+}
+
+// __out(text): the prelude's answer to the worker (the export names at
+// READY, an invocation's outcome)
+@c_callback
+w_out(ctx: ptr) -> int {
+    worker().out = perl.arg_str(ctx, 1)
+    return 0
+}
+
+// __args() -> the arguments of the invocation being served, a JSON array
+@c_callback
+w_args(ctx: ptr) -> int {
+    perl.push_str(ctx, host().invoked)
+    return 1
 }
 
 // __say(text)
@@ -119,6 +156,47 @@ $SIG{ALRM} = sub {
     die "cancelled by host: $why\n" if defined $why && length $why;
 };
 Time::HiRes::setitimer(Time::HiRes::ITIMER_REAL(), 0.05, 0.05);
+
+# Exports: subs the host may call by name once the script has ended.
+our (%_ae_exports, @_ae_order, %_ae_served);
+sub export {
+    while (@_) {
+        my $name = shift;
+        my $code;
+        if (@_ && ref($_[0]) eq 'CODE') {
+            $code = shift;
+        } else {
+            no strict 'refs';
+            $code = \&{"main::$name"} if defined &{"main::$name"};
+        }
+        die "export: no sub named $name\n" unless $code;
+        push @_ae_order, $name unless exists $_ae_exports{$name};
+        $_ae_exports{$name} = $code;
+    }
+    return;
+}
+# The names at READY, fixed from here on, as a JSON array; '' for none.
+sub _ae_ready {
+    %_ae_served = %_ae_exports;
+    main::__out(@_ae_order ? JSON::PP->new->encode([@_ae_order]) : '');
+}
+# One INVOKE: "RETURN\n<json>" or "RAISE\n<message>", through __out.
+sub _ae_serve {
+    my $name = shift;
+    my $code = $_ae_served{$name};
+    return main::__out("RAISE\nno export named $name") unless $code;
+    my $r = eval {
+        my @args = @{ $main::_ae_json->decode(main::__args()) };
+        my $v = $code->(@args);
+        "RETURN\n" . $main::_ae_json->encode($v);
+    };
+    unless (defined $r) {
+        my $e = $@;
+        $e =~ s/\n\z//;
+        $r = "RAISE\n$e";
+    }
+    main::__out($r);
+}
 1;
 PL
 }
@@ -170,7 +248,16 @@ main() {
         ni = ni + 1
     }
     string.array_free(names)
-    ghl_keep(h as ptr)
+    if child.is_mounted(h, "export") {
+        child.error(h, "perl-worker: cannot mount 'export': the worker defines it for the script")
+        exit(1)
+    }
+    wk = heap.new(Worker)
+    wk.h = h
+    wk.out = ""
+    ghl_keep(wk as ptr)
+    perl.register("__out", w_out)
+    perl.register("__args", w_args)
     perl.register("__say", w_say)
     perl.register("__call", w_call)
     perl.register("__poll", w_poll)
@@ -180,10 +267,54 @@ main() {
     }
     child.run(h) callback {
         if perl.run(h.source) == 0 {
-            child.done(h, 0)
+            serve_exports(h)
         } else {
             child.error(h, perl.last_error())
         }
     }
     exit(0)
+}
+
+// After the script: DONE when it exported nothing; otherwise READY, and each
+// INVOKE runs _ae_serve in the same interpreter until END or a cancel. A
+// cancel heard inside an invocation (the SIGALRM handler, or a call's reply)
+// ends the worker: the sub's state is half done. (Not named serve: an
+// unqualified call inside child.run's callback block resolves to child's own
+// serve.)
+fn serve_exports(h: *child.Host) {
+    wk = worker()
+    wk.out = ""
+    if perl.run("_ae_ready();") != 0 {
+        child.error(h, perl.last_error())
+        return
+    }
+    if wk.out == "" {
+        child.done(h, 0)
+        return
+    }
+    child.ready(h, wk.out)
+    while true {
+        inv = child.serve(h)
+        if inv.kind == "END" {
+            child.done(h, 0)
+            return
+        }
+        if inv.kind != "INVOKE" {
+            child.error(h, "cancelled by host: ${inv.args}")
+            return
+        }
+        wk.out = ""
+        if perl.run("_ae_serve(${child.json_string(inv.name)});") != 0 {
+            child.error(h, perl.last_error())
+            return
+        }
+        if h.cancel != "" {
+            child.error(h, "cancelled by host: ${h.cancel}")
+            return
+        }
+        out = wk.out
+        at = string.index_of(out, "\n")
+        text = string.substring(out, at + 1, string.length(out))
+        if string.starts_with(out, "RETURN") == 1 { child.returned(h, text) } else { child.raised(h, text) }
+    }
 }

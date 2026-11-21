@@ -155,19 +155,6 @@ fn mounts_js(h: *child.Host) -> string {
     return "${out}];\n"
 }
 
-// A mounted name the prelude defines for the script itself, which would
-// shadow the host's function: "" or the name.
-fn reserved(h: *child.Host) -> string {
-    n = child.mount_count(h)
-    i = 0
-    while i < n {
-        name, _min, _max = child.mount_at(h, i)
-        if name == "export_fn" { return name }
-        i = i + 1
-    }
-    return ""
-}
-
 main() {
     h, err = child.open("duktape-worker")
     if err != "" {
@@ -186,9 +173,8 @@ main() {
         child.error(h, "duktape-worker: cannot load libduktape (AETHER_DUKTAPE_SONAME)")
         exit(1)
     }
-    taken = reserved(h)
-    if taken != "" {
-        child.error(h, "duktape-worker: cannot mount '${taken}': the worker defines it for the script")
+    if child.is_mounted(h, "export_fn") {
+        child.error(h, "duktape-worker: cannot mount 'export_fn': the worker defines it for the script")
         exit(1)
     }
     ghl_keep(h as ptr)

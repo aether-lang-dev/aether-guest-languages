@@ -37,3 +37,4 @@ x:reenter	@export@NL@def via(v):@NL@    return reenter(v)
 x:flood	for i in range(300):@NL@    export(lambda: i, "f%d" % i)
 x:malformed	export(lambda: 1, "two words")
 x:txn	pending = [txn_start("deposit"), txn_start("refund")]@NL@seen = 0@NL@@NL@@export@NL@def on_txn(txn_id):@NL@    global seen@NL@    details = txn_details(txn_id)@NL@    seen += 1@NL@    return "%d %s %d" % (seen, details["kind"], details["amount"])
+x:pick	@export@NL@def pick(a, b, c):@NL@    return b
