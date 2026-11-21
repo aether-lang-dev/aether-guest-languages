@@ -58,6 +58,13 @@ case "$(uname -s 2>/dev/null)" in
     *) PLAT=other ;;
 esac
 command -v ae > /dev/null 2>&1 || die "ae is not on PATH"
+# A row that hangs is a failure, not a wait: a runtime that dies in a loop when
+# the preload refuses something it asked for (Factor, from ae 0.927.0, before
+# its grants were completed) otherwise held a CI job for its whole timeout.
+# Exit 124 is timeout's. Skipped where there is no `timeout` (macOS).
+ROW_TIMEOUT=""
+command -v timeout > /dev/null 2>&1 && ROW_TIMEOUT="timeout ${GHL_ROW_TIMEOUT:-300}"
+
 # A language's lang.sh may name rows where the preload itself fails (an
 # error where the policy says succeed or refused); by default there are none.
 preload_fails() { return 1; }
@@ -169,7 +176,7 @@ fi
 # wall no longer blocks it and the rows run as for any language.
 BLOCKED_INPROC=0
 if [ -n "$PRELOAD" ] && BLOCK_WHY="$(wall_blocks inproc)"; then
-    (cd "$WORK" && LD_PRELOAD="$PRELOAD" "$HOST" inproc - env-cached succeed) > "$TMP/blockprobe.txt" 2>&1
+    (cd "$WORK" && LD_PRELOAD="$PRELOAD" $ROW_TIMEOUT "$HOST" inproc - env-cached succeed) > "$TMP/blockprobe.txt" 2>&1
     block_rc=$?
     if [ "$block_rc" -ne 0 ] && grep -q "$BLOCK_MARK" "$TMP/blockprobe.txt"; then
         BLOCKED_INPROC=1
@@ -267,11 +274,11 @@ run_one() {   # run_one <label> <mode> <expectation-to-run> <check>
     case "$2" in
         inproc)
             if [ -n "$PRELOAD" ]; then
-                (cd "$WORK" && LD_PRELOAD="$PRELOAD" "$HOST" inproc "$POLICY" "$4" "$3") > "$out" 2>&1
+                (cd "$WORK" && LD_PRELOAD="$PRELOAD" $ROW_TIMEOUT "$HOST" inproc "$POLICY" "$4" "$3") > "$out" 2>&1
             else
-                (cd "$WORK" && "$HOST" inproc "$POLICY" "$4" "$3") > "$out" 2>&1
+                (cd "$WORK" && $ROW_TIMEOUT "$HOST" inproc "$POLICY" "$4" "$3") > "$out" 2>&1
             fi ;;
-        child) (cd "$WORK" && "$CHILD_HOST" "$POLICY" "$4" "$3") > "$out" 2>&1 ;;
+        child) (cd "$WORK" && $ROW_TIMEOUT "$CHILD_HOST" "$POLICY" "$4" "$3") > "$out" 2>&1 ;;
     esac
     rc=$?
     if [ "$rc" -ne 0 ]; then

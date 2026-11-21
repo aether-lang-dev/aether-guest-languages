@@ -316,6 +316,21 @@ as its third argument. Once parsed, a vocabulary reads nothing.
 `run_sandboxed` and `run_sandboxed_with_map` start the VM first for the same
 reason (it reads the image).
 
+**One read is still needed in-process, from ae 0.927.0.** While it evaluates a
+script, Factor lists its four vocabulary roots (`core`, `basis`, `extra`,
+`work` of its tree). Aether's preload has checked a directory listing since
+0.927.0 (aether #3751: `opendir` needs `fs_read` on the directory itself), and a
+refused listing does not come back to the script as a Factor error: Factor
+dies in a loop in its SIGSEGV handler (the first bad release is 0.927.0, the
+last good 0.926.0; plain Factor handles an `EACCES` from `opendir` as an
+error, so it is the refusal under the preload that does it), and the row hangs.
+So the in-process host (`containment/host.ae`) adds `fs_read` on
+`$FACTOR_HOME/*` to each row's grants, and nothing else: the stunt policy of
+the row is otherwise as stunt has it, and rows that ask whether Factor can read
+`/etc/passwd` or the fixture are unaffected. Under no read of its tree a host
+should not run Factor in a level at all. The tests end a hung row after
+`GHL_ROW_TIMEOUT` seconds (300) so that this shows as a failure, not a wait.
+
 ## Loading libfactor and the image
 
 The bridge's C (`aether_host_factor.c`) is compiled into the program that
@@ -345,13 +360,16 @@ Factor also needs its bootstrapped image: set `${AETHER_FACTOR_IMAGE}` to the
 ```sh
 git clone https://github.com/aether-lang-dev/factor-language && cd factor-language
 make linux-x86-64                                  # factor, libfactor and its test library
-curl -fsSLO https://downloads.factorcode.org/images/master/boot.unix-x86.64.image
+cp /path/to/this-repo/ci/factor/boot.unix-x86.64.image .   # the boot image FACTOR_FORK_REF bootstraps from
 ./factor -i=boot.unix-x86.64.image                 # bootstraps factor.image
 ```
 
-The CI jobs do this at `FACTOR_FORK_REF` and cache the result (the recipe
-there is the one step not run on a runner; the tests were run against a build
-of the same commit made by hand).
+The CI jobs do this at `FACTOR_FORK_REF` and cache the result. The boot image is
+this repository's (`ci/factor/`, pinned by SHA-256 in `ci/versions.env`), not
+the one at `downloads.factorcode.org/images/master/`: that one moves with
+Factor's master, and one from after 2026-11-17 does not bootstrap this fork
+(`Memory protection fault at address 0x28`, the fork being on an older
+upstream than the image).
 
 ## In a contained child
 
