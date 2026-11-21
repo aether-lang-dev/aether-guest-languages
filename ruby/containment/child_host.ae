@@ -153,10 +153,29 @@ fn run_child(spec: string, check: string, expect: string) {
     nd = string.array_size(dirs)
     di = 0
     while di < nd {
+        // The directory itself too: Ruby 4.0's require lists a load path
+        // directory, which since ae 0.927.0 needs a grant on the directory.
+        sandbox.grant_fs_read(perms, string.array_get(dirs, di))
         sandbox.grant_fs_read(perms, "${string.array_get(dirs, di)}/*")
         di = di + 1
     }
     string.array_free(dirs)
+    // A libruby in a private prefix (a Ruby built by hand, not the system's)
+    // is outside the places spawn_socket's Landlock floor lets the loader
+    // read, so the worker cannot open it: GHL_RUBY_EXTRA_READ names the
+    // directories to grant (comma-separated, each as itself and its contents).
+    extra = os.getenv("GHL_RUBY_EXTRA_READ")
+    if extra != "" {
+        ed = string.split(extra, ",")
+        ne = string.array_size(ed)
+        ei = 0
+        while ei < ne {
+            sandbox.grant_fs_read(perms, string.array_get(ed, ei))
+            sandbox.grant_fs_read(perms, "${string.array_get(ed, ei)}/*")
+            ei = ei + 1
+        }
+        string.array_free(ed)
+    }
     args = list.new()
     list.add(args, os.getenv("AETHER_RUBY_SONAME"))
     list.add(args, PREIMPORT)

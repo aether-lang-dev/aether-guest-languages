@@ -273,6 +273,26 @@ claim with the spec that backs it.
 - **Contained child.** Contained child: `std.guest` over a `std.ipc` socketpair, 4-byte length-prefixed frames, JSON arguments and values, a granted file as a descriptor, guest-initiated calls answered one at a time, no nesting (the top-level README lists the common part). the worker mounts host functions with the engine's API (JSON in, `JSON.parse` out; a `FAIL` throws); `print` is `SAY`; no deadline or interrupt inside the worker, so `CANCEL` is heard only in a call's reply and a loop is killed after the grace period.
 - **Tests.** `quickjs/test_quickjs_bridge.ae`: "a script has print and console.log", "a script has no file, environment or process API", "modern JavaScript runs (ES2023)"; `quickjs/test_quickjs_find_interrupt.ae`; the child: `callback-greet`, `callback-add`, `map-*` rows (`quickjs/containment/checks.js`), `quickjs/containment/test_find.sh`.
 
+## Array.find and the deadline
+
+quickjs-ng 0.18.0 frees an array element twice when a deadline or interrupt
+stops `Array.prototype.find` (or `findIndex`, `findLast`, `findLastIndex`) after
+its first step; the array then holds a freed element and the next collection
+dies. This bridge sets a deadline (5 s, per script) and compiles aether's
+`contrib.quickjs`, so it has the fault wherever the engine does. Aether 0.934.0
+ships the engine patched (upstream's e22ce4de43, as
+`contrib/quickjs/patches/0001-array-find-clear-value-after-release.patch`,
+applied to the amalgamation by aether's fetch script), so nothing here copies or
+applies a patch: the engine is the patched one on 0.934.0 and later, and the
+unpatched 0.18.0 on older releases (the `AE_QUICKJS_PIN` job runs 0.916.0).
+`test_quickjs_find_interrupt.ae` has the write-up's repro (200,001 and 200,000
+objects, a 20 ms deadline, every element checked afterwards) and the bridge's
+own deadline; it runs only where `QUICKJS_PATCHED=1` (`tests/quickjs_env.sh`
+sets it from the patch file) and aborts in `gc_decref_child` on 0.916.0 when
+forced. The contained child's worker sets no deadline or interrupt, so a `find`
+in it is never stopped (`containment/test_find.sh` runs the loops to their end
+in the bridge and in the worker and checks every element).
+
 ## Containment table
 
 What a JavaScript script gets when it tries each row of stunt's catalogue (aether

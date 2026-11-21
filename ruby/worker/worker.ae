@@ -157,6 +157,14 @@ main() {
     if os.args_count() > 1 && os.args_get(1) != "" {
         setenv("AETHER_RUBY_SONAME", os.args_get(1), 1)
     }
+    // From Ruby 3.5 (4.0 among them) fiddle is a bundled gem, which `require`
+    // finds only once RubyGems is loaded, and the bridge starts without it
+    // unless AETHER_RUBY_GEMS is set (aether_host_ruby.c). The worker has no
+    // environment, so it sets it when it is asked to require fiddle: before
+    // the lockdown, while the gem directories can still be read.
+    if os.args_count() > 2 && string.contains(os.args_get(2), "fiddle") == 1 {
+        setenv("AETHER_RUBY_GEMS", "1", 1)
+    }
     if ruby.init_host() != 0 {
         child.error(h, "ruby-worker: cannot load libruby (AETHER_RUBY_SONAME)")
         exit(1)

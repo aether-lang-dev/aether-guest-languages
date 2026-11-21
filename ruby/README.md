@@ -9,6 +9,22 @@ libruby at run time and needs no Ruby dev package to build. Checked on
 CRuby 2.6 (macOS's own) and 3.4; Ubuntu's 3.2 and Homebrew's current Ruby
 are run in CI.
 
+**Ruby 4.0 (checked 2026-11-21).** Homebrew's current Ruby, 4.0.9, is what the
+macOS CI job runs (the in-process specs and rows pass). On cachyos a private
+build of Ruby 4.0.10 (`--enable-shared`) passed everything: the 20 in-process
+specs, every containment row, the parity table (identical to 3.4's) and the
+contained child with `GHL_REQUIRE_CHILD=1`. Two things were needed, neither a
+change in what the bridge does with Ruby: fiddle is a bundled gem from Ruby 3.5
+on, which `require` finds only with RubyGems loaded, so the worker now sets
+`AETHER_RUBY_GEMS=1` itself when asked to require fiddle (the bridge starts
+without RubyGems otherwise, and the worker has no environment); and a libruby in
+a private prefix is outside what `spawn_socket`'s Landlock floor lets a worker
+read, so the test host takes `GHL_RUBY_EXTRA_READ` (the directories to grant) for
+a hand-built Ruby (a system Ruby needs nothing). The test host also grants each
+library directory itself, not only what is under it, as Python's does; no
+failure was seen for the lack of that on Ruby, it is the same rule (from ae
+0.927.0 a listing needs a grant on the directory).
+
 ## Four ways to run Ruby from Aether
 
 From least to most contained. The first three run Ruby inside your program,
