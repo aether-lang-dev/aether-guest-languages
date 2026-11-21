@@ -154,6 +154,10 @@ fn run_child(spec: string, check: string, expect: string) {
     nd = string.array_size(dirs)
     di = 0
     while di < nd {
+        // The directory itself as well as what is under it: since ae 0.927.0
+        // listing a directory is checked against a grant on the directory,
+        // and "<dir>/*" does not cover "<dir>".
+        sandbox.grant_fs_read(perms, string.array_get(dirs, di))
         sandbox.grant_fs_read(perms, "${string.array_get(dirs, di)}/*")
         di = di + 1
     }
