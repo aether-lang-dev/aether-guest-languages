@@ -1,7 +1,8 @@
 name: CI
 
 # ae comes from aeb's get.sh at the version ci/versions.env pins (AE_PIN, the
-# current release; binary releases). The Linux jobs run the in-process rows and
+# current release), through .github/actions/toolchain, which caches the install
+# per pin, runner OS and architecture. The Linux jobs run the in-process rows and
 # the contained child (required); the macOS jobs run the in-process rows (a
 # contained child needs Linux). Racket's Linux job probes the child and skips
 # it: Chez cannot run in it. Each job runs one language (GUEST_LANG), and each
@@ -21,15 +22,10 @@ jobs:
     env:
       GHL_CI_RUNTIME: "Lua 5.4"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - name: Lua
         run: sudo apt-get update && sudo apt-get install -y liblua5.4-dev
-      - name: ae (AE_PIN)
-        run: |
-          . ci/versions.env
-          curl -fsSL "https://raw.githubusercontent.com/aether-lang-dev/aeb/$AEB_REF/get.sh" \
-            | AE_PIN="$AE_PIN" AEB_REF="$AEB_REF" sh
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - uses: ./.github/actions/toolchain
       - run: ae version
       - name: Specs and containment rows, the child required
         run: GUEST_LANG=lua GHL_REQUIRE_CHILD=1 sh tests/run.sh
@@ -41,15 +37,10 @@ jobs:
       GHL_CI_RUNTIME: "Lua 5.5, 5.4"
       GHL_CI_RUNTIME_MATCH: "-"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - name: Lua
         run: brew install lua lua@5.4
-      - name: ae (AE_PIN)
-        run: |
-          . ci/versions.env
-          curl -fsSL "https://raw.githubusercontent.com/aether-lang-dev/aeb/$AEB_REF/get.sh" \
-            | AE_PIN="$AE_PIN" AEB_REF="$AEB_REF" sh
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - uses: ./.github/actions/toolchain
       - run: ae version
       - name: Lua 5.5 (Homebrew's lua)
         run: GUEST_LANG=lua sh tests/run.sh
@@ -65,15 +56,10 @@ jobs:
     env:
       GHL_CI_RUNTIME: "Python 3.12"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - name: Python
         run: sudo apt-get update && sudo apt-get install -y python3 libpython3.12t64
-      - name: ae (AE_PIN)
-        run: |
-          . ci/versions.env
-          curl -fsSL "https://raw.githubusercontent.com/aether-lang-dev/aeb/$AEB_REF/get.sh" \
-            | AE_PIN="$AE_PIN" AEB_REF="$AEB_REF" sh
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - uses: ./.github/actions/toolchain
       - run: ae version
       - name: Specs and containment rows, the child required
         run: GUEST_LANG=python GHL_REQUIRE_CHILD=1 PYTHON=/usr/bin/python3 sh tests/run.sh
@@ -84,15 +70,10 @@ jobs:
     env:
       GHL_CI_RUNTIME: "Python 3.13"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - name: Python
         run: brew install python@3.13
-      - name: ae (AE_PIN)
-        run: |
-          . ci/versions.env
-          curl -fsSL "https://raw.githubusercontent.com/aether-lang-dev/aeb/$AEB_REF/get.sh" \
-            | AE_PIN="$AE_PIN" AEB_REF="$AEB_REF" sh
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - uses: ./.github/actions/toolchain
       - run: ae version
       - name: Homebrew's python@3.13
         run: GUEST_LANG=python PYTHON="$(brew --prefix python@3.13)/bin/python3.13" sh tests/run.sh
@@ -107,15 +88,10 @@ jobs:
       GHL_CI_RUNTIME: "Duktape 2.7"
       GHL_CI_RUNTIME_MATCH: "207"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - name: Duktape
         run: sudo apt-get update && sudo apt-get install -y libduktape207
-      - name: ae (AE_PIN)
-        run: |
-          . ci/versions.env
-          curl -fsSL "https://raw.githubusercontent.com/aether-lang-dev/aeb/$AEB_REF/get.sh" \
-            | AE_PIN="$AE_PIN" AEB_REF="$AEB_REF" sh
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - uses: ./.github/actions/toolchain
       - run: ae version
       - name: Specs and containment rows, the child required
         run: GUEST_LANG=duktape GHL_REQUIRE_CHILD=1 sh tests/run.sh
@@ -127,15 +103,10 @@ jobs:
       GHL_CI_RUNTIME: "Duktape 2.7"
       GHL_CI_RUNTIME_MATCH: "207"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - name: Duktape
         run: brew install duktape
-      - name: ae (AE_PIN)
-        run: |
-          . ci/versions.env
-          curl -fsSL "https://raw.githubusercontent.com/aether-lang-dev/aeb/$AEB_REF/get.sh" \
-            | AE_PIN="$AE_PIN" AEB_REF="$AEB_REF" sh
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - uses: ./.github/actions/toolchain
       - run: ae version
       - name: Homebrew's duktape
         run: GUEST_LANG=duktape sh tests/run.sh
@@ -149,13 +120,8 @@ jobs:
     env:
       GHL_CI_RUNTIME: "quickjs-ng 0.18"
     steps:
-      - uses: actions/checkout@v4
-      - name: ae (AE_PIN)
-        run: |
-          . ci/versions.env
-          curl -fsSL "https://raw.githubusercontent.com/aether-lang-dev/aeb/$AEB_REF/get.sh" \
-            | AE_PIN="$AE_PIN" AEB_REF="$AEB_REF" sh
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: ./.github/actions/toolchain
       - run: ae version
       - name: Specs and containment rows, the child required
         run: GUEST_LANG=quickjs GHL_REQUIRE_CHILD=1 sh tests/run.sh
@@ -166,13 +132,8 @@ jobs:
     env:
       GHL_CI_RUNTIME: "quickjs-ng 0.18"
     steps:
-      - uses: actions/checkout@v4
-      - name: ae (AE_PIN)
-        run: |
-          . ci/versions.env
-          curl -fsSL "https://raw.githubusercontent.com/aether-lang-dev/aeb/$AEB_REF/get.sh" \
-            | AE_PIN="$AE_PIN" AEB_REF="$AEB_REF" sh
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: ./.github/actions/toolchain
       - run: ae version
       - name: Specs and containment rows
         run: GUEST_LANG=quickjs sh tests/run.sh
@@ -190,13 +151,8 @@ jobs:
       GHL_CI_RUNTIME: "RexxAE at REXXAE_REF"
       GHL_CI_RUNTIME_MATCH: "RexxAE"
     steps:
-      - uses: actions/checkout@v4
-      - name: ae (AE_PIN)
-        run: |
-          . ci/versions.env
-          curl -fsSL "https://raw.githubusercontent.com/aether-lang-dev/aeb/$AEB_REF/get.sh" \
-            | AE_PIN="$AE_PIN" AEB_REF="$AEB_REF" sh
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: ./.github/actions/toolchain
       - run: ae version
       - name: Specs and containment rows, the child required
         run: GUEST_LANG=rexx GHL_REQUIRE_CHILD=1 sh tests/run.sh
@@ -208,13 +164,8 @@ jobs:
       GHL_CI_RUNTIME: "RexxAE at REXXAE_REF"
       GHL_CI_RUNTIME_MATCH: "RexxAE"
     steps:
-      - uses: actions/checkout@v4
-      - name: ae (AE_PIN)
-        run: |
-          . ci/versions.env
-          curl -fsSL "https://raw.githubusercontent.com/aether-lang-dev/aeb/$AEB_REF/get.sh" \
-            | AE_PIN="$AE_PIN" AEB_REF="$AEB_REF" sh
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: ./.github/actions/toolchain
       - run: ae version
       - name: Specs and containment rows
         run: GUEST_LANG=rexx sh tests/run.sh
@@ -228,15 +179,10 @@ jobs:
     env:
       GHL_CI_RUNTIME: "Tcl 8.6"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - name: Tcl
         run: sudo apt-get update && sudo apt-get install -y tcl8.6 tcl
-      - name: ae (AE_PIN)
-        run: |
-          . ci/versions.env
-          curl -fsSL "https://raw.githubusercontent.com/aether-lang-dev/aeb/$AEB_REF/get.sh" \
-            | AE_PIN="$AE_PIN" AEB_REF="$AEB_REF" sh
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - uses: ./.github/actions/toolchain
       - run: ae version
       - name: Specs and containment rows, the child required
         run: GUEST_LANG=tcl GHL_REQUIRE_CHILD=1 sh tests/run.sh
@@ -247,15 +193,10 @@ jobs:
     env:
       GHL_CI_RUNTIME: "Tcl 8.6 (Homebrew tcl-tk@8)"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - name: Tcl
         run: brew install tcl-tk
-      - name: ae (AE_PIN)
-        run: |
-          . ci/versions.env
-          curl -fsSL "https://raw.githubusercontent.com/aether-lang-dev/aeb/$AEB_REF/get.sh" \
-            | AE_PIN="$AE_PIN" AEB_REF="$AEB_REF" sh
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - uses: ./.github/actions/toolchain
       - run: ae version
       - name: Homebrew's tcl-tk
         run: GUEST_LANG=tcl sh tests/run.sh
@@ -277,15 +218,10 @@ jobs:
       GHL_CI_RUNTIME: "Tcl 9.1 (Homebrew tcl-tk)"
       TCL_VERSION: "9.1"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - name: Tcl
         run: brew install tcl-tk
-      - name: ae (AE_PIN)
-        run: |
-          . ci/versions.env
-          curl -fsSL "https://raw.githubusercontent.com/aether-lang-dev/aeb/$AEB_REF/get.sh" \
-            | AE_PIN="$AE_PIN" AEB_REF="$AEB_REF" sh
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - uses: ./.github/actions/toolchain
       - run: ae version
       - name: Homebrew's tcl-tk 9
         run: GUEST_LANG=tcl sh tests/run.sh
@@ -299,15 +235,10 @@ jobs:
     env:
       GHL_CI_RUNTIME: "Perl 5.38"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - name: Perl
         run: sudo apt-get update && sudo apt-get install -y perl libperl5.38t64
-      - name: ae (AE_PIN)
-        run: |
-          . ci/versions.env
-          curl -fsSL "https://raw.githubusercontent.com/aether-lang-dev/aeb/$AEB_REF/get.sh" \
-            | AE_PIN="$AE_PIN" AEB_REF="$AEB_REF" sh
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - uses: ./.github/actions/toolchain
       - run: ae version
       - name: Specs and containment rows, the child required
         run: GUEST_LANG=perl GHL_REQUIRE_CHILD=1 PERL=/usr/bin/perl sh tests/run.sh
@@ -318,13 +249,8 @@ jobs:
     env:
       GHL_CI_RUNTIME: "Perl 5.34 (the system's)"
     steps:
-      - uses: actions/checkout@v4
-      - name: ae (AE_PIN)
-        run: |
-          . ci/versions.env
-          curl -fsSL "https://raw.githubusercontent.com/aether-lang-dev/aeb/$AEB_REF/get.sh" \
-            | AE_PIN="$AE_PIN" AEB_REF="$AEB_REF" sh
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: ./.github/actions/toolchain
       - run: ae version
       - name: The system's perl
         run: GUEST_LANG=perl PERL=/usr/bin/perl sh tests/run.sh
@@ -338,15 +264,10 @@ jobs:
     env:
       GHL_CI_RUNTIME: "Ruby 3.2"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - name: Ruby
         run: sudo apt-get update && sudo apt-get install -y ruby libruby3.2
-      - name: ae (AE_PIN)
-        run: |
-          . ci/versions.env
-          curl -fsSL "https://raw.githubusercontent.com/aether-lang-dev/aeb/$AEB_REF/get.sh" \
-            | AE_PIN="$AE_PIN" AEB_REF="$AEB_REF" sh
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - uses: ./.github/actions/toolchain
       - run: ae version
       - name: Specs and containment rows, the child required
         run: GUEST_LANG=ruby GHL_REQUIRE_CHILD=1 RUBY=/usr/bin/ruby sh tests/run.sh
@@ -357,15 +278,10 @@ jobs:
     env:
       GHL_CI_RUNTIME: "Ruby 4.0 (Homebrew)"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - name: Ruby
         run: brew install ruby
-      - name: ae (AE_PIN)
-        run: |
-          . ci/versions.env
-          curl -fsSL "https://raw.githubusercontent.com/aether-lang-dev/aeb/$AEB_REF/get.sh" \
-            | AE_PIN="$AE_PIN" AEB_REF="$AEB_REF" sh
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - uses: ./.github/actions/toolchain
       - run: ae version
       - name: Homebrew's ruby
         run: GUEST_LANG=ruby RUBY="$(brew --prefix ruby)/bin/ruby" sh tests/run.sh
@@ -381,15 +297,10 @@ jobs:
       GHL_CI_RUNTIME: "Go (the runner's)"
       GHL_CI_RUNTIME_MATCH: "-"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - name: Go (cgo needs a C compiler, which the runner has)
         run: sudo apt-get update && sudo apt-get install -y golang-go && go version
-      - name: ae (AE_PIN)
-        run: |
-          . ci/versions.env
-          curl -fsSL "https://raw.githubusercontent.com/aether-lang-dev/aeb/$AEB_REF/get.sh" \
-            | AE_PIN="$AE_PIN" AEB_REF="$AEB_REF" sh
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - uses: ./.github/actions/toolchain
       - run: ae version
       - name: Specs and containment rows, the child required
         run: GUEST_LANG=tinygo GHL_REQUIRE_CHILD=1 sh tests/run.sh
@@ -401,19 +312,14 @@ jobs:
       GHL_CI_RUNTIME: "Go (the runner's)"
       GHL_CI_RUNTIME_MATCH: "-"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       # macos-15 runners ship no go on PATH (the Linux ones do); setup-go puts one there.
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@4dc6199c7b1a012772edbd06daecab0f50c9053c # v6.1.0
         with:
           go-version: stable
       - name: Go
         run: go version
-      - name: ae (AE_PIN)
-        run: |
-          . ci/versions.env
-          curl -fsSL "https://raw.githubusercontent.com/aether-lang-dev/aeb/$AEB_REF/get.sh" \
-            | AE_PIN="$AE_PIN" AEB_REF="$AEB_REF" sh
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - uses: ./.github/actions/toolchain
       - run: ae version
       - name: Specs and containment rows
         run: GUEST_LANG=tinygo sh tests/run.sh
@@ -428,15 +334,10 @@ jobs:
     env:
       GHL_CI_RUNTIME: "Go 1.22"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - name: Go
         run: sudo apt-get update && sudo apt-get install -y golang-go
-      - name: ae (AE_PIN)
-        run: |
-          . ci/versions.env
-          curl -fsSL "https://raw.githubusercontent.com/aether-lang-dev/aeb/$AEB_REF/get.sh" \
-            | AE_PIN="$AE_PIN" AEB_REF="$AEB_REF" sh
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - uses: ./.github/actions/toolchain
       - run: ae version
       - name: Specs and containment rows, the child required
         run: GUEST_LANG=go GHL_REQUIRE_CHILD=1 sh tests/run.sh
@@ -448,15 +349,10 @@ jobs:
       GHL_CI_RUNTIME: "Go (the runner's)"
       GHL_CI_RUNTIME_MATCH: "-"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - name: Go
         run: command -v go || brew install go
-      - name: ae (AE_PIN)
-        run: |
-          . ci/versions.env
-          curl -fsSL "https://raw.githubusercontent.com/aether-lang-dev/aeb/$AEB_REF/get.sh" \
-            | AE_PIN="$AE_PIN" AEB_REF="$AEB_REF" sh
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - uses: ./.github/actions/toolchain
       - run: ae version
       - name: Specs and containment rows
         run: GUEST_LANG=go sh tests/run.sh
@@ -475,15 +371,10 @@ jobs:
     env:
       GHL_CI_RUNTIME: "OpenJDK 21"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - name: JDK
         run: sudo apt-get update && sudo apt-get install -y openjdk-21-jdk-headless
-      - name: ae (AE_PIN)
-        run: |
-          . ci/versions.env
-          curl -fsSL "https://raw.githubusercontent.com/aether-lang-dev/aeb/$AEB_REF/get.sh" \
-            | AE_PIN="$AE_PIN" AEB_REF="$AEB_REF" sh
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - uses: ./.github/actions/toolchain
       - run: ae version
       - name: Specs and containment rows, the child required
         run: GUEST_LANG=java GHL_REQUIRE_CHILD=1 sh tests/run.sh
@@ -494,15 +385,10 @@ jobs:
     env:
       GHL_CI_RUNTIME: "JDK 21 (the runner's)"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - name: JDK
         run: /usr/libexec/java_home -v 21+ > /dev/null 2>&1 || brew install openjdk@21
-      - name: ae (AE_PIN)
-        run: |
-          . ci/versions.env
-          curl -fsSL "https://raw.githubusercontent.com/aether-lang-dev/aeb/$AEB_REF/get.sh" \
-            | AE_PIN="$AE_PIN" AEB_REF="$AEB_REF" sh
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - uses: ./.github/actions/toolchain
       - run: ae version
       - name: Specs and containment rows
         run: GUEST_LANG=java sh tests/run.sh
@@ -529,7 +415,7 @@ jobs:
       GHL_CI_RUNTIME_MATCH: "-"
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - name: Fork ref
         id: ref
         run: |
@@ -538,7 +424,7 @@ jobs:
           echo "boot=$(echo "$FACTOR_BOOT_IMAGE_SHA256" | cut -c1-12)" >> "$GITHUB_OUTPUT"
       - name: Fork build (cache)
         id: cache
-        uses: actions/cache@v4
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
         with:
           path: factor-language
           key: factor-fork-${{ steps.ref.outputs.ref }}-boot-${{ steps.ref.outputs.boot }}-ubuntu-24.04
@@ -555,12 +441,7 @@ jobs:
           echo "$FACTOR_BOOT_IMAGE_SHA256  boot.unix-x86.64.image" | sha256sum -c -
           ./factor -i=boot.unix-x86.64.image
           test -f factor.image
-      - name: ae (AE_PIN)
-        run: |
-          . ci/versions.env
-          curl -fsSL "https://raw.githubusercontent.com/aether-lang-dev/aeb/$AEB_REF/get.sh" \
-            | AE_PIN="$AE_PIN" AEB_REF="$AEB_REF" sh
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - uses: ./.github/actions/toolchain
       - run: ae version
       - name: Specs and containment rows, the child required
         run: GUEST_LANG=factor GHL_REQUIRE_CHILD=1 FACTOR_HOME="$PWD/factor-language" sh tests/run.sh
@@ -572,13 +453,8 @@ jobs:
       GHL_CI_RUNTIME: "none (compile check only)"
       GHL_CI_RUNTIME_MATCH: "-"
     steps:
-      - uses: actions/checkout@v4
-      - name: ae (AE_PIN)
-        run: |
-          . ci/versions.env
-          curl -fsSL "https://raw.githubusercontent.com/aether-lang-dev/aeb/$AEB_REF/get.sh" \
-            | AE_PIN="$AE_PIN" AEB_REF="$AEB_REF" sh
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: ./.github/actions/toolchain
       - run: ae version
       # The bridge, the in-process host, the worker and the contained-child host
       # all build; and with no libfactor the specs and rows skip with their
@@ -610,17 +486,12 @@ jobs:
       GHL_CI_RUNTIME: "Racket 8.10 (apt)"
       GHL_CI_RUNTIME_MATCH: "-"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       # make, pkg-config, libssl-dev and zlib1g-dev are for ae itself: there is no
       # linux-arm64 release binary, so get.sh builds ae from source here (~2 min).
       - name: Racket CS (the distribution's racket and its libracketcs.a; no dev package)
         run: sudo apt-get update && sudo apt-get install -y racket make pkg-config libssl-dev zlib1g-dev
-      - name: ae (AE_PIN)
-        run: |
-          . ci/versions.env
-          curl -fsSL "https://raw.githubusercontent.com/aether-lang-dev/aeb/$AEB_REF/get.sh" \
-            | AE_PIN="$AE_PIN" AEB_REF="$AEB_REF" sh
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - uses: ./.github/actions/toolchain
       - run: ae version
       - name: Specs and containment rows
         run: GUEST_LANG=racket sh tests/run.sh
@@ -631,17 +502,12 @@ jobs:
     env:
       GHL_CI_RUNTIME: "Racket 9.3 (cask), with Rhombus"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - name: Racket CS and rhombus
         run: |
           brew install --cask racket
           raco pkg install --auto --scope user rhombus
-      - name: ae (AE_PIN)
-        run: |
-          . ci/versions.env
-          curl -fsSL "https://raw.githubusercontent.com/aether-lang-dev/aeb/$AEB_REF/get.sh" \
-            | AE_PIN="$AE_PIN" AEB_REF="$AEB_REF" sh
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - uses: ./.github/actions/toolchain
       - run: ae version
       - name: Specs and containment rows
         run: GUEST_LANG=racket sh tests/run.sh

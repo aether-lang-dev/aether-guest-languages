@@ -1,0 +1,32 @@
+name: Aether toolchain
+description: >
+  ae and aeb at the versions ci/versions.env pins (AE_PIN, AEB_REF), installed by
+  aeb's get.sh into one prefix and cached per pin, runner OS and architecture, so
+  a job does not download, or on a runner with no release binary (linux-arm64)
+  build, the toolchain again. Run it after checkout.
+runs:
+  using: composite
+  steps:
+    - name: Pins
+      id: pins
+      shell: bash
+      run: |
+        . ci/versions.env
+        echo "ae=$AE_PIN" >> "$GITHUB_OUTPUT"
+        echo "aeb=$AEB_REF" >> "$GITHUB_OUTPUT"
+        echo "prefix=$HOME/ae-toolchain" >> "$GITHUB_OUTPUT"
+    - name: Toolchain cache
+      id: cache
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+      with:
+        path: ${{ steps.pins.outputs.prefix }}
+        key: ae-toolchain-${{ steps.pins.outputs.ae }}-${{ steps.pins.outputs.aeb }}-${{ runner.os }}-${{ runner.arch }}
+    - name: Install ae and aeb
+      if: steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        curl -fsSL "https://raw.githubusercontent.com/aether-lang-dev/aeb/${{ steps.pins.outputs.aeb }}/get.sh" \
+          | PREFIX="${{ steps.pins.outputs.prefix }}" AE_PIN="${{ steps.pins.outputs.ae }}" AEB_REF="${{ steps.pins.outputs.aeb }}" sh
+    - name: On PATH
+      shell: bash
+      run: echo "${{ steps.pins.outputs.prefix }}/bin" >> "$GITHUB_PATH"
