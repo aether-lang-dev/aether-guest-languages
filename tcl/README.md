@@ -289,7 +289,7 @@ The same cases (`tests/boundary.py run-inproc`) against this language's bridge i
 | `float` | differs: the host saw ["1.5"] | ok | same | same |
 | `bool-true` | differs: the host saw ["true"] | differs: the host saw [1] | same | same |
 | `bool-false` | differs: the host saw ["false"] | differs: the host saw [0] | same | same |
-| `null` | n/a | ok | same | differs: the host saw [""] |
+| `null` | n/a | ok | same | same |
 | `array` | n/a | n/a | same | same |
 | `map` | n/a | n/a | same | same |
 | `nested` | n/a | n/a | same | same |
@@ -332,6 +332,11 @@ claim with the spec that backs it.
   deliberate, documented outcome, not a defect. Backed by
   `tcl/test_host_tcl_vm.ae` ("a character beyond the BMP crosses both ways, as
   UTF-8", "an embedded NUL is refused, in every place a string crosses").
+- **The macOS column is Homebrew's Tcl 8.6 and 9.1 (CI).** The system's Tcl 8.5 (what
+  `/usr/lib/libtcl.dylib` is) gives one different cell: a callback that returns
+  nil reads back as the empty string, not as nil (`null`, host to guest), because
+  8.5 keeps the empty string's object type differently. A run on 8.5 fails the
+  grid check for that cell; every other cell is the same on 8.5, 8.6 and 9.
 - **Duplex.** host calls the guest; the guest calls back mid-eval; a nested `eval` runs at global level and leaves the callback's arguments intact (tested).
 - **Callbacks.** host commands by name, namespaced ok.
 - **Errors and state.** a failing script is -1 with the error as the result; `raise_error`; a command limit and a time limit; one interpreter per VM handle, used by one thread (another thread is refused, not crashed).
