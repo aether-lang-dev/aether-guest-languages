@@ -293,7 +293,7 @@ The same cases (`tests/boundary.py run-inproc`) against this language's bridge i
 | `null` | n/a | ok | same | same |
 | `array` | n/a | n/a | same | same |
 | `map` | n/a | n/a | same | same |
-| `map-nul` | n/a | n/a | (not run) | (not run) |
+| `map-nul` | n/a | n/a | same | same |
 | `nested` | n/a | n/a | same | same |
 | a call inside a call's argument (`nest`) | ok | | same | |
 | an error raised by the host function (`refuse`) | caught | | same | |
