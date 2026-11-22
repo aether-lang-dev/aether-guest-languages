@@ -290,7 +290,7 @@ The same cases (`tests/boundary.py run-inproc`) against this language's bridge i
 | `float` | differs: the host saw ["1.5"] | ok | same | same |
 | `bool-true` | differs: the host saw ["true"] | differs: the host saw [1] | same | same |
 | `bool-false` | differs: the host saw ["false"] | differs: the host saw [0] | same | same |
-| `null` | n/a | ok | same | differs: the host saw [""] |
+| `null` | n/a | ok | same | same |
 | `array` | n/a | n/a | same | same |
 | `map` | n/a | n/a | same | same |
 | `map-nul` | n/a | n/a | same | same |
