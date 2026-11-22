@@ -286,11 +286,11 @@ ON_TXN:
   seen = seen + 1
   RETURN seen d.kind d.amount
 
-/* pull: no export at all */
+/* pull: no export at all; here the host answers the name of what to do, '' when done */
 LET ev = next_event()
-DO WHILE TYPEOF(ev) <> 'null'
-  IF ev.name = 'total' THEN LET ev = next_event(ARRAY_GET(ev.args, 1) * 1.2)
-  ELSE LET ev = next_event()
+DO WHILE ev <> ''
+  IF ev = 'tick' THEN seen = seen + 1
+  LET ev = next_event(seen)
 END
 ```
 

@@ -33,4 +33,4 @@ x:malformed	LET ok = EXPORT('two words')@NL@EXIT 0
 x:txn	pending1 = txn_start('deposit')@NL@pending2 = txn_start('refund')@NL@seen = 0@NL@LET ok = EXPORT('on_txn')@NL@EXIT 0@NL@ON_TXN:@NL@LET d = txn_details(ARG(1))@NL@seen = seen + 1@NL@RETURN seen d.kind d.amount
 why:silent	a Rexx export cannot keep the worker from hearing a CANCEL: the worker looks for one every 1000 instructions and while it waits on a call, and no builtin runs long, so a loop in an export is the slow row
 x:bench-g2h	p = COPIES('x', @SIZE@)@NL@DO @N@@NL@r = echo(p)@NL@END
-x:bench-pull	LET ev = next_event()@NL@DO WHILE TYPEOF(ev) <> 'null'@NL@LET ev = next_event(ev)@NL@END
+x:bench-pull	LET ev = next_event()@NL@DO WHILE TYPEOF(ev) = 'string'@NL@LET ev = next_event(ev)@NL@END
