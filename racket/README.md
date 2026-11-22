@@ -345,7 +345,7 @@ else the rows that did not and how.
 | `test_stunt_no_grants` | `-` | differs: open-etc-passwd not held, open-granted-file not held, write-granted-file not held, getenv-home not held, env-cached left out, connect-192.0.2.1 not held, connect-ipv4-mapped not held, exec-bin-sh not held | differs: env-cached left out | does not run (way 4) |
 | `test_stunt_write_granted` | `fs_write=$WORK/*` | differs: open-granted-file not held | matches | does not run (way 4) |
 
-- Column 2: macOS 27.3 arm64, ae 0.935.0, Racket 9.3
+- Column 2: macOS 27.3 arm64, ae 0.936.0, Racket 9.3
 - Column 3: Ubuntu 24.04.5 LTS, kernel 7.1.10 aarch64, ae 0.889.0, Racket 8.10 (a podman run on the Mac; the column is checked against the current ae by the Linux arm64 CI job at every push, and was not rewritten from a run on it)
 <!-- stunt-parity:end -->
 

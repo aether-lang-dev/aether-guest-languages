@@ -203,9 +203,9 @@ the rows that did not and how.
 | `test_stunt_no_grants` | `-` | differs: env-cached left out, connect-192.0.2.1 left out, connect-ipv4-mapped left out, dlopen-libm left out | differs: env-cached left out, connect-192.0.2.1 left out, connect-ipv4-mapped left out, dlopen-libm left out | differs: env-cached left out, connect-192.0.2.1 left out, connect-ipv4-mapped left out, fork left out, dlopen-libc-by-name left out, dlopen-libc-by-path left out, dlopen-libm left out, syscall-fn-openat left out, syscall-openat left out, syscall-socket left out |
 | `test_stunt_write_granted` | `fs_write=$WORK/*` | matches | matches | differs: write-granted-file stricter |
 
-- Column 2: macOS 27.3 arm64, ae 0.935.0, Duktape libduktape.207.20700.so
-- Column 3: CachyOS, kernel 7.3.5 x86_64, ae 0.935.0, Duktape libduktape.so.207
-- Column 4: CachyOS, kernel 7.3.5 x86_64, ae 0.935.0, Duktape libduktape.so.207
+- Column 2: macOS 27.3 arm64, ae 0.936.0, Duktape libduktape.207.20700.so
+- Column 3: CachyOS, kernel 7.3.5 x86_64, ae 0.936.0, Duktape libduktape.so.207
+- Column 4: CachyOS, kernel 7.3.5 x86_64, ae 0.936.0, Duktape libduktape.so.207
 <!-- stunt-parity:end -->
 
 The test names are stunt's, aether's `tests/integration/contrib_host_stunt` at

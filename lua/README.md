@@ -151,9 +151,9 @@ else the rows that did not and how.
 | `test_stunt_no_grants` | `-` | differs: open-etc-passwd not held, open-granted-file not held, write-granted-file not held, getenv-home not held, env-cached left out, connect-192.0.2.1 left out, connect-ipv4-mapped left out, exec-bin-sh not held | differs: env-cached left out, connect-192.0.2.1 left out, connect-ipv4-mapped left out | differs: env-cached left out, connect-192.0.2.1 left out, connect-ipv4-mapped left out, fork left out, syscall-fn-openat left out, syscall-openat left out, syscall-socket left out |
 | `test_stunt_write_granted` | `fs_write=$WORK/*` | differs: open-granted-file not held | matches | differs: write-granted-file stricter |
 
-- Column 2: macOS 27.3 arm64, ae 0.935.0, Lua liblua.5.5.1.dylib
-- Column 3: CachyOS, kernel 7.3.5 x86_64, ae 0.935.0, Lua liblua.so.5.5
-- Column 4: CachyOS, kernel 7.3.5 x86_64, ae 0.935.0, Lua liblua.so.5.5
+- Column 2: macOS 27.3 arm64, ae 0.936.0, Lua liblua.5.5.1.dylib
+- Column 3: CachyOS, kernel 7.3.5 x86_64, ae 0.936.0, Lua liblua.so.5.5
+- Column 4: CachyOS, kernel 7.3.5 x86_64, ae 0.936.0, Lua liblua.so.5.5
 <!-- stunt-parity:end -->
 
 The test names are stunt's, aether's `tests/integration/contrib_host_stunt`
