@@ -8,7 +8,7 @@
 // inventories at the pinned commit:
 //
 //   - every builtin and extension the engine has: tests/guest_functions.json
-//     (the reviewed surface tools/check_containment.py pins: 71 RexxJS
+//     (the reviewed surface tools/check_containment.py pins: 104 RexxJS
 //     functions, 8 RexxAE extensions), each called with arguments that name
 //     a file, a variable, a program, an address, a cron expression. Each
 //     call must end without asking the host for anything (no FUNCTION or

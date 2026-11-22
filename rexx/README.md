@@ -205,7 +205,7 @@ The shared tests in `tests/boundary.py`, run in this language's worker (`tests/t
 | `null` | n/a | ok |
 | `array` | n/a | ok |
 | `map` | n/a | ok |
-| `map-nul` | n/a | differs: the host saw [{"k":"v\u0000al"}] |
+| `map-nul` | n/a | ok |
 | `nested` | n/a | ok |
 | a call inside a call's argument (`nest`) | ok | |
 | an error answer (`FAIL`) to a call (`refuse`) | ends the script | |
@@ -230,8 +230,8 @@ The same cases (`tests/boundary.py run-inproc`) against this language's bridge i
 | `str-60k` | ok | ok | same | same |
 | `int` | differs: the host saw ["42"] | differs: the host saw ["42"] | same | same |
 | `int-neg` | differs: the host saw ["-7"] | differs: the host saw ["-7"] | same | same |
-| `int-max` | differs: the host saw ["9.2233720368547758e+18"] | differs: the host saw ["9223372036854775807"] | same | same |
-| `int-min` | differs: the host saw ["-9.2233720368547758e+18"] | differs: the host saw ["-9223372036854775808"] | same | same |
+| `int-max` | differs: the host saw ["9223372036854776000"] | differs: the host saw ["9223372036854775807"] | same | same |
+| `int-min` | differs: the host saw ["-9223372036854776000"] | differs: the host saw ["-9223372036854775808"] | same | same |
 | `float` | differs: the host saw ["1.5"] | differs: the host saw ["1.5"] | same | same |
 | `bool-true` | n/a | n/a | same | same |
 | `bool-false` | n/a | n/a | same | same |
@@ -321,7 +321,7 @@ The other direction (`tests/boundary.py run-invoke`, run by `tests/test_invoke.s
 | `null` | n/a | ok |
 | `array` | n/a | ok |
 | `map` | n/a | ok |
-| `map-nul` | n/a | differs: the host saw {"k":"v\u0000al"} |
+| `map-nul` | n/a | ok |
 | `nested` | n/a | ok |
 | an export that calls a mounted host function (`relay`) | ok | |
 | state between invocations (a counter, three calls) (`state`) | state carries | |
@@ -454,9 +454,9 @@ the rows that did not and how.
 | `test_stunt_no_grants` | `-` | differs: open-etc-passwd left out, open-granted-file left out, write-granted-file left out, getenv-home left out, env-cached left out, connect-192.0.2.1 left out, connect-ipv4-mapped left out, dlopen-libm left out | differs: open-etc-passwd left out, open-granted-file left out, write-granted-file left out, getenv-home left out, env-cached left out, connect-192.0.2.1 left out, connect-ipv4-mapped left out, dlopen-libm left out | differs: open-etc-passwd left out, open-granted-file left out, write-granted-file left out, getenv-home left out, env-cached left out, connect-192.0.2.1 left out, connect-ipv4-mapped left out, fork left out, dlopen-libc-by-name left out, dlopen-libc-by-path left out, dlopen-libm left out, syscall-fn-openat left out, syscall-openat left out, syscall-socket left out |
 | `test_stunt_write_granted` | `fs_write=$WORK/*` | differs: write-granted-file left out, open-granted-file left out | differs: write-granted-file left out, open-granted-file left out | differs: write-granted-file left out, open-granted-file left out |
 
-- Column 2: macOS 27.3 arm64, ae 0.935.0, Rexx RexxAE 4e2ce73
-- Column 3: CachyOS, kernel 7.3.5 x86_64, ae 0.935.0, Rexx RexxAE 4e2ce73
-- Column 4: CachyOS, kernel 7.3.5 x86_64, ae 0.935.0, Rexx RexxAE 4e2ce73
+- Column 2: macOS 27.3 arm64, ae 0.935.0, Rexx RexxAE 464e52c
+- Column 3: CachyOS, kernel 7.3.5 x86_64, ae 0.935.0, Rexx RexxAE 464e52c
+- Column 4: CachyOS, kernel 7.3.5 x86_64, ae 0.935.0, Rexx RexxAE 464e52c
 <!-- stunt-parity:end -->
 
 The test names are stunt's, aether's `tests/integration/contrib_host_stunt` at
@@ -517,18 +517,18 @@ What the table says:
 - **Containment is by construction, and the tests show it over the whole
   surface.** `test_surface.sh` takes the names from RexxAE's own inventories
   at the pinned commit and checks: the engine's function lists in
-  `src/*.ae` are exactly `tests/guest_functions.json` (79 names: 71 RexxJS
+  `src/*.ae` are exactly `tests/guest_functions.json` (112 names: 104 RexxJS
   builtins and 8 RexxAE extensions, `CRON_*` and `LOG_*`); the engine
   imports only string, map, JSON, math and memory modules (and `std.host`
-  for its quota) and declares no `extern`; each of the 79 is called with
+  for its quota) and declares no `extern`; each of the 112 is called with
   arguments that name a file, a variable, a program, an address and a cron
-  expression (553 calls) inside a no-grant sandbox block, and none asks the
+  expression (784 calls) inside a no-grant sandbox block, and none asks the
   host for anything (the `LOG_*` extensions excepted, which send the host a
-  log event) or makes a permission check; every other name RexxJS has (315,
+  log event) or makes a permission check; every other name RexxJS has (282,
   its 79 host-effect functions and 20 date and time functions among them)
   and classic Rexx's I/O and clock names are unknown functions; `ADDRESS`
   under six environment names is a request each time; and every builtin and
-  extension is timed on 1 MiB strings (474 calls), each within 3 s. On
+  extension is timed on 1 MiB strings (672 calls), each within 3 s. On
   Linux the sweep runs again under the preload, logging denials: none. The cron extension does
   not read a clock: `CRON_NEXT` takes the instant it starts from as an
   argument.

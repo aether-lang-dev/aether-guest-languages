@@ -27,7 +27,7 @@ src="$REXXAE_SRC_DIR"
 
 # ---- 1. the source ------------------------------------------------------------
 listed="$(sed -n 's/^ *"\([A-Z][A-Z0-9_]*\)",\{0,1\}$/\1/p' "$src/tests/guest_functions.json" | sort -u)"
-defined="$(sed -nE 's/^const (TEXT|MATH|VALUE|EXTENSION)_FUNCTIONS = "(.*)"$/\2/p' "$src"/src/*.ae | tr ' ' '\n' | sed '/^$/d' | sort -u)"
+defined="$(sed -nE 's/^const (TEXT|MATH|VALUE|LIBRARY|EXTENSION)_FUNCTIONS = "(.*)"$/\2/p' "$src"/src/*.ae | tr ' ' '\n' | sed '/^$/d' | sort -u)"
 [ -n "$listed" ] || die "no names in $src/tests/guest_functions.json"
 [ "$listed" = "$defined" ] ||
     die "the engine's function lists and tests/guest_functions.json differ: $(printf '%s\n' "$listed" "$defined" | sort | uniq -u | tr '\n' ' ')"
