@@ -470,11 +470,14 @@ def main_bench(lang, host, work, n="10000"):
             script = expand(sn[key].replace("@N@", n).replace("@SIZE@", str(size)))
             env = dict(os.environ, GHL_BOUNDARY_SCRIPT=script, GHL_BOUNDARY_UPPER="1" if up else "0",
                        GHL_INVOKE_BENCH="%s %s %d" % (mode, n, size), GHL_INVOKE_PLAN="")
-            p = subprocess.run([host, "-", "invoke", "x"], cwd=work, env=env, capture_output=True, timeout=900)
+            try:
+                p = subprocess.run([host, "-", "invoke", "x"], cwd=work, env=env, capture_output=True, timeout=900)
+            except subprocess.TimeoutExpired:
+                row.append("over %d" % (900 * 1000000 // int(n))); continue
             out = p.stdout.decode("utf-8", "replace")
             m = re.search(r"^BENCH \d+ \S+ \d+ \d+ (\d+)$", out, re.M)
             row.append(m.group(1) if m else "failed: " + short(out.strip() + p.stderr.decode("utf-8", "replace")[-200:], 120))
-        print("%s\t%d\t%s" % (lang, size, "\t".join(row)))
+        print("%s\t%d\t%s" % (lang, size, "\t".join(row)), flush=True)
 
 if __name__ == "__main__":
     if len(sys.argv) in (5, 6) and sys.argv[1] == "bench":

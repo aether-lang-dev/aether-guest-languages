@@ -231,7 +231,7 @@ fn bench(g: *guest.Guest, script: string, spec: string) -> int {
             if ierr != "" { why = ierr }
             if why == "" {
                 r = guest.next(g)
-                if r.kind != "RETURN" || string.length(r.text) != string.length(payload) { why = "${r.kind} ${string.length(r.text)}" }
+                if r.kind != "RETURN" || string.length(r.text) != string.length(payload) { why = "${r.kind} (${string.length(r.text)} bytes) ${guest.printable(string.substring(r.text, 0, 200))}" }
             }
             calls = calls + 1
         }

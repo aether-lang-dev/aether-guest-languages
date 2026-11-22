@@ -36,6 +36,10 @@ typedef struct {
     int fd;
     void* cell;
     pthread_mutex_t mu;
+    // Signalled when in_call or stop changes: while the worker is in a call
+    // (or serving, idle, between invocations) the watcher waits on it
+    // instead of polling a socket whose next frame is the worker's to read.
+    pthread_cond_t cv;
     int in_call;
     int stop;
     pthread_t th;
@@ -74,6 +78,7 @@ static void* watch(void* arg) {
     GhlWatch* w = (GhlWatch*)arg;
     for (;;) {
         pthread_mutex_lock(&w->mu);
+        while (w->in_call && !w->stop) pthread_cond_wait(&w->cv, &w->mu);
         int stop = w->stop;
         pthread_mutex_unlock(&w->mu);
         if (stop) return NULL;
@@ -101,7 +106,9 @@ void* ghl_watch_start(int fd, void* cell) {
     w->fd = fd;
     w->cell = cell;
     pthread_mutex_init(&w->mu, NULL);
+    pthread_cond_init(&w->cv, NULL);
     if (pthread_create(&w->th, NULL, watch, w) != 0) {
+        pthread_cond_destroy(&w->cv);
         pthread_mutex_destroy(&w->mu);
         free(w);
         return NULL;
@@ -109,12 +116,14 @@ void* ghl_watch_start(int fd, void* cell) {
     return w;
 }
 
-// 1 before the worker sends a CALL, 0 once it has read the reply.
+// 1 before the worker sends a CALL (or, serving, READY, RETURN or RAISE), 0
+// once it has read the reply (the next INVOKE).
 void ghl_watch_call(void* p, int on) {
     GhlWatch* w = (GhlWatch*)p;
     if (!w) return;
     pthread_mutex_lock(&w->mu);
     w->in_call = on;
+    pthread_cond_signal(&w->cv);
     pthread_mutex_unlock(&w->mu);
 }
 
@@ -125,8 +134,10 @@ void ghl_watch_stop(void* p) {
     if (!w) return;
     pthread_mutex_lock(&w->mu);
     w->stop = 1;
+    pthread_cond_signal(&w->cv);
     pthread_mutex_unlock(&w->mu);
     pthread_join(w->th, NULL);
+    pthread_cond_destroy(&w->cv);
     pthread_mutex_destroy(&w->mu);
     free(w);
 }
