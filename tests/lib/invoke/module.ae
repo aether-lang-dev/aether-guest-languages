@@ -218,7 +218,7 @@ fn bench(g: *guest.Guest, script: string, spec: string) -> int {
     payload = guest.json_string(xs(size))
     g.deadline_ms = 20000
     guest.start(g, script)
-    t0 = 0
+    long t0 = 0
     calls = 0
     why = ""
     if mode == "h2g" {
