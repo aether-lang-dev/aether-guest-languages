@@ -6,7 +6,6 @@
 // The VM (module.ae has the API and the ownership rule of each call).
 void* qjsb_new(int memory_kb);
 void* qjsb_engine(void* vm);
-void qjsb_set_helpers(void* vm, int rethrow_fn);
 void quickjs_vm_free(void* vm);
 int quickjs_vm_busy(void* vm);
 int quickjs_vm_eval(void* vm, const void* code);
@@ -30,8 +29,8 @@ void* quickjs_vm_user(void* vm);
 
 // Registration (module.ae's vm_register makes the closure; these do the rest).
 int qjsb_name_ok(const void* name);
-const char* qjsb_leaf(const char* name);
-int qjsb_install(void* vm, const char* name, int f);
+const void* qjsb_leaf(const void* name);
+int qjsb_install(void* vm, const void* name, int f);
 int qjsb_dispatch(void* vm, void* host_fn, int this_h, int args);
 
 // The callback side.

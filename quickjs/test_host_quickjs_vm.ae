@@ -241,8 +241,8 @@ cb_push_json_nul(vm: ptr) -> int {
     return 1
 }
 
-// JSON text with a raw NUL: not JSON. The callback ignores the -1 and returns
-// 1, as a careless one would.
+// JSON text with a raw NUL: not JSON (a SyntaxError). The callback ignores the
+// -1 and returns 1, as a careless one would: nothing was pushed.
 @c_callback
 cb_push_json_rawnul(vm: ptr) -> int {
     _r = quickjs.push_json(vm, "\"a\0b\"")
@@ -583,12 +583,31 @@ main() {
             quickjs.vm_pop_result(vm)
         }
 
-        // duktape: "an execution limit is reported unavailable, not silently
-        // ignored"
-        spec.it_when(have_qjs, "an instruction limit is reported unavailable, not silently ignored", reason) callback {
-            msg = quickjs.vm_set_instruction_limit(vm, 1000, 10)
-            spec.assert_true(string.contains(msg, "instruction limit unavailable") == 1, "the message says so")
-            spec.assert_eq(ev(vm, "1 + 1"), 0, "and the VM runs on")
+        // python: "the instruction limit: caught, nested, per eval, disarmed".
+        // The engine counts in polls of 10,000 steps (contrib.quickjs's
+        // set_poll_budget): a budget of 100,000 is 10 polls, and a loop of one
+        // jump per iteration stops after between 90,000 and 100,000 of them.
+        spec.it_when(have_qjs, "the instruction limit: stops a loop, cannot be caught, per eval, nested, disarmed", reason) callback {
+            spec.assert_str_eq(quickjs.vm_set_instruction_limit(vm, 100000, 1), "", "set the instruction limit")
+            spec.assert_eq(ev(vm, "var G = 0; for (;;) G++"), -1, "a loop is stopped")
+            spec.assert_str_eq(quickjs.vm_result_str(vm), "InternalError: interrupted: instruction limit exceeded", "by the instruction limit")
+            ev(vm, "G")
+            steps = quickjs.vm_result_int(vm)
+            spec.assert_true(steps >= 90000 && steps <= 100000, "after about 100,000 steps, to within one poll: ${steps}")
+            spec.assert_eq(ev(vm, "var survived = 0; try { for (;;) {} } catch (e) {} survived = 1"), -1, "the limit cannot be caught")
+            ev(vm, "survived")
+            spec.assert_eq_long(quickjs.vm_result_int(vm), 0, "nothing after the catch ran")
+            round = 0
+            while round < 3 {
+                spec.assert_eq(ev(vm, "var s = 0; for (var i = 0; i < 2000; i++) s += i; s"), 0, "each eval has its own budget")
+                spec.assert_eq_long(quickjs.vm_result_int(vm), 1999000, "and gets its answer")
+                round = round + 1
+            }
+            spec.assert_eq(ev(vm, "for (;;) host.nested_eval(1)"), -1, "a nested eval neither renews nor removes it")
+            spec.assert_true(string.contains(quickjs.vm_result_str(vm), "instruction limit") == 1, "it is the limit that stops it")
+            spec.assert_str_eq(quickjs.vm_set_instruction_limit(vm, 0, 1), "", "disarmed")
+            spec.assert_eq(ev(vm, "var n = 0; for (var i = 0; i < 300000; i++) n++; n"), 0, "a 300,000-step loop finishes")
+            spec.assert_eq_long(quickjs.vm_result_int(vm), 300000, "to its end")
             quickjs.vm_pop_result(vm)
         }
 
@@ -768,32 +787,35 @@ main() {
             quickjs.vm_pop_result(vm)
         }
 
-        spec.it_when(have_qjs, "what cannot carry a NUL is refused, saying why, and nothing is cut", reason) callback {
-            // script text: the engine reads it as a C string
-            spec.assert_eq(ev(vm, "var CUT = 1;\0 var AFTER = 2;"), -1, "script text with a NUL")
-            spec.assert_eq(quickjs.vm_result_type(vm), quickjs.QJS_TERR, "is an error")
-            spec.assert_true(string.contains(quickjs.vm_result_str(vm), "the script: refused: it holds an embedded NUL") == 1, "that names the reason: ${quickjs.vm_result_str(vm)}")
+        // Until Aether 0.935.0 these were refused: contrib.quickjs took script
+        // text, names and JSON as C strings, which a NUL would have cut.
+        spec.it_when(have_qjs, "script text, names and JSON text carry a NUL too", reason) callback {
+            spec.assert_eq(ev(vm, "var NS = 'p\0q'; NS.length + ':' + NS.charCodeAt(1)"), 0, "a raw NUL inside a string literal is a character")
+            spec.assert_str_eq(quickjs.vm_result_str(vm), "3:0", "of the string")
+            spec.assert_eq(ev(vm, "var CUT = 1;\0 var AFTER = 2;"), -1, "a raw NUL outside one")
+            spec.assert_true(string.starts_with(quickjs.vm_result_str(vm), "SyntaxError") == 1, "is a SyntaxError: ${quickjs.vm_result_str(vm)}")
             ev(vm, "typeof CUT + typeof AFTER")
-            spec.assert_str_eq(quickjs.vm_result_str(vm), "undefinedundefined", "and not even the part before the NUL ran")
-            // names: cut, they would be other names
-            spec.assert_true(string.contains(quickjs.vm_set_global_str(vm, "AB\0CD", "v"), "refused: it holds an embedded NUL") == 1, "a global's name (str)")
-            spec.assert_true(string.contains(quickjs.vm_set_global_int(vm, "AB\0CD", 1), "refused: it holds an embedded NUL") == 1, "(int)")
+            spec.assert_str_eq(quickjs.vm_result_str(vm), "undefinedundefined", "and nothing before it ran: the script is every byte")
+            // a name is the whole key, NUL and all
+            spec.assert_str_eq(quickjs.vm_set_global_str(vm, "AB\0CD", "v"), "", "a global's name (str)")
+            spec.assert_str_eq(quickjs.vm_set_global_int(vm, "AB\0CI", 7), "", "(int)")
             items = list.new()
             list.add(items, "x")
-            spec.assert_true(string.contains(quickjs.vm_set_global_strlist(vm, "AB\0CD", items), "refused: it holds an embedded NUL") == 1, "(strlist)")
+            spec.assert_str_eq(quickjs.vm_set_global_strlist(vm, "AB\0CL", items), "", "(strlist)")
             list.free(items)
-            spec.assert_true(string.contains(quickjs.vm_set_global_json(vm, "AB\0CD", "1"), "refused: it holds an embedded NUL") == 1, "(json)")
-            ev(vm, "typeof AB")
-            spec.assert_str_eq(quickjs.vm_result_str(vm), "undefined", "none set the name's first part")
-            spec.assert_not_eq(quickjs.vm_register(vm, "ab\0cd", cb_add), 0, "a function's name")
-            ev(vm, "typeof ab")
-            spec.assert_str_eq(quickjs.vm_result_str(vm), "undefined", "registered nothing under the first part")
-            // JSON text with a raw NUL is not JSON, and not read up to the NUL
-            spec.assert_true(string.contains(quickjs.vm_set_global_json(vm, "RAWJ", "1\0garbage"), "refused: it holds an embedded NUL") == 1, "JSON text with a NUL in it")
+            spec.assert_str_eq(quickjs.vm_set_global_json(vm, "AB\0CJ", "[1]"), "", "(json)")
+            ev(vm, "globalThis['AB\\0CD'] + globalThis['AB\\0CI'] + globalThis['AB\\0CL'][0] + globalThis['AB\\0CJ'][0] + ':' + typeof AB")
+            spec.assert_str_eq(quickjs.vm_result_str(vm), "v7x1:undefined", "each under its whole name, none under the part before the NUL")
+            spec.assert_eq(quickjs.vm_register(vm, "ab\0cd", cb_add), 0, "a function's name")
+            spec.assert_eq(quickjs.vm_register(vm, "nq\0s.add", cb_add), 0, "a dotted name with a NUL in a part")
+            ev(vm, "globalThis['ab\\0cd'](2, 3) + globalThis['nq\\0s'].add(4, 5) + ':' + typeof ab + typeof nq")
+            spec.assert_str_eq(quickjs.vm_result_str(vm), "14:undefinedundefined", "both called under their whole names")
+            // JSON text is parsed whole: a raw NUL is a SyntaxError, not its end
+            spec.assert_true(string.contains(quickjs.vm_set_global_json(vm, "RAWJ", "1\0garbage"), "SyntaxError") == 1, "JSON text with a raw NUL in it")
             ev(vm, "typeof RAWJ")
             spec.assert_str_eq(quickjs.vm_result_str(vm), "undefined", "nothing is set")
-            ev(vm, "try { host.push_json_rawnul(); 'returned' } catch (e) { e.message }")
-            spec.assert_true(string.contains(quickjs.vm_result_str(vm), "push_json: refused: it holds an embedded NUL") == 1, "push_json: the script gets an Error even if the callback ignores the -1: ${quickjs.vm_result_str(vm)}")
+            ev(vm, "typeof host.push_json_rawnul()")
+            spec.assert_str_eq(quickjs.vm_result_str(vm), "undefined", "push_json of one pushes nothing (it returns -1)")
             spec.assert_eq(ev(vm, "1 + 1"), 0, "the VM runs on")
             quickjs.vm_pop_result(vm)
         }

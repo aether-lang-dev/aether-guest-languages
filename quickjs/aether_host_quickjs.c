@@ -20,20 +20,19 @@
 // crosses), each the caller's own; the VM keeps nothing of them. A std.bytes
 // handle a reader returns is the caller's.
 //
-// Strings and NUL. JavaScript strings hold a NUL like any other character.
-// contrib.quickjs reads them out with their length (qjs_to_string), but takes
-// them in as C strings (qjs_string, qjs_eval, qjs_throw, qjs_parse_json: a NUL
-// ends them), and keeps an error as C text (fail_). So: what the engine hands
-// out is returned with its length; a host string given as an Aether string is
-// carried in by its length (a string with a NUL is made through JSON.parse,
-// which writes it as \u0000, ASCII); an error is read with its length by
-// catching it again in JavaScript (module.ae's helpers); a raise_error message
-// with a NUL is thrown by a JavaScript helper. What the engine cannot be given
-// at all is refused, loudly, naming the reason: script text (qjs_eval), JSON
-// text (invalid with a raw NUL anyway), the names of globals and host functions
-// (a different name is worse than none) and the shared map's keys and values
-// (aether_shared_map_* store C strings). asks/contrib-quickjs-length-aware-strings.md
-// and asks/shared-map-nul.md propose the length-aware engine and runtime calls.
+// Strings and NUL. JavaScript strings hold a NUL like any other character,
+// and contrib.quickjs (Aether 0.935.0) takes every string by its length and
+// hands every string out with it: script text, names, JSON text, messages and
+// the error's text all carry a NUL whole. So does the shared map (keys and
+// values by their length since the same release). The one string the engine
+// still refuses with a NUL is a script's file name, which no host here gives
+// it. What the engine hands out is valid UTF-8: a lone surrogate is U+FFFD
+// (the module's conversion), and JSON keeps it exactly, as \udXXX.
+//
+// Every string given to the engine is an Aether string (its @aether string
+// parameters): one the host gave is passed on as it came, one made here is
+// made with string_new_with_length and released after the call. Never a raw
+// char*, whose bytes the engine's helpers would read as a possible header.
 #include "aether_host_quickjs.h"
 #ifndef AETHER_HAS_SANDBOX
 #define AETHER_HAS_SANDBOX 1
@@ -61,41 +60,45 @@ extern void qjs_set_deadline_ns(void* q, int64_t ns);
 extern void qjs_set_cancel_cell(void* q, void* cell);
 extern int qjs_interrupted(void* q);
 extern void qjs_clear_interrupted(void* q);
-extern int qjs_eval(void* q, const char* code, const char* filename, int flags);
+extern int qjs_eval(void* q, const void* code, const void* filename, int flags);
 extern int qjs_run_jobs(void* q);
-extern const char* qjs_error(void* q);
-extern int qjs_throw(void* q, const char* kind, const char* msg);
+extern const void* qjs_error_data(void* q);
+extern int qjs_error_len(void* q);
+extern int qjs_last_exception(void* q);
+extern void qjs_set_poll_budget(void* q, int64_t polls);
+extern int qjs_throw(void* q, const void* kind, const void* msg);
 extern void qjs_release(void* q, int h);
 extern int qjs_global(void* q);
 extern int qjs_null(void* q);
 extern int qjs_bool(void* q, int b);
 extern int qjs_int(void* q, int n);
 extern int qjs_float(void* q, double d);
-extern int qjs_string(void* q, const char* s);
+extern int qjs_string(void* q, const void* s);
 extern int qjs_object(void* q);
 extern int qjs_array(void* q);
-extern int qjs_parse_json(void* q, const char* text);
-extern const char* qjs_to_json(void* q, int h);
+extern int qjs_parse_json(void* q, const void* text);
+extern int qjs_to_json(void* q, int h);
 extern int qjs_to_string(void* q, int h);
 extern const void* qjs_scratch(void* q);
 extern double qjs_to_float(void* q, int h);
 extern int qjs_to_bool(void* q, int h);
 extern const char* qjs_type(void* q, int h);
-extern int qjs_get(void* q, int obj, const char* name);
-extern int qjs_set(void* q, int obj, const char* name, int v);
+extern int qjs_get(void* q, int obj, const void* name);
+extern int qjs_set(void* q, int obj, const void* name, int v);
 extern int qjs_get_index(void* q, int obj, int i);
 extern int qjs_set_index(void* q, int obj, int i, int v);
 extern int qjs_length(void* q, int obj);
 extern int qjs_u8_length(void* q, int h);
 extern const void* qjs_u8_data(void* q, int h);
 extern int qjs_new_uint8array(void* q, const void* data, int n);
-extern int qjs_call(void* q, int f, int this_h, int args);
-extern int qjs_rethrow(void* q);
-extern int qjs_dup(void* q, int h);
 // The engine's interrupt reasons (contrib.quickjs INTERRUPTED_*).
 #define QJS_INTERRUPT_DEADLINE 1
 #define QJS_INTERRUPT_CANCEL 2
 #define QJS_INTERRUPT_STOP 3
+#define QJS_INTERRUPT_BUDGET 4
+// The engine polls its interrupt handler once per this many counted steps
+// (quickjs-ng's JS_INTERRUPT_COUNTER_INIT): a poll budget is in these units.
+#define QJS_STEPS_PER_POLL 10000
 
 // std.list and std.string, for vm_set_global_strlist and the strings that
 // cross (an Aether string is its bytes and its length; a plain char* reads the
@@ -105,6 +108,7 @@ extern void* list_get_raw(void*, int);
 extern const char* aether_string_data(const void*);
 extern size_t aether_string_length(const void*);
 extern void* string_new_with_length(const char* data, size_t length);
+extern void string_release(const void* s);
 
 // ---- typed-value tags (module.ae's QJS_T*: Python's numbering) -------------
 #define AE_QJS_TNIL   0
@@ -143,29 +147,13 @@ typedef struct AeQjsVm {
     size_t result_str_len;
     char* result_full;     // an error with its stack, for run's report
     size_t result_full_len;
-    // JavaScript the VM keeps handles to, none visible to a script: the
-    // function that throws the error the engine's rethrow brings back
-    // (rethrow_fn, made by module.ae), the one that catches it as text
-    // (catcher) and the one that throws a message with a NUL (thrower).
-    int rethrow_fn;
-    int catcher;
-    int thrower;
-    int joiner;            // joins an array of strings with a NUL: new_string's
     AeQjsFrame frame;
     int64_t time_limit_ns; // per outermost eval; 0 for none
+    int64_t poll_budget;   // interrupt polls per outermost eval; 0 for none
     int depth;             // evals running on this VM (nested ones count)
     void* user;            // the host's, for its callbacks (vm_user)
     uint64_t map_token;    // run_sandboxed_with_map's map, for its callbacks
 } AeQjsVm;
-
-static char* dup_str(const char* s) {
-    size_t n = strlen(s ? s : "");
-    char* d = (char*)malloc(n + 1);
-    if (d) memcpy(d, s ? s : "", n + 1);
-    return d;
-}
-
-static const char* nz(const char* s) { return s ? s : ""; }
 
 // A string the host gave (an Aether string, or a plain char*): its bytes and
 // its length, NULL read as "".
@@ -176,21 +164,23 @@ static const char* host_bytes(const void* v, size_t* n) {
     return d;
 }
 
-static int has_nul(const char* d, size_t n) { return n > 0 && memchr(d, 0, n) != NULL; }
-
 // An Aether string made from bytes and a length, for the host (NUL and all).
 static void* out_str(const char* d, size_t n) {
     return string_new_with_length(d ? d : "", d ? n : 0);
 }
 
-// What a string the bridge cannot pass on says, "<what>: refused: it holds an
-// embedded NUL; <why>" (the words tcl/ uses, which tests/boundary.py reads as a
-// documented refusal).
-#define REFUSE(what, why) what ": refused: it holds an embedded NUL; " why
-#define WHY_CODE "contrib.quickjs reads script text as a C string, which a NUL would end early; write \\0 inside a string literal instead"
-#define WHY_NAME "a name is a C string, and a NUL would cut it into a different name"
-#define WHY_JSON "JSON text cannot hold a raw NUL; write \\u0000 inside a string instead"
-#define WHY_MAP "the shared map stores C strings (aether_shared_map_put), which a NUL would cut"
+// An Aether string of bytes and a length, for an engine parameter: the
+// caller releases it (string_release) after the call. NULL without memory.
+static void* eng_str(const char* d, size_t n) { return string_new_with_length(d, n); }
+
+// The engine's string from bytes and a length (-1 when it cannot be made).
+static int new_string(void* q, const char* d, size_t n) {
+    void* s = eng_str(d, n);
+    if (!s) return -1;
+    int h = qjs_string(q, s);
+    string_release(s);
+    return h;
+}
 
 // ---- the VM -----------------------------------------------------------------
 
@@ -203,24 +193,6 @@ void* qjsb_new(int memory_kb) {
     if (!vm->q) { free(vm); return NULL; }
     vm->result_type = AE_QJS_TNIL;
     return vm;
-}
-
-// The JavaScript the VM keeps for the strings the engine hands over as C text
-// (set_error, throw_with_nul, new_string). rethrow_fn is a host function module.ae made,
-// whose body is the engine's rethrow; the others are small functions no
-// script can see. Whatever fails to be made leaves the VM on the engine's own
-// text (an error cut at a NUL), which only happens on a heap too small for
-// four functions.
-void qjsb_set_helpers(void* v, int rethrow_fn) {
-    AeQjsVm* vm = (AeQjsVm*)v;
-    if (!vm) return;
-    vm->rethrow_fn = rethrow_fn > 0 ? rethrow_fn : 0;
-    vm->catcher = qjs_eval(vm->q, "(function (f) { try { f() } catch (e) { try { return String(e) } catch (_) { return undefined } } })", "<bridge>", 0);
-    if (vm->catcher < 0) vm->catcher = 0;
-    vm->thrower = qjs_eval(vm->q, "(function (m) { throw new Error(m) })", "<bridge>", 0);
-    if (vm->thrower < 0) vm->thrower = 0;
-    vm->joiner = qjs_eval(vm->q, "(function (a) { return a.join('\\0') })", "<bridge>", 0);
-    if (vm->joiner < 0) vm->joiner = 0;
 }
 
 // The engine runtime, for module.ae's registration; NULL for no VM.
@@ -323,70 +295,28 @@ static int value_bool(void* q, int h) {
     return !strcmp(qjs_type(q, h), "boolean") && qjs_to_bool(q, h) ? 1 : 0;
 }
 
+static char* text_of(void* q, int h, size_t* len);
+
 // A string's UTF-8 text and length (a NUL kept: the engine counts bytes), as
-// a new malloc'd copy; NULL when h is no string. A lone surrogate, which
-// UTF-8 cannot encode, is U+FFFD (the engine's own conversion), and a
-// character beyond the BMP is its four-byte UTF-8 form, not CESU-8.
+// a new malloc'd copy; NULL when h is no string. The engine hands out valid
+// UTF-8: a lone surrogate is U+FFFD, a character beyond the BMP its four-byte
+// form, not CESU-8.
 static char* value_str(void* q, int h, size_t* len) {
     if (strcmp(qjs_type(q, h), "string") != 0) return NULL;
+    return text_of(q, h, len);
+}
+
+// String(h) as a new malloc'd copy and its length (a NUL kept), whatever h
+// is; NULL when the conversion throws or there is no memory.
+static char* text_of(void* q, int h, size_t* len) {
     int n = qjs_to_string(q, h);
     if (n < 0) return NULL;
     char* s = (char*)malloc((size_t)n + 1);
     if (!s) return NULL;
     memcpy(s, qjs_scratch(q), (size_t)n);
     s[n] = '\0';
-    // The engine writes a lone surrogate as the three bytes ED A0..BF xx (a
-    // surrogate code point, which is not UTF-8: WTF-8). The host gets U+FFFD
-    // (EF BF BD, the same length) instead, so every string handed out is valid
-    // UTF-8, as the other bridges' are; JSON (vm_result_json) keeps it exactly.
-    for (int i = 0; i + 2 < n; i++) {
-        unsigned char c = (unsigned char)s[i];
-        if (c == 0xED && ((unsigned char)s[i + 1] & 0xE0) == 0xA0) { s[i] = (char)0xEF; s[i + 1] = (char)0xBF; s[i + 2] = (char)0xBD; i += 2; }
-        else if (c >= 0xC0) i += c >= 0xF0 ? 3 : c >= 0xE0 ? 2 : 1;
-    }
     if (len) *len = (size_t)n;
     return s;
-}
-
-// A JavaScript string from bytes and a length. qjs_string takes a C string,
-// which a NUL ends, so a string with a NUL is made in pieces: each piece
-// between NULs by qjs_string (so the engine decodes it as it does any string:
-// a bad byte is U+FFFD, a surrogate pair written as CESU-8 is joined, a lone
-// one is kept), and the pieces joined with a NUL by a JavaScript function the
-// VM keeps (module.ae's note on helpers). -1 when the engine cannot make it.
-static int new_string(AeQjsVm* vm, const char* d, size_t n) {
-    void* q = vm->q;
-    if (!has_nul(d, n)) return qjs_string(q, d);
-    if (vm->joiner <= 0) return -1;
-    int arr = qjs_array(q);
-    if (arr <= 0) return -1;
-    int ok = 1;
-    int idx = 0;
-    size_t start = 0;
-    for (size_t i = 0; i <= n && ok; i++) {
-        if (i < n && d[i] != '\0') continue;
-        char* piece = (char*)malloc(i - start + 1);
-        if (!piece) { ok = 0; break; }
-        memcpy(piece, d + start, i - start);
-        piece[i - start] = '\0';
-        int s = qjs_string(q, piece);
-        free(piece);
-        if (s <= 0) { ok = 0; break; }
-        if (qjs_set_index(q, arr, idx++, s) < 0) ok = 0;
-        qjs_release(q, s);
-        start = i + 1;
-    }
-    int out = -1;
-    if (ok) {
-        int args = qjs_array(q);
-        if (args > 0) {
-            qjs_set_index(q, args, 0, arr);
-            out = qjs_call(q, vm->joiner, 0, args);
-            qjs_release(q, args);
-        }
-    }
-    qjs_release(q, arr);
-    return out;
 }
 
 // The bytes of a Uint8Array as a new std.bytes handle (the caller's); NULL
@@ -400,117 +330,81 @@ static void* value_bytes(void* q, int h) {
 
 // ---- running code -----------------------------------------------------------
 
-// The engine's error text without its stack: "TypeError: x" from
-// "TypeError: x\n    at f (<eval>:1:3)". Only the fallback now (see
-// caught_text): contrib.quickjs gives the text with the stack appended, not
-// the exception value, so a message that itself holds "\n    at " is cut there
-// (asks/contrib-quickjs-op-budget-and-exception-handle.md).
-static char* message_of(const char* full, size_t* len) {
-    const char* cut = strstr(full, "\n    at ");
-    size_t n = cut ? (size_t)(cut - full) : strlen(full);
-    char* m = (char*)malloc(n + 1);
-    if (!m) return NULL;
-    memcpy(m, full, n);
-    m[n] = '\0';
-    *len = n;
-    return m;
-}
-
-// String(e) of the exception the last failed eval left, with its length. The
-// engine records an error as C text (a NUL ends it), but keeps the value, and
-// qjs_rethrow throws that value again: the catcher calls a function that does,
-// in a try, and gives back String(e), whose bytes and length the engine reads
-// out whole. NULL when it cannot (a heap that is full, an exception the script
-// cannot catch, a String(e) that throws): the engine's text is used instead.
-// A user toString on a thrown object runs a second time here.
-static char* caught_text(AeQjsVm* vm, size_t* len) {
-    void* q = vm->q;
-    if (vm->rethrow_fn <= 0 || vm->catcher <= 0) return NULL;
-    int arr = qjs_array(q);
-    if (arr <= 0) return NULL;
-    int f = qjs_dup(q, vm->rethrow_fn);
-    if (f > 0) { qjs_set_index(q, arr, 0, f); qjs_release(q, f); }
-    int r = qjs_call(q, vm->catcher, 0, arr);
-    qjs_release(q, arr);
-    if (r < 0) return NULL;
-    char* s = value_str(q, r, len);
-    qjs_release(q, r);
-    return s;
+// A copy of bytes and a length, NUL-terminated after them (NUL inside kept).
+static char* copy_bytes(const char* d, size_t n) {
+    char* c = (char*)malloc(n + 1);
+    if (!c) return NULL;
+    if (n) memcpy(c, d, n);
+    c[n] = '\0';
+    return c;
 }
 
 static void set_error_text(AeQjsVm* vm, const char* text, size_t n) {
     vm->result_type = AE_QJS_TERR;
-    vm->result_str = (char*)malloc(n + 1);
-    if (vm->result_str) { memcpy(vm->result_str, text, n); vm->result_str[n] = '\0'; vm->result_str_len = n; }
-    vm->result_full = (char*)malloc(n + 1);
-    if (vm->result_full) { memcpy(vm->result_full, text, n); vm->result_full[n] = '\0'; vm->result_full_len = n; }
+    vm->result_str = copy_bytes(text, n);
+    vm->result_str_len = vm->result_str ? n : 0;
+    vm->result_full = copy_bytes(text, n);
+    vm->result_full_len = vm->result_full ? n : 0;
 }
 
+// The error the last failed eval left. result_full is the engine's text,
+// String(e), a newline and the stack, every byte (qjs_error_data and
+// qjs_error_len). result_str is String(e) alone, read from the thrown value
+// itself (qjs_last_exception), so a message holding a newline or a NUL is
+// kept whole; when there is no value (a host refusal, a full heap) or its
+// String(e) throws, it is the engine's whole text. An interrupt says which
+// limit stopped JavaScript instead.
 static void set_error(AeQjsVm* vm, int interrupted) {
-    char* full = dup_str(nz(qjs_error(vm->q)));
-    size_t flen = full ? strlen(full) : 0;
+    void* q = vm->q;
+    // Read before anything below runs JavaScript (and so may fail again).
+    vm->result_full = copy_bytes((const char*)qjs_error_data(q), (size_t)qjs_error_len(q));
+    vm->result_full_len = vm->result_full ? (size_t)qjs_error_len(q) : 0;
+    vm->result_type = AE_QJS_TERR;
     const char* why = NULL;
     if (interrupted == QJS_INTERRUPT_DEADLINE) why = "InternalError: interrupted: time limit exceeded";
     else if (interrupted == QJS_INTERRUPT_CANCEL) why = "InternalError: interrupted: cancelled";
+    else if (interrupted == QJS_INTERRUPT_BUDGET) why = "InternalError: interrupted: instruction limit exceeded";
     else if (interrupted == QJS_INTERRUPT_STOP) why = "InternalError: interrupted: stopped";
-    vm->result_type = AE_QJS_TERR;
     if (why) {
-        vm->result_full = full;
-        vm->result_full_len = flen;
-        vm->result_str = dup_str(why);
-        vm->result_str_len = strlen(why);
+        vm->result_str = copy_bytes(why, strlen(why));
+        vm->result_str_len = vm->result_str ? strlen(why) : 0;
         return;
     }
+    int e = qjs_last_exception(q);
     size_t n = 0;
-    char* msg = caught_text(vm, &n);
-    if (!msg) msg = message_of(full ? full : "", &n);
+    char* msg = e > 0 ? text_of(q, e, &n) : NULL;
+    if (e > 0) qjs_release(q, e);
+    if (!msg && vm->result_full) { msg = copy_bytes(vm->result_full, vm->result_full_len); n = vm->result_full_len; }
     vm->result_str = msg;
     vm->result_str_len = msg ? n : 0;
-    if (msg && has_nul(msg, n) && full) {
-        // The engine's text is cut at the NUL; the message with its length,
-        // then the stack lines the engine wrote after the cut.
-        const char* skip = full + strnlen(msg, n);
-        const char* tail = strstr(skip, "\n    at ");
-        size_t tl = tail ? strlen(tail) : 0;
-        vm->result_full = (char*)malloc(n + tl + 1);
-        if (vm->result_full) {
-            memcpy(vm->result_full, msg, n);
-            if (tl) memcpy(vm->result_full + n, tail, tl);
-            vm->result_full[n + tl] = '\0';
-            vm->result_full_len = n + tl;
-        }
-        free(full);
-    } else {
-        vm->result_full = full;
-        vm->result_full_len = flen;
-    }
 }
 
 // Runs code at global level, then the promise jobs it queued. 0 with the
 // script's completion value as the result (statements give undefined), or
 // -1 with the error as the result (QJS_TERR, its message as the string). A
-// time limit applies to the outermost eval and everything it runs, a nested
-// eval (from a callback) included, which neither renews nor removes it. Script
-// text with a NUL in it is refused (-1, and says why): the engine takes it as
-// a C string.
+// time limit and an instruction limit apply to the outermost eval and
+// everything it runs, a nested eval (from a callback) included, which neither
+// renews nor removes them. The script is every byte of code: a NUL inside a
+// string literal is a character, one elsewhere a SyntaxError.
 int quickjs_vm_eval(void* v, const void* code) {
     AeQjsVm* vm = (AeQjsVm*)v;
     if (!vm || !code) return -1;
     void* q = vm->q;
-    size_t clen;
-    const char* cd = host_bytes(code, &clen);
     clear_result(vm);
-    if (has_nul(cd, clen)) {
-        set_error_text(vm, REFUSE("the script", WHY_CODE), strlen(REFUSE("the script", WHY_CODE)));
+    void* filename = eng_str("<eval>", 6);
+    if (!filename) {
+        set_error_text(vm, "InternalError: out of memory", 28);
         return -1;
     }
     int outer = vm->depth == 0;
     if (outer) {
         qjs_clear_interrupted(q);
         qjs_set_deadline_ns(q, vm->time_limit_ns > 0 ? qjs_now_ns() + vm->time_limit_ns : 0);
+        qjs_set_poll_budget(q, vm->poll_budget > 0 ? vm->poll_budget : -1);
     }
     vm->depth++;
-    int h = qjs_eval(q, cd, "<eval>", 0);
+    int h = qjs_eval(q, code, filename, 0);
+    string_release(filename);
     if (h >= 0 && outer && qjs_run_jobs(q) < 0) {
         qjs_release(q, h);
         h = -1;
@@ -528,8 +422,8 @@ int quickjs_vm_eval(void* v, const void* code) {
         vm->result_type = classify(q, h);
         if (vm->result_type == AE_QJS_TSTR) vm->result_str = value_str(q, h, &vm->result_str_len);
     }
-    // Reading the result afterwards is not JavaScript time.
-    if (outer) qjs_set_deadline_ns(q, 0);
+    // Reading the result afterwards is not JavaScript time, or steps.
+    if (outer) { qjs_set_deadline_ns(q, 0); qjs_set_poll_budget(q, -1); }
     return rc;
 }
 
@@ -571,8 +465,8 @@ void* quickjs_vm_result_bytes(void* v) {
 const void* quickjs_vm_result_json(void* v) {
     AeQjsVm* vm = (AeQjsVm*)v;
     if (!vm || vm->result <= 0) return out_str("", 0);
-    const char* j = nz(qjs_to_json(vm->q, vm->result));
-    return out_str(j, strlen(j));
+    int n = qjs_to_json(vm->q, vm->result);
+    return n < 0 ? out_str("", 0) : out_str((const char*)qjs_scratch(vm->q), (size_t)n);
 }
 
 void quickjs_vm_pop_result(void* v) {
@@ -581,7 +475,8 @@ void quickjs_vm_pop_result(void* v) {
 
 // ---- globals ----------------------------------------------------------------
 
-static void set_global(AeQjsVm* vm, const char* name, int h) {
+// name is the host's Aether string, every byte the key (a NUL included).
+static void set_global(AeQjsVm* vm, const void* name, int h) {
     if (h <= 0) return;
     int g = qjs_global(vm->q);
     qjs_set(vm->q, g, name, h);
@@ -595,35 +490,22 @@ static int number_handle(void* q, int64_t value) {
     return qjs_float(q, (double)value);
 }
 
-// The name of a global as a C string, or NULL when it holds a NUL (the engine
-// takes it as a C string, and a cut name is a different name).
-static const char* global_name(const void* name) {
-    size_t n;
-    const char* d = host_bytes(name, &n);
-    return has_nul(d, n) ? NULL : d;
-}
-
 // The globals' setters return "" when they set the value, else why they did
-// not, a constant or the engine's own text, valid until the next call.
+// not, a constant or the engine's own text, valid until the next call. A
+// global's name is every byte of the string, a NUL included.
 const char* quickjs_vm_set_global_str(void* v, const void* name, const void* value) {
     AeQjsVm* vm = (AeQjsVm*)v;
     if (!vm) return "no vm";
-    const char* nm = global_name(name);
-    if (!nm) return REFUSE("the global's name", WHY_NAME);
-    size_t n;
-    const char* d = host_bytes(value, &n);
-    int h = new_string(vm, d, n);
-    if (h <= 0) return "the string could not be made (no memory, or the VM's helper is missing)";
-    set_global(vm, nm, h);
+    int h = qjs_string(vm->q, value);
+    if (h <= 0) return (const char*)qjs_error_data(vm->q);
+    set_global(vm, name, h);
     return "";
 }
 
 const char* quickjs_vm_set_global_int(void* v, const void* name, int64_t value) {
     AeQjsVm* vm = (AeQjsVm*)v;
     if (!vm) return "no vm";
-    const char* nm = global_name(name);
-    if (!nm) return REFUSE("the global's name", WHY_NAME);
-    set_global(vm, nm, number_handle(vm->q, value));
+    set_global(vm, name, number_handle(vm->q, value));
     return "";
 }
 
@@ -631,39 +513,29 @@ const char* quickjs_vm_set_global_int(void* v, const void* name, int64_t value) 
 const char* quickjs_vm_set_global_strlist(void* v, const void* name, void* items) {
     AeQjsVm* vm = (AeQjsVm*)v;
     if (!vm) return "no vm";
-    const char* nm = global_name(name);
-    if (!nm) return REFUSE("the global's name", WHY_NAME);
     int arr = qjs_array(vm->q);
-    if (arr <= 0) return nz(qjs_error(vm->q));
+    if (arr <= 0) return (const char*)qjs_error_data(vm->q);
     int n = items ? list_size(items) : 0;
     for (int i = 0; i < n; i++) {
-        void* item = list_get_raw(items, i);
-        size_t len;
-        const char* d = host_bytes(item, &len);
-        int s = new_string(vm, d, len);
+        int s = qjs_string(vm->q, list_get_raw(items, i));
         if (s > 0) {
             qjs_set_index(vm->q, arr, i, s);
             qjs_release(vm->q, s);
         }
     }
-    set_global(vm, nm, arr);
+    set_global(vm, name, arr);
     return "";
 }
 
 // The value JSON text describes (an array, an object, a number, ...): "" when
-// set, else the parse error (nothing is set). JSON text with a raw NUL is not
-// JSON, and is said so rather than parsed up to the NUL.
+// set, else the parse error (nothing is set). Every byte is parsed: a raw NUL
+// is a SyntaxError, as any stray character is, never the end of the text.
 const char* quickjs_vm_set_global_json(void* v, const void* name, const void* json) {
     AeQjsVm* vm = (AeQjsVm*)v;
     if (!vm) return "no vm";
-    const char* nm = global_name(name);
-    if (!nm) return REFUSE("the global's name", WHY_NAME);
-    size_t n;
-    const char* d = host_bytes(json, &n);
-    if (has_nul(d, n)) return REFUSE("the JSON text", WHY_JSON);
-    int h = qjs_parse_json(vm->q, d);
-    if (h < 0) return qjs_error(vm->q);
-    set_global(vm, nm, h);
+    int h = qjs_parse_json(vm->q, json);
+    if (h < 0) return (const char*)qjs_error_data(vm->q);
+    set_global(vm, name, h);
     return "";
 }
 
@@ -680,12 +552,20 @@ const char* quickjs_vm_set_time_limit(void* v, int64_t ms, int every) {
     return "";
 }
 
-// contrib.quickjs has no operation count to hold a script to
-// (asks/contrib-quickjs-op-budget-and-exception-handle.md), so this says so
-// rather than ignore the budget, as Duktape's bridge does.
+// Per outermost eval, as the time limit: stops JavaScript after `budget`
+// counted steps, budget <= 0 removes it. The engine counts in its interrupt
+// polls (contrib.quickjs's set_poll_budget), one per 10,000 steps (a
+// function call, a jump the interpreter takes or tests, an element step of a
+// built-in that iterates, 10,000 regexp backtracking steps per poll), so the
+// budget is ceil(budget / 10000) polls, and JavaScript stops after between
+// that many polls less one and that many, times 10,000 steps: the granularity
+// is 10,000. `every` is not used: the engine's poll interval is fixed.
 const char* quickjs_vm_set_instruction_limit(void* v, int64_t budget, int every) {
-    (void)v; (void)budget; (void)every;
-    return "instruction limit unavailable: contrib.quickjs counts no operations (it has a deadline and cancel cells): use vm_set_time_limit";
+    (void)every;
+    AeQjsVm* vm = (AeQjsVm*)v;
+    if (!vm) return "no vm";
+    vm->poll_budget = budget > 0 ? (budget + QJS_STEPS_PER_POLL - 1) / QJS_STEPS_PER_POLL : 0;
+    return "";
 }
 
 // A std.sync cell whose nonzero value stops the running JavaScript, set from
@@ -703,40 +583,46 @@ void* quickjs_vm_user(void* v) { return v ? ((AeQjsVm*)v)->user : NULL; }
 
 // ---- host functions ---------------------------------------------------------
 
-// "app.math.add": parts of at least one character, the last the function.
-// A name with a NUL in it is refused, not cut into a shorter one.
+// "app.math.add": parts of at least one byte, the last the function. A part
+// is every byte between the dots, a NUL included (the engine keys a property
+// by its whole name).
 int qjsb_name_ok(const void* nv) {
     size_t n;
     const char* name = host_bytes(nv, &n);
-    if (n == 0 || has_nul(name, n)) return 0;
-    if (name[0] == '.' || name[n - 1] == '.' || strstr(name, "..")) return 0;
+    if (n == 0 || name[0] == '.' || name[n - 1] == '.') return 0;
+    for (size_t i = 0; i + 1 < n; i++) if (name[i] == '.' && name[i + 1] == '.') return 0;
     return 1;
 }
 
-// The last part of a dotted name (what the function's `name` is).
-const char* qjsb_leaf(const char* name) {
-    const char* dot = strrchr(nz(name), '.');
-    return dot ? dot + 1 : nz(name);
+// The last part of a dotted name (what the function's `name` is), as a new
+// Aether string, the caller's.
+const void* qjsb_leaf(const void* nv) {
+    size_t n;
+    const char* name = host_bytes(nv, &n);
+    size_t start = n;
+    while (start > 0 && name[start - 1] != '.') start--;
+    return out_str(name + start, n - start);
 }
 
 // Puts function handle f at the dotted name, making (or reusing) the objects
 // on the way: "app.math.add" is globalThis.app.math.add. A part that is there
 // and is not an object or a function is refused, not replaced. Releases f.
 // 0, or -1.
-int qjsb_install(void* v, const char* name, int f) {
+int qjsb_install(void* v, const void* nv, int f) {
     AeQjsVm* vm = (AeQjsVm*)v;
     if (!vm) return -1;
     void* q = vm->q;
     if (f <= 0) return -1;
-    if (!qjsb_name_ok(name)) { qjs_release(q, f); return -1; }
-    char* path = dup_str(name);
-    if (!path) { qjs_release(q, f); return -1; }
+    if (!qjsb_name_ok(nv)) { qjs_release(q, f); return -1; }
+    size_t n;
+    const char* name = host_bytes(nv, &n);
     int obj = qjs_global(q);
     int rc = 0;
-    char* part = path;
-    for (char* dot = strchr(part, '.'); dot; dot = strchr(part, '.')) {
-        *dot = '\0';
-        int next = qjs_get(q, obj, part);
+    size_t start = 0;
+    for (size_t i = 0; i < n; i++) {
+        if (name[i] != '.') continue;
+        void* part = eng_str(name + start, i - start);
+        int next = part ? qjs_get(q, obj, part) : -1;
         const char* t = next > 0 ? qjs_type(q, next) : "";
         if (next > 0 && (!strcmp(t, "undefined") || !strcmp(t, "null"))) {
             qjs_release(q, next);
@@ -746,37 +632,20 @@ int qjsb_install(void* v, const char* name, int f) {
             qjs_release(q, next);
             next = -1;
         }
+        if (part) string_release(part);
         qjs_release(q, obj);
         if (next <= 0) { rc = -1; obj = 0; break; }
         obj = next;
-        part = dot + 1;
+        start = i + 1;
     }
-    if (rc == 0 && qjs_set(q, obj, part, f) < 0) rc = -1;
+    if (rc == 0) {
+        void* leaf = eng_str(name + start, n - start);
+        if (!leaf || qjs_set(q, obj, leaf, f) < 0) rc = -1;
+        if (leaf) string_release(leaf);
+    }
     if (obj > 0) qjs_release(q, obj);
     qjs_release(q, f);
-    free(path);
     return rc;
-}
-
-// An error thrown into the script with a NUL in its message. The engine's
-// qjs_throw takes the message as a C string, so a JavaScript function throws
-// it (the message made by new_string) and the engine's rethrow brings that
-// error back to throw out of the callback. -1 for the error, as qjs_throw.
-static int throw_with_nul(AeQjsVm* vm, const char* msg, size_t n) {
-    void* q = vm->q;
-    if (vm->thrower > 0) {
-        int m = new_string(vm, msg, n);
-        int arr = m > 0 ? qjs_array(q) : -1;
-        if (arr > 0) {
-            qjs_set_index(q, arr, 0, m);
-            int r = qjs_call(q, vm->thrower, 0, arr);
-            qjs_release(q, arr);
-            if (r >= 0) qjs_release(q, r);
-            else { qjs_release(q, m); return qjs_rethrow(q); }
-        }
-        if (m > 0) qjs_release(q, m);
-    }
-    return qjs_throw(q, "Error", "raise_error: the message could not be thrown whole");
 }
 
 // Called by the engine (through module.ae's closure) when a script calls a
@@ -794,10 +663,12 @@ int qjsb_dispatch(void* v, void* host_fn, int this_h, int args) {
     int ret;
     if (vm->frame.raise) {
         if (vm->frame.pushed > 0) qjs_release(vm->q, vm->frame.pushed);
-        if (has_nul(vm->frame.raise, vm->frame.raise_len))
-            ret = throw_with_nul(vm, vm->frame.raise, vm->frame.raise_len);
-        else
-            ret = qjs_throw(vm->q, "Error", vm->frame.raise);
+        // The message by its length, a NUL and all.
+        void* kind = eng_str("Error", 5);
+        void* msg = eng_str(vm->frame.raise, vm->frame.raise_len);
+        ret = kind && msg ? qjs_throw(vm->q, kind, msg) : -1;
+        if (kind) string_release(kind);
+        if (msg) string_release(msg);
     } else if (rc > 0 && vm->frame.pushed > 0) {
         ret = vm->frame.pushed;   // the engine takes it
     } else {
@@ -893,8 +764,8 @@ const void* quickjs_arg_json(void* v, int i) {
     AeQjsVm* vm = (AeQjsVm*)v;
     int h = arg_handle(vm, i);
     if (!h) return out_str("", 0);
-    const char* j = nz(qjs_to_json(vm->q, h));
-    void* r = out_str(j, strlen(j));
+    int n = qjs_to_json(vm->q, h);
+    void* r = n < 0 ? out_str("", 0) : out_str((const char*)qjs_scratch(vm->q), (size_t)n);
     qjs_release(vm->q, h);
     return r;
 }
@@ -909,9 +780,7 @@ void quickjs_push_int(void* v, int64_t n) { AeQjsVm* vm = (AeQjsVm*)v; if (vm) p
 void quickjs_push_str(void* v, const void* s) {
     AeQjsVm* vm = (AeQjsVm*)v;
     if (!vm) return;
-    size_t n;
-    const char* d = host_bytes(s, &n);
-    push(vm, new_string(vm, d, n));
+    push(vm, qjs_string(vm->q, s));
 }
 void quickjs_push_bool(void* v, int b) { AeQjsVm* vm = (AeQjsVm*)v; if (vm) push(vm, qjs_bool(vm->q, b != 0)); }
 void quickjs_push_nil(void* v) { AeQjsVm* vm = (AeQjsVm*)v; if (vm) push(vm, qjs_null(vm->q)); }
@@ -935,18 +804,11 @@ static int raise_text(AeQjsVm* vm, const char* msg, size_t n) {
 }
 
 // The value JSON text describes: 0 when pushed, -1 (nothing pushed) when the
-// text is not JSON. A raw NUL is not JSON either, and the callback's script
-// also gets an Error that says so (the host may not look at the -1).
+// text is not JSON (every byte is parsed: a raw NUL is a SyntaxError).
 int quickjs_push_json(void* v, const void* json) {
     AeQjsVm* vm = (AeQjsVm*)v;
     if (!vm) return -1;
-    size_t n;
-    const char* d = host_bytes(json, &n);
-    if (has_nul(d, n)) {
-        raise_text(vm, REFUSE("push_json", WHY_JSON), strlen(REFUSE("push_json", WHY_JSON)));
-        return -1;
-    }
-    int h = qjs_parse_json(vm->q, d);
+    int h = qjs_parse_json(vm->q, json);
     if (h < 0) return -1;
     push(vm, h);
     return 0;
@@ -986,16 +848,11 @@ static int print_cb(void* v) {
     return 0;
 }
 
-// Not in aether_shared_map.h; the Duktape host declares it the same way.
-extern void aether_shared_map_freeze_inputs_by_token(uint64_t token);
+// The shared map is Aether's runtime's (aether_shared_map_*), by token: keys
+// and values by their length, a NUL in either kept, in and out.
 
-// The shared map is Aether's runtime's (aether_shared_map_*), and it keeps C
-// strings: a key or a value with a NUL cannot be stored or read whole there.
-// So the script's aether_map_get and aether_map_put refuse one, with an Error
-// that names the reason, instead of cutting it (asks/shared-map-nul.md).
-
-// A string argument as a malloc'd C string and its length ("" for any other
-// type, as arg_str); the caller frees it.
+// A string argument as a malloc'd copy and its length ("" for any other type,
+// as arg_str); the caller frees it.
 static char* arg_copy(AeQjsVm* vm, int i, size_t* n) {
     int h = arg_handle(vm, i);
     *n = 0;
@@ -1005,23 +862,19 @@ static char* arg_copy(AeQjsVm* vm, int i, size_t* n) {
         if (s) return s;
     }
     *n = 0;
-    return dup_str("");
+    return copy_bytes("", 0);
 }
 
 // aether_map_get(key): the value, or undefined.
 static int map_get_cb(void* v) {
     AeQjsVm* vm = (AeQjsVm*)v;
-    size_t kn;
+    size_t kn, vn = 0;
     char* key = arg_copy(vm, 1, &kn);
     if (!key) return 0;
-    if (has_nul(key, kn)) {
-        free(key);
-        return raise_text(vm, REFUSE("aether_map_get: the key", WHY_MAP), strlen(REFUSE("aether_map_get: the key", WHY_MAP)));
-    }
-    const char* val = aether_shared_map_get_by_token(vm->map_token, key);
+    const char* val = aether_shared_map_get_by_token(vm->map_token, key, kn, &vn);
     free(key);
     if (!val) return 0;
-    push(vm, new_string(vm, val, strlen(val)));
+    push(vm, new_string(vm->q, val, vn));
     return 1;
 }
 
@@ -1031,19 +884,10 @@ static int map_put_cb(void* v) {
     size_t kn, vn;
     char* key = arg_copy(vm, 1, &kn);
     char* val = arg_copy(vm, 2, &vn);
-    int rc = 0;
-    if (!key || !val) {
-        // out of memory: nothing is stored
-    } else if (has_nul(key, kn)) {
-        rc = raise_text(vm, REFUSE("aether_map_put: the key", WHY_MAP), strlen(REFUSE("aether_map_put: the key", WHY_MAP)));
-    } else if (has_nul(val, vn)) {
-        rc = raise_text(vm, REFUSE("aether_map_put: the value", WHY_MAP), strlen(REFUSE("aether_map_put: the value", WHY_MAP)));
-    } else {
-        aether_shared_map_put_by_token(vm->map_token, key, val);
-    }
+    if (key && val) aether_shared_map_put_by_token(vm->map_token, key, kn, val, vn);
     free(key);
     free(val);
-    return rc;
+    return 0;
 }
 
 void* qjsb_print_fn(void) { return (void*)print_cb; }

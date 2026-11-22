@@ -91,3 +91,20 @@ JavaScript function the VM keeps, and takes `String(e)` from that (which also
 keeps a NUL in a message, see `contrib-quickjs-length-aware-strings.md`). A
 `last_exception` handle would still replace that function and the second run of
 a thrown object's own `toString` it costs.
+
+## RESOLVED in Aether 0.935.0 (PR #3802), 2026-11-22
+
+aether's `asks/REPLY-contrib-quickjs-op-budget-and-exception-handle.md`.
+
+1. `vm_set_instruction_limit` is real: `qjs_set_poll_budget(q, ceil(budget /
+   10000))` per outermost eval (cleared after it), reported as
+   `InternalError: interrupted: instruction limit exceeded` (reason 4,
+   `INTERRUPTED_BUDGET`). Its granularity is the engine's poll, one per
+   10,000 counted steps: a budget of 100,000 stops `for (;;) G++` with `G`
+   between 90,000 and 100,000 (`test_host_quickjs_vm.ae`, "the instruction
+   limit: stops a loop, cannot be caught, per eval, nested, disarmed").
+   QuickJS's "instruction limit: unavailable" cell is gone.
+2. An error's message is `String(e)` of `qjs_last_exception`: `message_of`'s
+   cut at `"\n    at "` and the catcher are deleted, so a message holding that
+   text, a newline or a NUL is whole, and a thrown object's `toString` runs
+   once.

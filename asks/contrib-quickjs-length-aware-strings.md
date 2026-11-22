@@ -67,3 +67,18 @@ message with a NUL can all go.
 
 Until then the bridge carries what it can through JavaScript helpers the VM
 keeps and refuses script text and JSON text with a NUL.
+
+## RESOLVED in Aether 0.935.0 (PR #3802), 2026-11-22
+
+aether's `asks/REPLY-contrib-quickjs-length-aware-strings.md`. The module
+takes every string in by its length (`@aether string`) and hands every string
+out with it (`qjs_error_data` and `qjs_error_len` replace `qjs_error`;
+`qjs_to_json` returns a byte count), and hands out valid UTF-8 itself. The
+bridge (`quickjs/aether_host_quickjs.c`) is on that ABI: the joiner and the
+piecewise `new_string`, the thrower, the catcher and the lone-surrogate scrub
+are deleted, and so are the refusals of a NUL in script text, a name and JSON
+text (`WHY_CODE`, `WHY_NAME`, `WHY_JSON`): each now carries the NUL (a raw NUL
+in JSON text is a `SyntaxError`, as any stray character). A filename with a
+NUL is still the engine's refusal; the bridge never passes one on.
+`test_host_quickjs_vm.ae`'s "what cannot carry a NUL is refused" became
+"script text, names and JSON text carry a NUL too".
