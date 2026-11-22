@@ -43,10 +43,10 @@ into `build/rexxae-lib/`:
 
 To use it from your own program, the same two steps: build the library from a
 RexxAE checkout (`make aether-lib`) and put its directory on the module search
-path with `--lib` (`ae build app.ae --lib path/to/RexxAE/build/aether`),
-beside this package (`ae add`, top-level README). `--lib`, not
-`AETHER_LIB_DIR`: ae 0.934.0 finds a binary library under the latter only
-when its file name matches its source's
+path, with `--lib` (`ae build app.ae --lib path/to/RexxAE/build/aether`) or
+`AETHER_LIB_DIR` (as this repository's tests do), beside this package (`ae
+add`, top-level README). Since ae 0.935.0 both find the library by its file
+name, `librexxae`
 ([../asks/ae-lib-dir-binary-library-by-file-name.md](../asks/ae-lib-dir-binary-library-by-file-name.md)).
 
 Why this shape, and not the alternatives:

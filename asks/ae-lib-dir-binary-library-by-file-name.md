@@ -37,3 +37,13 @@ name.
 
 The two lookups agreeing, by the file name as `--lib` does (that is the name
 RexxAE documents). Until then this repository passes `--lib`.
+
+## RESOLVED in Aether 0.935.0 (PR #3802), 2026-11-22
+
+`AETHER_LIB_DIR` is now seeded before the binary-import prepass, so it finds
+a binary library by its file name, as `--lib` does: the repro's `b` builds
+and prints 42 on 0.935.0 (macOS arm64). The `LANG_LIB` hook is gone: Rexx's
+lang.sh adds RexxAE's library directory to `AETHER_LIB_DIR`, and
+tests/stunt_lib.sh gives the hosts their search path the same way (the two
+are still alternatives: `AETHER_LIB_DIR` is searched only when no `--lib` is
+given, so the hosts no longer pass `--lib`).

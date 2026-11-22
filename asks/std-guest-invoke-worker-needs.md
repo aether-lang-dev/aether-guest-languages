@@ -71,3 +71,6 @@ worker; `is_mounted` let each refuse a mount under its export name. Keep both.
    workers' helper that calls it is named `serve_guest`: the callback-block
    name resolution (item 4, still open in the compiler) would have bound an
    unqualified `serve_exports` to the new export.
+
+Released in Aether 0.935.0 (PR #3802), item 4 with it: a name the program
+binds now comes before a trailing block's receiver export.

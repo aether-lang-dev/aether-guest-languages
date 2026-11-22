@@ -28,10 +28,12 @@ LANG_RUNTIME_ENV=REXXAE_LIB_DIR
 LANG_NO_RUNTIME="RexxAE could not be fetched or built (REXXAE_SRC names a checkout; tests/rexx_env.sh)"
 lang_runtime() {
     rexxae_engine || return 1
-    # The hosts and the spec import rexxae from here: tests/stunt_lib.sh and
-    # tests/run.sh add LANG_LIB to their module search path (--lib; ae's
-    # AETHER_LIB_DIR does not find a binary library, asks/ae-lib-dir-binary-library.md).
-    LANG_LIB="$REXXAE_LIB_DIR"
+    # The hosts and the spec import rexxae from here, on AETHER_LIB_DIR (ae
+    # 0.935.0 finds a binary library there by its file name, as --lib does).
+    case ":${AETHER_LIB_DIR:-}:" in
+        *":$REXXAE_LIB_DIR:"*) ;;
+        *) AETHER_LIB_DIR="$REXXAE_LIB_DIR${AETHER_LIB_DIR:+:$AETHER_LIB_DIR}"; export AETHER_LIB_DIR ;;
+    esac
 }
 # What the parity table says the column ran against: RexxAE's commit.
 lang_version() { echo "RexxAE $(echo "${REXXAE_COMMIT:-$REXXAE_REF}" | cut -c1-7)"; }
