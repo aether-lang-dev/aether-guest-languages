@@ -243,9 +243,9 @@ is not held; column 3 is Linux with the preload.
 | `test_stunt_no_grants` | `-` | differs: open-etc-passwd not held, open-granted-file not held, write-granted-file not held, getenv-home not held, env-cached not held, connect-192.0.2.1 not held, connect-ipv4-mapped not held, exec-bin-sh not held, binding-read-etc-passwd left out, binding-read-granted-file left out, binding-getenv-home left out, callback-greet left out, callback-add left out, callback-unregistered left out, map-get left out, map-set left out, map-overwrite-input left out | differs: open-etc-passwd escapes, open-granted-file escapes, write-granted-file escapes, env-cached escapes, connect-192.0.2.1 escapes, connect-ipv4-mapped escapes, exec-bin-sh escapes, binding-read-etc-passwd left out, binding-read-granted-file left out, binding-getenv-home left out, callback-greet left out, callback-add left out, callback-unregistered left out | matches |
 | `test_stunt_write_granted` | `fs_write=$WORK/*` | differs: open-granted-file not held, binding-read-granted-file left out | differs: open-granted-file escapes, binding-read-granted-file left out | matches |
 
-- Column 2: macOS 27.3 arm64, ae 0.934.0, Go 1.27.4
-- Column 3: CachyOS, kernel 7.3.5 x86_64, ae 0.934.0, Go 1.27.4-X:nodwarf5
-- Column 4: CachyOS, kernel 7.3.5 x86_64, ae 0.934.0, Go 1.27.4-X:nodwarf5
+- Column 2: macOS 27.3 arm64, ae 0.935.0, Go 1.27.4
+- Column 3: CachyOS, kernel 7.3.5 x86_64, ae 0.935.0, Go 1.27.4-X:nodwarf5
+- Column 4: CachyOS, kernel 7.3.5 x86_64, ae 0.935.0, Go 1.27.4-X:nodwarf5
 <!-- stunt-parity:end -->
 
 The test names are stunt's, aether's `tests/integration/contrib_host_stunt`
@@ -284,6 +284,7 @@ The shared tests in `tests/boundary.py`, run in this language's worker (`tests/t
 | `null` | ok | ok |
 | `array` | ok | ok |
 | `map` | ok | ok |
+| `map-nul` | ok | ok |
 | `nested` | ok | ok |
 | a call inside a call's argument (`nest`) | ok | |
 | an error answer (`FAIL`) to a call (`refuse`) | reported as text | |

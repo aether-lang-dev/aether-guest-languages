@@ -210,8 +210,8 @@ start with the shipped preload.
 | `test_stunt_no_grants` | `-` | not run: no Factor on macOS | differs: env-cached escapes | differs: (the runtime does not start) blocked |
 | `test_stunt_write_granted` | `fs_write=$WORK/*` | not run: no Factor on macOS | matches | differs: (the runtime does not start) blocked |
 
-- Column 3: CachyOS, kernel 7.3.5 x86_64, ae 0.934.0, Factor libfactor.a
-- Column 4: CachyOS, kernel 7.3.5 x86_64, ae 0.934.0, Factor libfactor.a
+- Column 3: CachyOS, kernel 7.3.5 x86_64, ae 0.935.0, Factor libfactor.a
+- Column 4: CachyOS, kernel 7.3.5 x86_64, ae 0.935.0, Factor libfactor.a
 <!-- stunt-parity:end -->
 
 The test names are stunt's, aether's `tests/integration/contrib_host_stunt`

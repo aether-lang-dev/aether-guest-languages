@@ -224,8 +224,8 @@ else the rows that did not and how.
 | `test_stunt_write_granted` | `fs_write=$WORK/*` | differs: open-granted-file not held | matches | differs: write-granted-file stricter |
 
 - Column 2: macOS 27.3 arm64, ae 0.934.0, Tcl 8.5.9
-- Column 3: CachyOS, kernel 7.3.5 x86_64, ae 0.934.0, Tcl 8.6.16
-- Column 4: CachyOS, kernel 7.3.5 x86_64, ae 0.934.0, Tcl 8.6.16
+- Column 3: CachyOS, kernel 7.3.5 x86_64, ae 0.935.0, Tcl 8.6.16
+- Column 4: CachyOS, kernel 7.3.5 x86_64, ae 0.935.0, Tcl 8.6.16
 <!-- stunt-parity:end -->
 
 The test names are stunt's, aether's `tests/integration/contrib_host_stunt`
@@ -260,6 +260,7 @@ The shared tests in `tests/boundary.py`, run in this language's worker (`tests/t
 | `null` | n/a | differs: the host saw [""] |
 | `array` | n/a | differs: the host saw ["1 a 2.5"] |
 | `map` | n/a | differs: the host saw ["k v n 1"] |
+| `map-nul` | n/a | refused |
 | `nested` | n/a | differs: the host saw ["a {1 {b x}} c {d 2.5}"] |
 | a call inside a call's argument (`nest`) | ok | |
 | an error answer (`FAIL`) to a call (`refuse`) | caught | |
@@ -292,6 +293,7 @@ The same cases (`tests/boundary.py run-inproc`) against this language's bridge i
 | `null` | n/a | ok | same | same |
 | `array` | n/a | n/a | same | same |
 | `map` | n/a | n/a | same | same |
+| `map-nul` | n/a | n/a | (not run) | (not run) |
 | `nested` | n/a | n/a | same | same |
 | a call inside a call's argument (`nest`) | ok | | same | |
 | an error raised by the host function (`refuse`) | caught | | same | |
@@ -363,6 +365,7 @@ The other direction (`tests/boundary.py run-invoke`, run by `tests/test_invoke.s
 | `null` | n/a | differs: the host saw "" |
 | `array` | n/a | differs: the host saw "1 a 2.5" |
 | `map` | n/a | differs: the host saw "k v n 1" |
+| `map-nul` | n/a | error: raised: the host's answer: refused: it holds an embedded NUL; Tcl st... |
 | `nested` | n/a | differs: the host saw "a {1 {b x}} c {d 2.5}" |
 | an export that calls a mounted host function (`relay`) | ok | |
 | state between invocations (a counter, three calls) (`state`) | state carries | |

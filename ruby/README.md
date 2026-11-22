@@ -234,9 +234,9 @@ the rows that did not and how.
 | `test_stunt_no_grants` | `-` | differs: open-etc-passwd not held, open-granted-file not held, write-granted-file not held, connect-192.0.2.1 not held, connect-ipv4-mapped not held, exec-bin-sh not held | matches | matches |
 | `test_stunt_write_granted` | `fs_write=$WORK/*` | differs: open-granted-file not held | matches | differs: write-granted-file stricter |
 
-- Column 2: macOS 27.3 arm64, ae 0.934.0, Ruby 3.3.14
-- Column 3: CachyOS, kernel 7.3.5 x86_64, ae 0.934.0, Ruby 3.4.12
-- Column 4: CachyOS, kernel 7.3.5 x86_64, ae 0.934.0, Ruby 3.4.12
+- Column 2: macOS 27.3 arm64, ae 0.935.0, Ruby 3.3.14
+- Column 3: CachyOS, kernel 7.3.5 x86_64, ae 0.935.0, Ruby 3.4.12
+- Column 4: CachyOS, kernel 7.3.5 x86_64, ae 0.935.0, Ruby 3.4.12
 <!-- stunt-parity:end -->
 
 The test names are stunt's, aether's `tests/integration/contrib_host_stunt` at
@@ -272,6 +272,7 @@ The shared tests in `tests/boundary.py`, run in this language's worker (`tests/t
 | `null` | ok | ok |
 | `array` | ok | ok |
 | `map` | ok | ok |
+| `map-nul` | ok | ok |
 | `nested` | ok | ok |
 | a call inside a call's argument (`nest`) | ok | |
 | an error answer (`FAIL`) to a call (`refuse`) | caught | |
@@ -304,6 +305,7 @@ The same cases (`tests/boundary.py run-inproc`) against this language's bridge i
 | `null` | ok | ok | same | same |
 | `array` | differs: the host saw ["<a table or other object>"] | n/a | same | same |
 | `map` | differs: the host saw ["<a table or other object>"] | n/a | same | same |
+| `map-nul` | differs: the host saw ["<a table or other object>"] | n/a | same | same |
 | `nested` | differs: the host saw ["<a table or other object>"] | n/a | same | same |
 | a call inside a call's argument (`nest`) | ok | | same | |
 | an error raised by the host function (`refuse`) | caught | | same | |
@@ -371,6 +373,7 @@ The other direction (`tests/boundary.py run-invoke`, run by `tests/test_invoke.s
 | `null` | ok | ok |
 | `array` | ok | ok |
 | `map` | ok | ok |
+| `map-nul` | ok | ok |
 | `nested` | ok | ok |
 | an export that calls a mounted host function (`relay`) | ok | |
 | state between invocations (a counter, three calls) (`state`) | state carries | |

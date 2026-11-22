@@ -242,9 +242,9 @@ the rows that did not and how.
 | `test_stunt_no_grants` | `-` | differs: open-etc-passwd left out, open-granted-file left out, write-granted-file left out, getenv-home left out, env-cached left out, connect-192.0.2.1 left out, connect-ipv4-mapped left out, exec-bin-sh left out, dlopen-libm left out | differs: open-etc-passwd left out, open-granted-file left out, write-granted-file left out, getenv-home left out, env-cached left out, connect-192.0.2.1 left out, connect-ipv4-mapped left out, exec-bin-sh left out, dlopen-libm left out | differs: open-etc-passwd left out, open-granted-file left out, write-granted-file left out, getenv-home left out, env-cached left out, connect-192.0.2.1 left out, connect-ipv4-mapped left out, exec-bin-sh left out, fork left out, dlopen-libc-by-name left out, dlopen-libc-by-path left out, dlopen-libm left out, syscall-fn-openat left out, syscall-openat left out, syscall-socket left out |
 | `test_stunt_write_granted` | `fs_write=$WORK/*` | differs: write-granted-file left out, open-granted-file left out | differs: write-granted-file left out, open-granted-file left out | differs: write-granted-file left out, open-granted-file left out |
 
-- Column 2: macOS 27.3 arm64, ae 0.934.0, QuickJS quickjs-ng 0.18.0
-- Column 3: CachyOS, kernel 7.3.5 x86_64, ae 0.934.0, QuickJS quickjs-ng 0.18.0
-- Column 4: CachyOS, kernel 7.3.5 x86_64, ae 0.934.0, QuickJS quickjs-ng 0.18.0
+- Column 2: macOS 27.3 arm64, ae 0.935.0, QuickJS quickjs-ng 0.18.0
+- Column 3: CachyOS, kernel 7.3.5 x86_64, ae 0.935.0, QuickJS quickjs-ng 0.18.0
+- Column 4: CachyOS, kernel 7.3.5 x86_64, ae 0.935.0, QuickJS quickjs-ng 0.18.0
 <!-- stunt-parity:end -->
 
 The test names are stunt's, aether's `tests/integration/contrib_host_stunt` at
@@ -284,6 +284,7 @@ The shared tests in `tests/boundary.py`, run in this language's worker (`tests/t
 | `null` | ok | ok |
 | `array` | ok | ok |
 | `map` | ok | ok |
+| `map-nul` | ok | ok |
 | `nested` | ok | ok |
 | a call inside a call's argument (`nest`) | ok | |
 | an error answer (`FAIL`) to a call (`refuse`) | caught | |
@@ -316,6 +317,7 @@ The same cases (`tests/boundary.py run-inproc`) against this language's bridge i
 | `null` | ok | ok | same | same |
 | `array` | ok | ok | same | same |
 | `map` | ok | ok | same | same |
+| `map-nul` | ok | ok | same | same |
 | `nested` | ok | ok | same | same |
 | a call inside a call's argument (`nest`) | ok | | same | |
 | an error raised by the host function (`refuse`) | caught | | same | |
@@ -382,6 +384,7 @@ The other direction (`tests/boundary.py run-invoke`, run by `tests/test_invoke.s
 | `null` | ok | ok |
 | `array` | ok | ok |
 | `map` | ok | ok |
+| `map-nul` | ok | ok |
 | `nested` | ok | ok |
 | an export that calls a mounted host function (`relay`) | ok | |
 | state between invocations (a counter, three calls) (`state`) | state carries | |

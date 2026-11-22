@@ -43,11 +43,11 @@ if [ "$GO_CGO" = 1 ]; then
 rows=map-get
 [ "$PLAT" = linux ] && rows="map-get map-set"
 for row in $rows; do
-        (cd "$WORK" && GHL_GO_MAP_NO_WALL=1 "$HOST" inproc - "$row" succeed) > "$TMP/nowall.txt" 2>&1 ||
+        (cd "$WORK" && env -u GHL_GO_UNCONTAINED GHL_GO_MAP_NO_WALL=1 "$HOST" inproc - "$row" succeed) > "$TMP/nowall.txt" 2>&1 ||
             die "the shared map, no wall: $row" "$TMP/nowall.txt"
         printf '  [PASS] the shared map, no wall: %s\n' "$(tail -1 "$TMP/nowall.txt")"
     done
-    (cd "$WORK" && GHL_GO_MAP_NO_WALL=1 "$HOST" inproc - map-overwrite-input refused) > "$TMP/nowall.txt" 2>&1 ||
+    (cd "$WORK" && env -u GHL_GO_UNCONTAINED GHL_GO_MAP_NO_WALL=1 "$HOST" inproc - map-overwrite-input refused) > "$TMP/nowall.txt" 2>&1 ||
         die "the shared map, no wall: map-overwrite-input" "$TMP/nowall.txt"
     printf '  [PASS] the shared map, no wall: %s\n' "$(tail -1 "$TMP/nowall.txt")"
 fi

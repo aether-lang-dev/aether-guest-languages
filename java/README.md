@@ -107,6 +107,13 @@ What `java.run_sandboxed` does, read from `aether_host_java.c` (it is
 4. The host waits, reads back what the child wrote to the map, removes the
    segments and returns the exit status.
 
+The map's segment is Aether's layout 2 (the magic `AESM`, a zero word,
+version 2, frozen_count, entry_count, then each entry's key_len, value_len
+and bytes, little-endian u32s), which the agent's `AetherMap` reads and
+writes by length: a NUL in a key or a value crosses, and a block in any other
+shape is refused whole, as Aether's own reader refuses one
+(`containment/AgentTest.java`).
+
 No grant is checked in the host's process, except that inside a
 `sandbox.enforce` block that grants no `exec` the call returns -1 and nothing
 starts. The **agent** (`-javaagent`, [src/](src/)) reads the grants at
@@ -316,9 +323,9 @@ the day that changes the rows come back.
 | `test_stunt_no_grants` | `-` | differs: open-etc-passwd not held, open-granted-file not held, write-granted-file not held, getenv-home not held, env-cached not held, connect-192.0.2.1 not held, connect-ipv4-mapped not held, exec-bin-sh not held, binding-read-etc-passwd left out, binding-read-granted-file left out, binding-getenv-home left out, callback-greet left out, callback-add left out, callback-unregistered left out, map-get left out, map-set left out, map-overwrite-input left out | differs: (the runtime does not start) blocked | differs: (the runtime does not start) blocked |
 | `test_stunt_write_granted` | `fs_write=$WORK/*` | differs: open-granted-file not held, binding-read-granted-file left out | differs: (the runtime does not start) blocked | differs: (the runtime does not start) blocked |
 
-- Column 2: macOS 27.3 arm64, ae 0.934.0, Java 21.0.13.1
-- Column 3: CachyOS, kernel 7.3.5 x86_64, ae 0.934.0, Java 25.0.5.1
-- Column 4: CachyOS, kernel 7.3.5 x86_64, ae 0.934.0, Java 25.0.5.1
+- Column 2: macOS 27.3 arm64, ae 0.935.0, Java 21.0.13.1
+- Column 3: CachyOS, kernel 7.3.5 x86_64, ae 0.935.0, Java 25.0.5.1
+- Column 4: CachyOS, kernel 7.3.5 x86_64, ae 0.935.0, Java 25.0.5.1
 <!-- stunt-parity:end -->
 
 The test names are stunt's, aether's `tests/integration/contrib_host_stunt`
@@ -334,7 +341,7 @@ The top-level README's first table says it in a line; this is the detail, each
 claim with the spec that backs it.
 
 - **In-process transport.** there is no in-process way: the bridge starts a JVM as a child process (with the agent jar when sandboxed).
-- **Types.** out: the JVM's exit status; the shared map through `AETHER_MAP_SHM` (the agent's `AetherMap`, which reads and writes Aether's layout 2 by length, so a NUL in a key or a value crosses, and refuses a block in any other shape whole).
+- **Types.** out: the JVM's exit status; the shared map through `AETHER_MAP_SHM` (the agent's `AetherMap`).
 - **Duplex.** none: the host starts it and waits.
 - **Callbacks.** none in the bridge.
 - **Errors and state.** a class that is not there is the JVM's 1; a JVM that cannot start is -1.
