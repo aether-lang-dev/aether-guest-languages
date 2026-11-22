@@ -91,6 +91,14 @@ fn prelude() -> string {
     return <<RB
 require 'json'
 
+# Ruby loads a transcoder from disk the first time one is needed
+# (enc/trans/*.so), which the locked-down worker cannot read. Ruby 3.0's json
+# reaches the single-byte one for a string that is not ASCII (seen on Ubuntu
+# 22.04's Ruby 3.0: LoadError for enc/trans/single_byte), so it is loaded here,
+# before the lockdown, with the paths JSON takes.
+"\u00e9".encode(Encoding::ISO_8859_1).encode(Encoding::UTF_8)
+JSON.generate(["\u00e9 \u{1F600}", "a".b])
+
 module AetherGuest
   SAY = method(:__say)
   CALL = method(:__call)
@@ -102,6 +110,19 @@ module AetherGuest
   SERVED = {}
 
   # The names at READY, fixed from here on, as a JSON array; "" for none.
+  # The script's text is UTF-8, but Ruby 3.0 evaluates it with its string
+  # literals tagged ASCII-8BIT, which JSON refuses to convert ("\xC3" from
+  # ASCII-8BIT): such a string is read as the UTF-8 it is. Later Rubies tag
+  # them UTF-8 already, and nothing changes there.
+  def self.utf8(v)
+    case v
+    when String then v.encoding == Encoding::ASCII_8BIT ? v.dup.force_encoding(Encoding::UTF_8) : v
+    when Array then v.map { |x| utf8(x) }
+    when Hash then v.each_with_object({}) { |(k, x), h| h[utf8(k)] = utf8(x) }
+    else v
+    end
+  end
+
   def self.ready
     SERVED.replace(EXPORTS)
     SERVED.empty? ? "" : JSON.generate(SERVED.keys)
@@ -111,7 +132,7 @@ module AetherGuest
   def self.serve(name)
     fn = SERVED[name]
     return "RAISE\nNameError: no export named #{name}" unless fn
-    "RETURN\n" + JSON.generate(fn.call(*JSON.parse(ARGS.call)))
+    "RETURN\n" + JSON.generate(utf8(fn.call(*JSON.parse(ARGS.call))))
   rescue StandardError => e
     "RAISE\n#{e.class}: #{e.message}"
   end
@@ -136,7 +157,7 @@ module AetherGuest
   # A mounted function is a private method of Object: the host's call.
   def self.mount(name)
     Object.send(:define_method, name) do |*args|
-      kind, text = CALL.call(name.to_s, JSON.generate(args)).split("\n", 2)
+      kind, text = CALL.call(name.to_s, JSON.generate(AetherGuest.utf8(args))).split("\n", 2)
       text ||= ""
       case kind
       when "VALUE" then JSON.parse("[#{text}]")[0]
