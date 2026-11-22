@@ -16,7 +16,7 @@ Before 2026-11-21 it did not: `Tcl_Init` failed with "Cannot find a usable
 init.tcl" and `tcl.init()` returned -1. The full Tcl set (`GUEST_LANG=tcl
 GHL_REQUIRE_CHILD=1 sh tests/run.sh`: the specs, every containment row, the
 parity check and the contained child) passes against three Tcls on cachyos
-(ae 0.934.0, Landlock): the system's 8.6.16, a Tcl 9.0.4 built by hand with
+(ae 0.935.0 on 2026-11-22, Landlock): the system's 8.6.16, a Tcl 9.0.4 built by hand with
 zipfs (the default) and one built with `--disable-zipfs`; the system's 8.6.12 on
 ae-x64 and the system's 8.5.9 on macOS pass the same set (the child is skipped
 on macOS). CI runs Homebrew's Tcl 9.1.0 on macOS too, which is not a zipfs
