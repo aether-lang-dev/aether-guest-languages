@@ -46,8 +46,8 @@ const BUDGET = 10000
 // key and value come from RexxAE's argument text, a C string, so a NUL ends
 // them before they get here: RexxAE's host-request API is where Rexx's map
 // stops carrying one, not the map.
-extern aether_shared_map_get_by_token(token: long, key: string, key_len: long, value_len: ptr) -> ptr
-extern aether_shared_map_put_by_token(token: long, key: string, key_len: long, value: string, value_len: long) -> int
+extern aether_shared_map_get_by_token(token: long, key: string, key_len: size_t, value_len: ptr) -> ptr
+extern aether_shared_map_put_by_token(token: long, key: string, key_len: size_t, value: string, value_len: size_t) -> int
 extern aether_shared_map_freeze_inputs_by_token(token: long)
 
 // A JSON string for s (the encoding std.guest's json_string uses).
