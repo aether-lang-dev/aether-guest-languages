@@ -23,3 +23,20 @@ v:null	None
 v:array	[1, "a", 2.5]
 v:map	{"k": "v", "n": 1}
 v:nested	{"a": [1, {"b": "x"}], "c": {"d": 2.5}}
+# The other direction (tests/boundary.py run-invoke): scripts that export functions for the host to call. x:make returns @V@; x:back hands its argument back.
+x:make	@export@NL@def make():@NL@    return @V@
+x:back	@export@NL@def back(v):@NL@    return v
+x:relay	@export@NL@def relay(v):@NL@    return echo(v)
+x:count	n = 0@NL@@NL@@export@NL@def count():@NL@    global n@NL@    n += 1@NL@    return n@NL@@NL@@export@NL@def boom():@NL@    raise ValueError("boom")
+x:loop	@export@NL@def spin():@NL@    while True:@NL@        pass
+x:wait	@export@NL@def wait():@NL@    return slow("x")
+x:silent	import sys@NL@@NL@@export@NL@def hush():@NL@    sys.settrace(None)@NL@    sys._getframe().f_trace = None@NL@    while True:@NL@        pass
+x:big	@export@NL@def big():@NL@    return "x" * 100000
+x:none	x = 1
+x:reenter	@export@NL@def via(v):@NL@    return reenter(v)
+x:flood	for i in range(300):@NL@    export(lambda: i, "f%d" % i)
+x:malformed	export(lambda: 1, "two words")
+x:txn	pending = [txn_start("deposit"), txn_start("refund")]@NL@seen = 0@NL@@NL@@export@NL@def on_txn(txn_id):@NL@    global seen@NL@    details = txn_details(txn_id)@NL@    seen += 1@NL@    return "%d %s %d" % (seen, details["kind"], details["amount"])
+x:pick	@export@NL@def pick(a, b, c):@NL@    return b
+x:bench-g2h	p = "x" * @SIZE@@NL@for i in range(@N@):@NL@    echo(p)
+x:bench-pull	ev = next_event()@NL@while ev is not None:@NL@    ev = next_event(ev)

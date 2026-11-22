@@ -5,6 +5,8 @@
                                                  from build/boundary-<lang>.tsv
   boundary_table.py check|write <lang> inproc    the in-process grid, from
                                                  build/boundary-inproc-<lang>.tsv
+  boundary_table.py check|write <lang> invoke    the host calling the guest, from
+                                                 build/invoke-<lang>.tsv
 
 check fails when <lang>/README.md's table disagrees with the run; write rewrites it.
 
@@ -29,11 +31,26 @@ INPROC_SPECIAL = [("nest", "a call inside a call's argument"), ("refuse", "an er
                   ("big-up", "a 100,000-byte argument"), ("big-down", "a 100,000-byte answer")]
 INPROC = dict(name="boundary-inproc", file="boundary-inproc-%s.tsv", where="the in-process bridge", head="Boundary tests, in-process",
               special=INPROC_SPECIAL)
+INVOKE_SPECIAL = [("relay", "an export that calls a mounted host function"), ("state", "state between invocations (a counter, three calls)"),
+                  ("raise", "an export that raises, then another call"), ("loop", "a cancel inside an export's loop"),
+                  ("wait", "a cancel while an export waits on a host call"), ("big", "a 100,000-byte `RETURN`"),
+                  ("args", "three arguments of different types"), ("big-arg", "a 100,000-byte `INVOKE` argument"),
+                  ("maxframe", "a host that reads frames of 4 KiB (`MAXFRAME`)"),
+                  ("unexported", "`INVOKE` of a name the guest did not export"), ("end", "`END`"),
+                  ("none", "a script that exports nothing"),
+                  ("txn", "notify, then fetch: two transactions, an unknown id")]
+INVOKE_ROWS = ["guest-export-called", "guest-export-slow", "guest-export-silent", "guest-export-oversize",
+               "guest-export-raises", "guest-reenters-while-called", "guest-export-flood",
+               "guest-export-malformed", "guest-after-end"]
+INVOKE = dict(name="invoke", file="invoke-%s.tsv", where="the host calling the guest", head="Host calls guest",
+              special=INVOKE_SPECIAL)
 MODE = CHILD
 
 def cell(outcome, detail):
     if outcome == "differs":
         return "differs: " + detail
+    if detail and MODE is INVOKE and outcome in ("error", "not held", "left out", "other"):
+        return outcome + ": " + detail
     return outcome
 
 def load(path):
@@ -59,6 +76,43 @@ def render(res):
         out.append("| %s (`%s`) | %s | |" % (label, k, res.get((k, "-"), "n/a")))
     out.append(end())
     return "\n".join(out) + "\n"
+
+def render_invoke(res):
+    out = [begin(),
+           "| case | guest to host, as a `RETURN` value | host to guest, as an `INVOKE` argument, returned |", "|---|---|---|"]
+    for t in TYPE_ROWS:
+        out.append("| `%s` | %s | %s |" % (t, res.get((t, "ret"), "n/a"), res.get((t, "arg"), "n/a")))
+    for k, label in INVOKE_SPECIAL:
+        out.append("| %s (`%s`) | %s | |" % (label, k, res.get((k, "-"), "n/a")))
+    out += ["", "| host-calls-guest row | outcome |", "|---|---|"]
+    for r in INVOKE_ROWS:
+        out.append("| `%s` | %s |" % (r, res.get((r, "-"), "n/a")))
+    out.append(end())
+    return "\n".join(out) + "\n"
+
+def parse_invoke(text):
+    """{(case, ret|arg|-): cell} from a README's host-calls-guest grid, or None."""
+    m = re.search(block_re(INVOKE), text, re.S)
+    if not m:
+        return None
+    res = {}
+    for l in m.group(1).split("\n"):
+        if not l.startswith("|"):
+            continue
+        cells = [c.strip() for c in re.split(r"(?<!\\)\|", l.strip())[1:-1]]
+        if len(cells) < 2 or cells[0] in ("case", "---", "host-calls-guest row"):
+            continue
+        mm = re.match(r"`([a-z0-9-]+)`$", cells[0])
+        if mm and len(cells) >= 3:
+            res[(mm.group(1), "ret")] = cells[1]; res[(mm.group(1), "arg")] = cells[2]
+            continue
+        if mm:
+            res[(mm.group(1), "-")] = cells[1]
+            continue
+        mm = re.match(r".*\(`([a-z-]+)`\)$", cells[0])
+        if mm:
+            res[(mm.group(1), "-")] = cells[1]
+    return res
 
 def block_re(mode):
     return re.escape("<!-- %s:begin" % mode["name"]) + r".*?-->\n(.*?)" + re.escape("<!-- %s:end -->" % mode["name"])
@@ -124,7 +178,8 @@ def mac_differences(text):
 def main():
     global MODE
     what, lang = sys.argv[1], sys.argv[2]
-    MODE = INPROC if len(sys.argv) > 3 and sys.argv[3] == "inproc" else CHILD
+    mode_arg = sys.argv[3] if len(sys.argv) > 3 else ""
+    MODE = INPROC if mode_arg == "inproc" else (INVOKE if mode_arg == "invoke" else CHILD)
     run = os.path.join(ROOT, "build", MODE["file"] % lang)
     readme = os.path.join(ROOT, lang, "README.md")
     if not os.path.exists(run):
@@ -152,6 +207,8 @@ def main():
                 want_rows.append("| %s (`%s`) | %s | | %s | |" % (label, k, lin.get((k, "-"), "n/a"), (old or {}).get((k, "-"), "(not run)")))
             want_rows.append(end())
             want = "\n".join(want_rows) + "\n"
+    elif MODE is INVOKE:
+        want = render_invoke(load(run))
     else:
         want = render(load(run))
     m = re.search(re.escape("<!-- %s:begin" % MODE["name"]) + r".*?-->\n.*?" + re.escape(end()) + "\n", text, re.S)
@@ -181,7 +238,14 @@ def main():
     else:
         h = "## What crosses the boundary"
         i = text.index(h)
-        if MODE is CHILD:
+        if MODE is INVOKE:
+            intro = ("## Host calls guest\n\nThe other direction (`tests/boundary.py run-invoke`, run by `tests/test_invoke.sh`): a script per case that exports "
+                     "functions, written in %s (the `x:` snippets in `containment/boundary.tsv`), run in this language's worker with a plan of invocations "
+                     "from the host in `tests/lib/invoke`. A type crosses as a `RETURN` value when the export returns it written in the language, and as an "
+                     "`INVOKE` argument when the export hands back what it was given. The second table holds the host-calls-guest safety rows by name: "
+                     "`held`, `stricter` (refused earlier than the row asks), `left out` (the language cannot express it), or `not held`, which fails "
+                     "the run. Nothing in the tests lists what a worker can do.\n\n" % lang)
+        elif MODE is CHILD:
             intro = ("## Boundary tests\n\nThe shared tests in `tests/boundary.py`, run in this language's worker (`tests/test_boundary.sh`): one script per case, written in %s "
                      "(`containment/boundary.tsv`), and what the host saw on the wire. `ok` means the value crossed as the same JSON value; `n/a` means "
                      "the language has no way to write the case; anything else is what happened instead. Nothing in the tests lists what a worker can do.\n\n" % lang)

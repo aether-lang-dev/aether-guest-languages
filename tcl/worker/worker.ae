@@ -19,6 +19,19 @@
 //                       FAIL is an error with the host's message; a CANCEL is
 //                       an error "cancelled by host: ..."
 //   the end             DONE 0, or ERROR and Tcl's message
+//   export name ...     marks procs (or any command) for the host to call by
+//                       name once the script has ended. A script that exported
+//                       anything ends with READY and its names instead of
+//                       DONE, and serves: each INVOKE calls the command at
+//                       global level with its JSON arguments as words (decoded
+//                       as a mounted command's answer is) in the same
+//                       interpreter, its globals and namespaces as the script
+//                       left them, under the same time limit, and is answered
+//                       RETURN and the result as JSON (a number, or else a
+//                       string: everything is a string in Tcl), or RAISE and
+//                       Tcl's message, after which it serves on; END ends it
+//                       with DONE 0. The names are fixed at READY. `export` is
+//                       the worker's: a host cannot mount it.
 //
 // Usage (by a host): tcl-worker [<libtcl soname or path> [<warm-up script>]]
 //
@@ -85,6 +98,13 @@ w_call(vm: ptr) -> int {
 @c_callback
 w_poll(vm: ptr) -> int {
     tcl.push_str(vm, child.poll(host()))
+    return 1
+}
+
+// __args -> the arguments of the invocation being served, a JSON array
+@c_callback
+w_args(vm: ptr) -> int {
+    tcl.push_str(vm, host().invoked)
     return 1
 }
 
@@ -238,6 +258,41 @@ foreach __n $__mounts {
 }
 unset __n
 
+# Exports: commands the host may call by name once the script has ended.
+namespace eval ::__ae_exports {
+    variable order {}
+    variable served {}
+}
+proc ::export {args} {
+    foreach name $args {
+        if {[llength [info commands ::$name]] == 0} { error "export: no command named \"$name\"" }
+        if {$name ni $::__ae_exports::order} { lappend ::__ae_exports::order $name }
+    }
+    return
+}
+# The names at READY, fixed from here on, as a JSON array of strings; "" for none.
+proc ::__ae_ready {} {
+    set ::__ae_exports::served $::__ae_exports::order
+    set a {}
+    foreach n $::__ae_exports::served {
+        set e [::__json::enc $n]
+        if {[string index $e 0] ne "\""} { set e "\"$e\"" }
+        lappend a $e
+    }
+    if {[llength $a] == 0} { return "" }
+    return "\[[join $a ,]\]"
+}
+# One INVOKE: "RETURN\n<json>" or "RAISE\n<message>".
+proc ::__ae_serve {name} {
+    if {$name ni $::__ae_exports::served} { return "RAISE\ninvalid command name \"$name\": not exported" }
+    set words [::__json::dec [__args]]
+    if {[catch {uplevel #0 [list $name {*}$words]} res]} { return "RAISE\n$res" }
+    if {[string first [format %c 0] $res] >= 0} {
+        catch {::__refuse_nul "$name: the result"} why
+        return "RAISE\n$why"
+    }
+    return "RETURN\n[::__json::enc $res]"
+}
 rename puts ::__ae_puts
 proc puts {args} {
     set n [llength $args]
@@ -265,7 +320,7 @@ fn master_prelude() -> string {
 # they are used; use them now, before the lockdown.
 clock milliseconds
 interp create ::__ae_slave
-foreach __c {__say __call __poll} { interp alias ::__ae_slave $__c {} $__c }
+foreach __c {__say __call __poll __args} { interp alias ::__ae_slave $__c {} $__c }
 unset __c
 interp eval ::__ae_slave [list set __mounts $::__ae_mounts]
 interp eval ::__ae_slave $::__ae_slave_prelude
@@ -327,7 +382,12 @@ main() {
         child.error(h, "tcl-worker: cannot load libtcl (AETHER_TCL_SONAME)")
         exit(1)
     }
+    if child.is_mounted(h, "export") {
+        child.error(h, "tcl-worker: cannot mount 'export': the worker defines it for the script")
+        exit(1)
+    }
     ghl_keep(h as ptr)
+    tcl.vm_register(vm, "__args", w_args)
     tcl.vm_register(vm, "__say", w_say)
     tcl.vm_register(vm, "__call", w_call)
     tcl.vm_register(vm, "__poll", w_poll)
@@ -344,10 +404,43 @@ main() {
     child.run(h) callback {
         tcl.vm_set_global_str(vm, "__ae_script", h.source)
         if tcl.vm_eval(vm, "__ae_run $::__ae_script") == 0 {
-            child.done(h, 0)
+            tcl.vm_pop_result(vm)
+            serve_guest(vm, h)
         } else {
             child.error(h, tcl.vm_result_str(vm))
         }
     }
     exit(0)
+}
+
+// After the script: DONE when it exported nothing; otherwise READY, and
+// std.guest.child's serve_exports runs, for each INVOKE, __ae_serve in the
+// script's interpreter, under the same time limit (__ae_run), until END or a
+// cancel. A cancel heard inside an invocation (the limit's handler, or a
+// call's reply) ends the worker: the command's state is half done.
+// std.guest.child's serve_exports sends the answer: a value too large for the
+// host's frame is raised and the worker serves on. (Named serve_guest: an
+// unqualified call inside child.run's callback block resolves to a
+// std.guest.child export of the same name, such as serve or serve_exports.)
+fn serve_guest(vm: ptr, h: *child.Host) {
+    tcl.vm_eval(vm, "interp eval ::__ae_slave ::__ae_ready")
+    names = tcl.vm_result_str(vm)
+    tcl.vm_pop_result(vm)
+    if names == "" {
+        child.done(h, 0)
+        return
+    }
+    child.ready(h, names)
+    child.serve_exports(h) callback | sh: *child.Host, inv: child.Invocation | {
+        tcl.vm_set_global_str(vm, "__ae_name", inv.name)
+        if tcl.vm_eval(vm, "__ae_run [list ::__ae_serve $::__ae_name]") != 0 {
+            return child.Reply { kind: "FAIL", text: tcl.vm_result_str(vm) }
+        }
+        out = tcl.vm_result_str(vm)
+        tcl.vm_pop_result(vm)
+        at = string.index_of(out, "\n")
+        text = string.substring(out, at + 1, string.length(out))
+        if string.starts_with(out, "RETURN") == 1 { return child.Reply { kind: "VALUE", text: text } }
+        return child.Reply { kind: "FAIL", text: text }
+    }
 }

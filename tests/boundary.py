@@ -3,6 +3,7 @@
 
   boundary.py run <lang> <child_host> <workdir> <out.tsv>
   boundary.py run-inproc <lang> <boundary_host> <workdir> <out.tsv>
+  boundary.py run-invoke <lang> <child_host> <workdir> <out.tsv>
 
 For each case in tests/boundary/cases.tsv the language's own snippets
 (<lang>/containment/boundary.tsv: the value written in that language, and how
@@ -21,6 +22,13 @@ readers made of the argument. A case the bridge has no call to express reads n/a
 (the host says NOAPI); one that runs and loses something reads "differs" with
 what the host saw. There is no cancel in-process: the cancel row is n/a, and the
 loop row is run with the bridge's own limit (a host without one says NOAPI).
+
+run-invoke is the other direction, the host calling the guest (std.guest's
+INVOKE, the host in tests/lib/invoke): the language's x: snippets (a script that
+exports functions, written in that language) are run with a plan of invocations,
+and what came back is judged: every type as a RETURN value and as an INVOKE
+argument handed back, the errors, the cancel, the limits, the notify-then-fetch
+pattern, and the host-calls-guest safety rows by name (INVOKE_ROWS).
 """
 import json, os, re, subprocess, sys
 
@@ -217,8 +225,278 @@ def main_run(lang, host, work, out, inproc=False):
         line("big-down", "-", "n/a")
     open(out, "w", encoding="utf-8").write("\n".join(res) + "\n")
 
+# ---- the other direction: the host calls the guest ---------------------------
+
+# The safety rows of the host-calls-guest verb (aether's
+# docs/design/guest-host-calls-guest.md), held by name in every language that
+# exports, as stunt's rows are. stunt's catalogue does not carry them (its child
+# mode speaks a protocol of its own, not std.guest's), so they are this
+# repository's, beside the catalogue.
+INVOKE_ROWS = ["guest-export-called", "guest-export-slow", "guest-export-silent", "guest-export-oversize",
+               "guest-export-raises", "guest-reenters-while-called", "guest-export-flood",
+               "guest-export-malformed", "guest-after-end"]
+
+def run_plan(host, work, script, plan, give="null", upper=False, timeout=60, maxframe=""):
+    env = dict(os.environ, GHL_INVOKE_MAXFRAME=maxframe, GHL_BOUNDARY_SCRIPT=script, GHL_BOUNDARY_GIVE=give, GHL_BOUNDARY_UPPER="1" if upper else "0",
+               GHL_INVOKE_PLAN="\n".join(plan))
+    try:
+        p = subprocess.run([host, "-", "invoke", "x"], cwd=work, env=env, capture_output=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return [("END", "HUNG ")]
+    data = p.stdout
+    if os.environ.get("GHL_BOUNDARY_DEBUG"):
+        sys.stderr.write("--- %s\n%s\n%s\n" % (script[:300], data[:1500].decode("utf-8", "replace"), p.stderr[-600:].decode("utf-8", "replace")))
+    ev, i = [], 0
+    while i < len(data):
+        sp = data.find(b" ", i)
+        sp2 = data.find(b" ", sp + 1) if sp > 0 else -1
+        try:
+            tag = data[i:sp].decode("ascii")
+            n = int(data[sp + 1:sp2])
+        except Exception:
+            i = data.find(b"\n", i) + 1
+            if i <= 0: break
+            continue
+        ev.append((tag, data[sp2 + 1:sp2 + 1 + n].decode("utf-8", "replace")))
+        i = sp2 + 1 + n + 1
+    if b"Sanitizer" in p.stderr:
+        # quickjs/sanitize.sh: a report from the worker (uncontained) or the host fails the case and is shown.
+        sys.stdout.write(p.stderr.decode("utf-8", "replace")[-3000:])
+        ev.append(("END", "SANITIZER report on stderr"))
+    if not any(t == "END" for t, _ in ev):
+        why = "signal %d" % -p.returncode if p.returncode < 0 else "no END"
+        ev.append(("END", "CRASHED %s: %s" % (why, (data + p.stderr)[-150:].decode("utf-8", "replace").strip())))
+    return ev
+
+def outcomes(ev):
+    """The answers to the plan's invocations, in order: (kind, text), RETURN/RAISE/NOSEND."""
+    return [(t, b) for t, b in ev if t in ("RETURN", "RAISE", "NOSEND", "SENT")]
+
+def end_of(ev):
+    k, _, t = [b for tg, b in ev if tg == "END"][-1].partition(" ")
+    return k, t
+
+def same_json(a, b):
+    try:
+        return canon(a) == canon(b)
+    except Exception:
+        return False
+
+def why_not(ev, n=60):
+    """What happened instead, for a cell that is not ok."""
+    out = outcomes(ev)
+    if out and out[-1][0] == "RAISE": return "raised: " + short(out[-1][1], n)
+    if out and out[-1][0] == "RETURN": return "returned " + short(out[-1][1], n)
+    k, t = end_of(ev)
+    if not any(tg == "READY" for tg, _ in ev): return "no READY: %s %s" % (k, short(t, n))
+    return "%s %s" % (k.lower(), short(t, n))
+
+def main_invoke(lang, host, work, out):
+    sn = snippets(lang)
+    up = sn.get("names") == "upper"
+    res = []
+    def line(i, d, o, detail=""): res.append("%s\t%s\t%s\t%s" % (i, d, o, detail.replace("\t", " ").replace("\n", " ")))
+    def run(key, plan, give="null", v=None, maxframe=""):
+        script = sn[key] if v is None else sn[key].replace("@V@", v)
+        return run_plan(host, work, expand(script), plan, give, up, maxframe=maxframe)
+    def I(name, args): return "I\t%s\t%s" % (name, args)
+    for cid, w in cases():
+        v = sn.get("v:" + cid)
+        if v is not None and "x:make" in sn:
+            ev = run("x:make", [I("make", "[]")], v=v)
+            o = outcomes(ev)
+            if o and o[0][0] == "RETURN" and same_json(o[0][1], w): line(cid, "ret", "ok")
+            elif o and o[0][0] == "RETURN": line(cid, "ret", "differs", "the host saw " + short(o[0][1]))
+            else: line(cid, "ret", "error", why_not(ev))
+        else:
+            line(cid, "ret", "n/a")
+        if "x:back" in sn:
+            ev = run("x:back", [I("back", "[%s]" % w)])
+            o = outcomes(ev)
+            if o and o[0][0] == "RETURN" and same_json(o[0][1], w): line(cid, "arg", "ok")
+            elif o and o[0][0] == "RETURN": line(cid, "arg", "differs", "the host saw " + short(o[0][1]))
+            else: line(cid, "arg", "error", why_not(ev))
+        else:
+            line(cid, "arg", "n/a")
+    def special(key, snip, plan, judge, give="null", maxframe=""):
+        if snip not in sn:
+            line(key, "-", "n/a"); return None
+        ev = run(snip, plan, give, maxframe=maxframe)
+        o, d = judge(ev); line(key, "-", o, d)
+        return o
+    ok = lambda o: o in ("ok",)
+    # An export that calls a mounted host function, mid-invocation.
+    def j_relay(ev):
+        o = outcomes(ev)
+        wires = [b for t, b in ev if t == "WIRE"]
+        if wires and wires[0].replace(" ", "") == '["hello"]' and o and o[0] == ("RETURN", '"hello"'): return "ok", ""
+        return "differs", why_not(ev)
+    special("relay", "x:relay", [I("relay", '["hello"]')], j_relay)
+    # State between invocations, and an export that raises.
+    def j_state(ev):
+        o = outcomes(ev)
+        if [b for t, b in o if t == "RETURN"][:3] == ["1", "2", "3"]: return "state carries", ""
+        return "differs", " ".join("%s %s" % (t, short(b, 20)) for t, b in o)
+    special("state", "x:count", [I("count", "[]")] * 3, j_state)
+    raise_text = [""]
+    def j_raise(ev):
+        o = outcomes(ev)
+        if len(o) == 3 and o[0] == ("RETURN", "1") and o[1][0] == "RAISE" and o[2] == ("RETURN", "2"):
+            raise_text[0] = o[1][1]
+            return "RAISE: " + short(o[1][1], 70), ""
+        return "differs", " ".join("%s %s" % (t, short(b, 30)) for t, b in o) + " " + " ".join(end_of(ev))
+    special("raise", "x:count", [I("count", "[]"), I("boom", "[]"), I("count", "[]")], j_raise)
+    def j_cancel(ev):
+        k, t = end_of(ev)
+        if k == "ERROR" and "cancelled by host" in t: return "heard in a loop", ""
+        if k == "KILLED" and "no answer to CANCEL" in t: return "not heard: killed", ""
+        return "other", short(k + " " + t)
+    special("loop", "x:loop", [I("spin", "[]")], j_cancel)
+    def j_wait(ev):
+        k, t = end_of(ev)
+        if k == "ERROR" and "cancelled by host" in t: return "heard at the call", ""
+        if k == "KILLED": return "not heard: killed", short(t)
+        return "other", short(k + " " + t)
+    special("wait", "x:wait", [I("wait", "[]")], j_wait)
+    def j_big(ev):
+        o = outcomes(ev)
+        if len(o) == 2 and o[0][0] == "RAISE" and o[1][0] == "RAISE": return "refused (`RAISE`), the guest serves on", short(o[0][1])
+        k, t = end_of(ev)
+        if k == "KILLED" and "frame refused" in t: return "refused, worker killed", ""
+        if o and o[0][0] == "RETURN": return "crossed", ""
+        return "other", why_not(ev)
+    special("big", "x:big", [I("big", "[]"), I("big", "[]")], j_big)
+    # A direct call carries its whole input: several arguments, and one past
+    # the frame limit (the host's to refuse or the worker's to fail on).
+    def j_pick(ev):
+        o = outcomes(ev)
+        if o and o[0] == ("RETURN", '"two"'): return "ok", ""
+        return "differs", why_not(ev)
+    special("args", "x:pick", [I("pick", '[1,"two",3.5]')], j_pick)
+    def j_bigarg(ev):
+        o = outcomes(ev)
+        if len(o) == 2 and o[0][0] == "NOSEND" and o[1] == ("RETURN", "1"): return "refused by the host, nothing sent; the guest serves on", short(o[0][1])
+        if o and o[0][0] == "NOSEND": return "refused by the host, nothing sent", short(o[0][1])
+        if o and o[0][0] == "RETURN": return "crossed", ""
+        k, t = end_of(ev)
+        return "refused: " + k.lower(), short(t)
+    # A host that reads frames of at most 4 KiB (MAXFRAME): a 5,000-byte value
+    # handed back is too large for it, and a 2,000-byte one fits.
+    def j_maxframe(ev):
+        o = outcomes(ev)
+        if len(o) == 2 and o[0][0] == "RAISE" and o[1][0] == "RETURN" and len(o[1][1]) == 2002:
+            return "a value over it is refused (`RAISE`), one under it returns; the guest serves on", short(o[0][1])
+        return "differs", " ".join("%s %s" % (t, short(b, 40)) for t, b in o) + " " + " ".join(end_of(ev))
+    special("maxframe", "x:back", [I("back", json.dumps(["x" * 5000])), I("back", json.dumps(["y" * 2000]))], j_maxframe, maxframe="4096")
+    special("big-arg", "x:back", [I("back", json.dumps(["x" * 100000])), I("back", "[1]")], j_bigarg)
+    def j_unexported(ev):
+        o = outcomes(ev)
+        if o and o[0][0] == "NOSEND" and "does not export" in o[0][1] and len(o) > 1 and o[1][0] == "RETURN":
+            return "refused by the host, nothing sent; the guest serves on", ""
+        return "differs", " ".join("%s %s" % (t, short(b, 30)) for t, b in o)
+    special("unexported", "x:back", [I("no_such_export", "[]"), I("back", "[1]")], j_unexported)
+    def j_end(ev):
+        k, t = end_of(ev)
+        if k == "DONE" and t.strip() == "0" and any(tg == "READY" for tg, _ in ev): return "DONE 0", ""
+        return "differs", short(k + " " + t)
+    special("end", "x:back", ["E"], j_end)
+    def j_none(ev):
+        k, t = end_of(ev)
+        if not any(tg == "READY" for tg, _ in ev) and k == "DONE": return "DONE, as before exports", ""
+        return "differs", short(k + " " + t)
+    special("none", "x:none", [I("back", "[1]")], j_none)
+    # Notify, then fetch: the script starts two transactions (txn_start answers
+    # an id at once) and exports on_txn; the host later invokes on_txn with an id
+    # only, and the export fetches the details with txn_details, keeping a count
+    # between notifications. An unknown id: txn_details fails, and the export
+    # handles it or raises.
+    def j_txn(ev):
+        o = outcomes(ev)
+        starts = [b for t, b in ev if t == "CALL"][:2]
+        want = [("RETURN", '"1 deposit 100"'), ("RETURN", '"2 refund 200"')]
+        if starts != ["txn_start", "txn_start"] or len(o) != 4 or o[:2] != want or o[3] != ("RETURN", '"3 deposit 100"'):
+            return "differs", " ".join("%s %s" % (t, short(b, 30)) for t, b in o) + " " + " ".join(end_of(ev))
+        if o[2][0] == "RAISE" and "no transaction 999999" in o[2][1]: return "ok; an unknown id raises: " + short(o[2][1], 70), ""
+        if o[2][0] == "RETURN": return "ok; an unknown id is handled: returns " + short(o[2][1], 40), ""
+        return "differs", "unknown id: %s %s" % o[2]
+    special("txn", "x:txn", [I("on_txn", '["123456"]'), I("on_txn", '["123457"]'), I("on_txn", '["999999"]'),
+                             I("on_txn", '["123456"]')], j_txn)
+    # The safety rows, by name.
+    def held_if(cond, ev, stricter=None):
+        if cond: return "held", ""
+        if stricter: return "stricter: " + stricter, ""
+        return "not held", why_not(ev)
+    def r_called(ev):
+        o = outcomes(ev); k, t = end_of(ev)
+        return held_if(o == [("RETURN", '"x"')] and k == "DONE" and t.strip() == "0", ev)
+    special("guest-export-called", "x:back", [I("back", '["x"]'), "E"], r_called)
+    def r_slow(ev):
+        k, t = end_of(ev)
+        return held_if(k == "ERROR" and "cancelled by host" in t, ev,
+                       "killed after the grace period (the cancel is not heard in a loop)" if k == "KILLED" and "no answer to CANCEL" in t else None)
+    special("guest-export-slow", "x:loop", [I("spin", "[]")], r_slow)
+    def r_silent(ev):
+        k, t = end_of(ev)
+        if k == "ERROR" and "cancelled by host" in t: return "left out: the export cannot stop the worker hearing the cancel", ""
+        return held_if(k == "KILLED" and "no answer to CANCEL" in t, ev)
+    if "x:silent" in sn:
+        special("guest-export-silent", "x:silent", [I("hush", "[]")], r_silent)
+    else:
+        line("guest-export-silent", "-", "left out", sn.get("why:silent", "the language cannot ignore a cancel"))
+    def r_oversize(ev):
+        k, t = end_of(ev)
+        o = outcomes(ev)
+        if o and o[0][0] == "RAISE" and "frame limit" in o[0][1]: return "held", ""
+        return held_if(k == "KILLED" and "frame refused" in t, ev)
+    special("guest-export-oversize", "x:big", [I("big", "[]")], r_oversize)
+    def r_raises(ev):
+        o = outcomes(ev)
+        return held_if(len(o) == 2 and o[0][0] == "RAISE" and o[1] == ("RETURN", "1"), ev)
+    special("guest-export-raises", "x:count", [I("boom", "[]"), I("count", "[]")], r_raises)
+    def r_reenter(ev):
+        o = outcomes(ev)
+        return held_if(len(o) == 2 and o[0][0] == "NOSEND" and "not serving" in o[0][1] and o[1] == ("RETURN", '"x"'), ev)
+    special("guest-reenters-while-called", "x:reenter", [I("via", '["x"]')], r_reenter)
+    def r_readybad(ev):
+        k, t = end_of(ev)
+        if k == "KILLED" and "protocol: READY" in t: return "held", ""
+        if k == "ERROR": return "stricter: the worker refuses it: " + short(t, 60), ""
+        return "not held", why_not(ev)
+    special("guest-export-flood", "x:flood", [I("f1", "[]")], r_readybad)
+    special("guest-export-malformed", "x:malformed", [I("back", "[]")], r_readybad)
+    def r_after(ev):
+        o = outcomes(ev); k, t = end_of(ev)
+        return held_if(o[:1] == [("RETURN", "1")] and o[-1][0] == "NOSEND" and "finished" in o[-1][1] and k == "DONE", ev)
+    special("guest-after-end", "x:back", [I("back", "[1]"), "E", "A\tback\t[1]"], r_after)
+    open(out, "w", encoding="utf-8").write("\n".join(res) + "\n")
+
+def main_bench(lang, host, work, n="10000"):
+    """One line per mode and size: microseconds per call, contained."""
+    sn = snippets(lang)
+    up = sn.get("names") == "upper"
+    for size in (16, 60000):
+        row = []
+        for mode, key in (("g2h", "x:bench-g2h"), ("h2g", "x:back"), ("pull", "x:bench-pull")):
+            if key not in sn:
+                row.append("n/a"); continue
+            script = expand(sn[key].replace("@N@", n).replace("@SIZE@", str(size)))
+            env = dict(os.environ, GHL_BOUNDARY_SCRIPT=script, GHL_BOUNDARY_UPPER="1" if up else "0",
+                       GHL_INVOKE_BENCH="%s %s %d" % (mode, n, size), GHL_INVOKE_PLAN="")
+            try:
+                p = subprocess.run([host, "-", "invoke", "x"], cwd=work, env=env, capture_output=True, timeout=900)
+            except subprocess.TimeoutExpired:
+                row.append("over %d" % (900 * 1000000 // int(n))); continue
+            out = p.stdout.decode("utf-8", "replace")
+            m = re.search(r"^BENCH \d+ \S+ \d+ \d+ (\d+)$", out, re.M)
+            row.append(m.group(1) if m else "failed: " + short(out.strip() + p.stderr.decode("utf-8", "replace")[-200:], 120))
+        print("%s\t%d\t%s" % (lang, size, "\t".join(row)), flush=True)
+
 if __name__ == "__main__":
-    if len(sys.argv) == 6 and sys.argv[1] == "run":
+    if len(sys.argv) in (5, 6) and sys.argv[1] == "bench":
+        main_bench(*sys.argv[2:])
+    elif len(sys.argv) == 6 and sys.argv[1] == "run-invoke":
+        main_invoke(*sys.argv[2:])
+    elif len(sys.argv) == 6 and sys.argv[1] == "run":
         main_run(*sys.argv[2:])
     elif len(sys.argv) == 6 and sys.argv[1] == "run-inproc":
         main_run(*sys.argv[2:], inproc=True)

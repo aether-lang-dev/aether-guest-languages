@@ -23,3 +23,20 @@ v:null	null
 v:array	[1, "a", 2.5]
 v:map	{k: "v", n: 1}
 v:nested	{a: [1, {b: "x"}], c: {d: 2.5}}
+# The other direction (tests/boundary.py run-invoke): scripts that export functions for the host to call. x:make returns @V@; x:back hands its argument back.
+x:make	export_fn("make", function () { return @V@; });
+x:back	export_fn("back", function (v) { return v; });
+x:relay	export_fn("relay", function (v) { return echo(v); });
+x:count	var n = 0;@NL@export_fn("count", function () { return ++n; });@NL@export_fn("boom", function () { throw new Error("boom"); });
+x:loop	export_fn("spin", function () { for (;;) {} });
+x:wait	export_fn("wait", function () { return slow("x"); });
+x:silent	export_fn("hush", function () { for (;;) {} });
+x:big	export_fn("big", function () { return "x".repeat(100000); });
+x:none	var x = 1;
+x:reenter	export_fn("via", function (v) { return reenter(v); });
+x:flood	for (var i = 0; i < 300; i++) export_fn("f" + i, (function (k) { return function () { return k; }; })(i));
+x:malformed	export_fn("two words", function () { return 1; });
+x:txn	var pending = [txn_start("deposit"), txn_start("refund")];@NL@var seen = 0;@NL@export_fn("on_txn", function (id) {@NL@  var d = txn_details(id);@NL@  seen++;@NL@  return seen + " " + d.kind + " " + d.amount;@NL@});
+x:pick	export_fn("pick", function (a, b, c) { return b; });
+x:bench-g2h	var p = "x".repeat(@SIZE@);@NL@for (var i = 0; i < @N@; i++) echo(p);
+x:bench-pull	var ev = next_event();@NL@while (ev !== null) ev = next_event(ev);

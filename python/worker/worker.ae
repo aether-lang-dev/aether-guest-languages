@@ -15,6 +15,18 @@
 //                       RuntimeError(message); a CANCEL raises
 //                       RuntimeError("cancelled by host: ...")
 //   the end             DONE 0, or ERROR and "<ExceptionType>: <message>"
+//   @export             marks a function for the host to call by name once
+//                       the script has ended (@export, @export("name"), or
+//                       export(fn, "name")). A script that exported anything
+//                       ends with READY and its names instead of DONE, and
+//                       serves: each INVOKE calls the function with its JSON
+//                       arguments in the same interpreter (the script's
+//                       globals, modules and closures as it left them) and is
+//                       answered RETURN and the value as JSON, or RAISE and
+//                       "<ExceptionType>: <message>", after which it serves
+//                       on; END ends it with DONE 0. The names are fixed at
+//                       READY: a function exported later is not announced.
+//                       `export` is the worker's name: a host cannot mount it.
 //
 // Usage (by a host): python-worker [<libpython soname or path> [<modules>]]
 //
@@ -73,12 +85,21 @@ w_poll(vm: ptr) -> int {
     return 1
 }
 
+// __args() -> the arguments of the invocation being served, a JSON array.
+// Fetched, not spliced into source: a 60 KB argument costs a copy, not a
+// parse of a 60 KB literal.
+@c_callback
+w_args(vm: ptr) -> int {
+    python.push_str(vm, host().invoked)
+    return 1
+}
+
 // The glue between Python and the protocol, run before the script.
 fn prelude() -> string {
     return <<PY
 import json as _json, sys as _sys
-_say, _call, _poll = __say, __call, __poll
-del __say, __call, __poll
+_say, _call, _poll, _args = __say, __call, __poll, __args
+del __say, __call, __poll, __args
 
 def print(*args, sep=" ", end="\n", file=None, flush=False):
     _say(sep.join(str(a) for a in args))
@@ -107,6 +128,36 @@ def _hook(frame, event, arg):
         if why:
             raise RuntimeError("cancelled by host: " + why)
     return _hook
+
+# Exports: a name for the host to call once the script has ended.
+_exports = {}
+
+def export(fn=None, name=None):
+    """@export, @export("name"), or export(fn, "name"): fn, unchanged."""
+    if isinstance(fn, str):
+        fn, name = None, fn
+    def reg(f):
+        if not callable(f):
+            raise TypeError("export: %r is not callable" % (f,))
+        _exports[name or f.__name__] = f
+        return f
+    return reg if fn is None else reg(fn)
+
+_served = {}
+
+def __ready():
+    # The names at READY, fixed: what the script exports later is not served.
+    _served.update(_exports)
+    return _json.dumps(list(_served), separators=(",", ":")) if _served else ""
+
+def __invoke(name):
+    fn = _served.get(name)
+    if fn is None:
+        return "RAISE\nNameError: no export named " + name
+    try:
+        return "RETURN\n" + _json.dumps(fn(*_json.loads(_args())), ensure_ascii=False, allow_nan=False)
+    except Exception as e:
+        return "RAISE\n" + type(e).__name__ + ": " + str(e)
 
 _sys.settrace(_hook)
 PY
@@ -152,7 +203,12 @@ main() {
         }
         python.vm_pop_result(vm)
     }
+    if child.is_mounted(h, "export") {
+        child.error(h, "python-worker: cannot mount 'export': the worker defines it for the script")
+        exit(1)
+    }
     ghl_keep(h as ptr)
+    python.vm_register(vm, "__args", w_args)
     python.vm_register(vm, "__say", w_say)
     python.vm_register(vm, "__call", w_call)
     python.vm_register(vm, "__poll", w_poll)
@@ -162,11 +218,42 @@ main() {
     }
     python.vm_pop_result(vm)
     child.run(h) callback {
-        if python.vm_eval(vm, h.source) == 0 {
-            child.done(h, 0)
-        } else {
+        if python.vm_eval(vm, h.source) != 0 {
             child.error(h, python.vm_result_str(vm))
+        } else {
+            serve_guest(vm, h)
         }
     }
     exit(0)
+}
+
+// After the script: DONE when it exported nothing, as before exports existed;
+// otherwise READY, and every INVOKE runs __invoke in the same interpreter
+// until END, a CANCEL, or a cancel heard inside an invocation (the trace
+// hook, or a call's reply), which ends the worker: the function's state is
+// half done. std.guest.child's serve_exports sends the answer: a value too
+// large for the host's frame is raised and the worker serves on. (Named
+// serve_guest: an unqualified call inside child.run's callback block resolves
+// to a std.guest.child export of the same name, such as serve or
+// serve_exports.)
+fn serve_guest(vm: ptr, h: *child.Host) {
+    python.vm_eval(vm, "__ready()")
+    names = python.vm_result_str(vm)
+    python.vm_pop_result(vm)
+    if names == "" {
+        child.done(h, 0)
+        return
+    }
+    child.ready(h, names)
+    child.serve_exports(h) callback | sh: *child.Host, inv: child.Invocation | {
+        if python.vm_eval(vm, "__invoke(${child.json_string(inv.name)})") != 0 {
+            return child.Reply { kind: "FAIL", text: python.vm_result_str(vm) }
+        }
+        out = python.vm_result_str(vm)
+        python.vm_pop_result(vm)
+        at = string.index_of(out, "\n")
+        text = string.substring(out, at + 1, string.length(out))
+        if string.starts_with(out, "RETURN") == 1 { return child.Reply { kind: "VALUE", text: text } }
+        return child.Reply { kind: "FAIL", text: text }
+    }
 }

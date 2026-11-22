@@ -26,6 +26,10 @@ for a in "$@"; do
 done
 fails=0
 
+# Every worker is built on std.guest's host-calls-guest verb: an ae without it
+# is said once, plainly, instead of as a build error in every test.
+ROOT="$ROOT" sh "$SCRIPT_DIR/need_invoke.sh" || { echo "1 FAILED"; exit 1; }
+
 # Which host produced a column of the parity table.
 host_text() {
     case "$(uname -s)" in
@@ -92,13 +96,13 @@ for lang in $langs; do
         mkdir -p "$ROOT/build"
         : > "$ROOT/build/parity-$lang.tsv"
         lang_runtime && host_text "$LANG_TITLE $(lang_version 2>/dev/null)" > "$ROOT/build/parity-$lang.host"
-        for t in "$SCRIPT_DIR"/test_catalogue.sh "$SCRIPT_DIR"/test_stunt_*.sh "$SCRIPT_DIR"/test_boundary.sh $LANG_EXTRA_TESTS; do
+        for t in "$SCRIPT_DIR"/test_catalogue.sh "$SCRIPT_DIR"/test_stunt_*.sh "$SCRIPT_DIR"/test_boundary.sh "$SCRIPT_DIR"/test_invoke.sh $LANG_EXTRA_TESTS; do
             echo "== $(basename "$t")"
             sh "$t" || fails=$((fails + 1))
         done
         echo "== boundary table ($lang)"
         if command -v python3 > /dev/null 2>&1; then
-            for m in "" inproc; do
+            for m in "" inproc invoke; do
                 if [ "$parity" = write ]; then python3 -I "$SCRIPT_DIR/boundary_table.py" write "$lang" $m; else python3 -I "$SCRIPT_DIR/boundary_table.py" check "$lang" $m || fails=$((fails + 1)); fi
             done
         fi

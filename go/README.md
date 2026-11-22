@@ -289,6 +289,10 @@ The shared tests in `tests/boundary.py`, run in this language's worker (`tests/t
 | a 100,000-byte answer (`big-down`) | refused: killed | |
 <!-- boundary:end -->
 
+## Nothing to export
+
+The host-calls-guest verb (`READY`, `INVOKE`, `RETURN`, `RAISE`, `END`) is not for this worker: its script is `call NAME [JSON]` lines run in order, with no functions of its own to export, so it ends with `DONE` as before and the host never sees it serve. A Go program that wants to be called by its host is a worker of its own on `std.guest.child`'s `ready` and `serve`.
+
 ## What crosses the boundary
 
 The top-level README's first table says it in a line; this is the detail, each

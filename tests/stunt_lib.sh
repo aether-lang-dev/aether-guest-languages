@@ -58,6 +58,7 @@ case "$(uname -s 2>/dev/null)" in
     *) PLAT=other ;;
 esac
 command -v ae > /dev/null 2>&1 || die "ae is not on PATH"
+ROOT="$ROOT" sh "$SCRIPT_DIR/need_invoke.sh" || exit 1
 # A row that hangs is a failure, not a wait: a runtime that dies in a loop when
 # the preload refuses something it asked for (Factor, before its grants were
 # completed) otherwise held a CI job for its whole timeout.

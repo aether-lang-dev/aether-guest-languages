@@ -65,6 +65,15 @@ else
     echo "  [FAIL] uncontained shared boundary tests"; sed 's/^/    /' "$OUT/uncontained-boundary.txt" | tail -30; fails=$((fails + 1))
 fi
 
+# The host calling the guest, uncontained: the serving loop, every type both
+# ways, the errors and the safety rows, with LeakSanitizer on in the worker.
+if GHL_UNCONTAINED=1 GUEST_LANG=quickjs sh "$ROOT/tests/test_invoke.sh" > "$OUT/uncontained-invoke.txt" 2>&1 &&
+   ! grep -q "Sanitizer" "$OUT/uncontained-invoke.txt"; then
+    echo "  uncontained worker, LeakSanitizer on: $(tail -1 "$OUT/uncontained-invoke.txt" | sed 's/^ *//')"
+else
+    echo "  [FAIL] uncontained host-calls-guest tests"; sed 's/^/    /' "$OUT/uncontained-invoke.txt" | tail -30; fails=$((fails + 1))
+fi
+
 reports="$(ls "$OUT"/report.* 2>/dev/null | wc -l | tr -d ' ')"
 echo "  sanitizer reports from host processes: $reports"
 for f in "$OUT"/report.*; do [ -f "$f" ] && { echo "  == $f"; head -40 "$f"; }; done

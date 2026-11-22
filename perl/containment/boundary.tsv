@@ -21,3 +21,20 @@ v:null	undef
 v:array	[1, "a", 2.5]
 v:map	{k => "v", n => 1}
 v:nested	{a => [1, {b => "x"}], c => {d => 2.5}}
+# The other direction (tests/boundary.py run-invoke): scripts that export subs for the host to call. x:make returns @V@; x:back hands its argument back.
+x:make	sub make { return @V@ }@NL@export 'make';
+x:back	sub back { my ($v) = @_; return $v }@NL@export 'back';
+x:relay	sub relay { return echo($_[0]) }@NL@export 'relay';
+x:count	my $n = 0;@NL@sub count { return ++$n }@NL@sub boom { die "boom\n" }@NL@export qw(count boom);
+x:loop	sub spin { my $x = 0; while (1) { $x++ } }@NL@export 'spin';
+x:wait	sub wait_ { return slow("x") }@NL@export wait => \&wait_;
+x:silent	sub hush { $SIG{ALRM} = 'IGNORE'; my $x = 0; while (1) { $x++ } }@NL@export 'hush';
+x:big	sub big { return "x" x 100000 }@NL@export 'big';
+x:none	my $x = 1;
+x:reenter	sub via { return reenter($_[0]) }@NL@export 'via';
+x:flood	for my $i (0 .. 299) { export "f$i" => sub { $i } }
+x:malformed	export 'two words' => sub { 1 };
+x:txn	my @pending = (txn_start("deposit"), txn_start("refund"));@NL@my $seen = 0;@NL@sub on_txn {@NL@    my ($id) = @_;@NL@    my $d = txn_details($id);@NL@    $seen++;@NL@    return "$seen $d->{kind} $d->{amount}";@NL@}@NL@export 'on_txn';
+x:pick	sub pick { my ($a, $b, $c) = @_; return $b }@NL@export 'pick';
+x:bench-g2h	my $p = "x" x @SIZE@;@NL@echo($p) for 1 .. @N@;
+x:bench-pull	my $ev = next_event();@NL@$ev = next_event($ev) while defined $ev;

@@ -26,6 +26,15 @@
 // interpreter's own start happens before the lockdown too. Features built
 // into the interpreter need no disk.
 //
+// export :name marks a method (export def name ... end), and export(:name)
+// { |...| } a block, for the host to call by name once the script has ended. A
+// script that exported anything ends with READY and its names instead of
+// DONE, and serves: each INVOKE calls it with its JSON arguments in the same
+// interpreter (the script's globals, constants and closures as it left them)
+// and is answered RETURN and the value as JSON, or RAISE and "<Class>:
+// <message>", after which it serves on; END ends it with DONE 0. The names
+// are fixed at READY. `export` is the worker's: a host cannot mount it.
+//
 // A CANCEL is looked for every 1000 line, call and block events from a TracePoint hook, and
 // in every call's reply. A script that disables the hook (ObjectSpace
 // reaches it) stops answering, and the host kills it after its grace period:
@@ -70,6 +79,13 @@ w_poll(ctx: ptr) -> int {
     return 1
 }
 
+// __args() -> the arguments of the invocation being served, a JSON array
+@c_callback
+w_args(ctx: ptr) -> int {
+    ruby.push_str(ctx, host().invoked)
+    return 1
+}
+
 // The glue between Ruby and the protocol, run before the script.
 fn prelude() -> string {
     return <<RB
@@ -79,6 +95,26 @@ module AetherGuest
   SAY = method(:__say)
   CALL = method(:__call)
   POLL = method(:__poll)
+  ARGS = method(:__args)
+
+  # Exports: what the host may call by name once the script has ended.
+  EXPORTS = {}
+  SERVED = {}
+
+  # The names at READY, fixed from here on, as a JSON array; "" for none.
+  def self.ready
+    SERVED.replace(EXPORTS)
+    SERVED.empty? ? "" : JSON.generate(SERVED.keys)
+  end
+
+  # One INVOKE: "RETURN\n<json>" or "RAISE\n<Class>: <message>".
+  def self.serve(name)
+    fn = SERVED[name]
+    return "RAISE\nNameError: no export named #{name}" unless fn
+    "RETURN\n" + JSON.generate(fn.call(*JSON.parse(ARGS.call)))
+  rescue StandardError => e
+    "RAISE\n#{e.class}: #{e.message}"
+  end
 
   # $stdout: what the script prints is a SAY.
   class Out
@@ -121,10 +157,24 @@ module AetherGuest
   end
 end
 
+# export :name (a method; `export def name ... end` reads naturally), or
+# export(:name) { |...| ... } for a block.
+class Object
+  private def export(*names, &blk)
+    if blk
+      raise ArgumentError, "export: one name with a block" unless names.size == 1
+      AetherGuest::EXPORTS[names[0].to_s] = blk
+    else
+      names.each { |n| AetherGuest::EXPORTS[n.to_s] = method(n) }
+    end
+    nil
+  end
+end
+
 $stdout = AetherGuest::Out.new
 AETHER_MOUNTS.each { |n| AetherGuest.mount(n) }
 Object.send(:remove_const, :AETHER_MOUNTS)
-[:__say, :__call, :__poll].each { |m| Object.send(:remove_method, m) }
+[:__say, :__call, :__poll, :__args].each { |m| Object.send(:remove_method, m) }
 AetherGuest::HOOK.enable
 nil
 RB
@@ -178,7 +228,12 @@ main() {
             exit(1)
         }
     }
+    if child.is_mounted(h, "export") {
+        child.error(h, "ruby-worker: cannot mount 'export': the worker defines it for the script")
+        exit(1)
+    }
     ghl_keep(h as ptr)
+    ruby.register("__args", w_args)
     ruby.register("__say", w_say)
     ruby.register("__call", w_call)
     ruby.register("__poll", w_poll)
@@ -188,10 +243,42 @@ main() {
     }
     child.run(h) callback {
         if ruby.eval(h.source) == 0 {
-            child.done(h, 0)
+            serve_guest(h)
         } else {
             child.error(h, ruby.result_str())
         }
     }
     exit(0)
+}
+
+// After the script: DONE when it exported nothing; otherwise READY, and
+// std.guest.child's serve_exports runs, for each INVOKE, AetherGuest.serve in
+// the same interpreter until END or a cancel. A cancel heard inside an
+// invocation (the TracePoint, or a call's reply) ends the worker: the
+// method's state is half done. std.guest.child's serve_exports sends the
+// answer: a value too large for the host's frame is raised and the worker
+// serves on. (Named serve_guest: an unqualified call inside child.run's
+// callback block resolves to a std.guest.child export of the same name, such
+// as serve or serve_exports.)
+fn serve_guest(h: *child.Host) {
+    if ruby.eval("AetherGuest.ready") != 0 {
+        child.error(h, ruby.result_str())
+        return
+    }
+    names = ruby.result_str()
+    if names == "" {
+        child.done(h, 0)
+        return
+    }
+    child.ready(h, names)
+    child.serve_exports(h) callback | sh: *child.Host, inv: child.Invocation | {
+        if ruby.eval("AetherGuest.serve(${child.json_string(inv.name)})") != 0 {
+            return child.Reply { kind: "FAIL", text: ruby.result_str() }
+        }
+        out = ruby.result_str()
+        at = string.index_of(out, "\n")
+        text = string.substring(out, at + 1, string.length(out))
+        if string.starts_with(out, "RETURN") == 1 { return child.Reply { kind: "VALUE", text: text } }
+        return child.Reply { kind: "FAIL", text: text }
+    }
 }

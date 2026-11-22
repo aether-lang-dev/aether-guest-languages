@@ -23,3 +23,20 @@ v:null	null
 v:array	[1, "a", 2.5]
 v:map	{k: "v", n: 1}
 v:nested	{a: [1, {b: "x"}], c: {d: 2.5}}
+# The other direction (tests/boundary.py run-invoke): scripts that export functions for the host to call. x:make returns @V@; x:back hands its argument back.
+x:make	export_fn("make", () => (@V@));
+x:back	export_fn("back", (v) => v);
+x:relay	export_fn("relay", (v) => echo(v));
+x:count	let n = 0;@NL@export_fn("count", () => ++n);@NL@export_fn("boom", () => { throw new Error("boom"); });
+x:loop	export_fn("spin", () => { for (;;) {} });
+x:wait	export_fn("wait", () => slow("x"));
+x:silent	export_fn("hush", () => { const b = 10n ** 300000n; return Array(64).fill(b).join().length; });
+x:big	export_fn("big", () => "x".repeat(100000));
+x:none	let x = 1;
+x:reenter	export_fn("via", (v) => reenter(v));
+x:flood	for (let i = 0; i < 300; i++) export_fn("f" + i, () => i);
+x:malformed	export_fn("two words", () => 1);
+x:txn	const pending = [txn_start("deposit"), txn_start("refund")];@NL@let seen = 0;@NL@export_fn("on_txn", (id) => {@NL@  const d = txn_details(id);@NL@  seen++;@NL@  return `${seen} ${d.kind} ${d.amount}`;@NL@});
+x:pick	export_fn("pick", (a, b, c) => b);
+x:bench-g2h	const p = "x".repeat(@SIZE@);@NL@for (let i = 0; i < @N@; i++) echo(p);
+x:bench-pull	let ev = next_event();@NL@while (ev !== null) ev = next_event(ev);
