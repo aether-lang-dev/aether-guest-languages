@@ -8,6 +8,15 @@ import std.spec
 import std.string
 import std.os
 import std.list
+import std.sandbox
+import std.sharedmap
+
+// The value stored under `key`, "" when there is none.
+fn map_value(map: ptr, key: string) -> string {
+    v, found = sharedmap.get(map, key)
+    if found == 1 { return v }
+    return ""
+}
 
 @c_callback
 cb_add(vm: ptr) -> int {
@@ -59,6 +68,30 @@ main() {
             spec.assert_eq(tcl.run("if {$aether_probe != 42} { error wrong }"), 0,
                 "state persists in the shared interpreter")
             spec.assert_not_eq(tcl.run("error deliberate"), 0, "an erroring script must NOT report success")
+        }
+
+        // The shared map keeps strings by length since Aether 0.935.0, and Tcl's own
+        // spelling of NUL (C0 80) is converted at the edge: a key and a value with
+        // a NUL go in and come out whole, both ways, and so does script text.
+        spec.it_when(have_tcl, "the shared map carries a NUL in a key and a value, both ways, and script text carries one", reason) callback {
+            dummy = sandbox.new("dummy") {}
+            defer sandbox.free(dummy)
+            map = sharedmap.new()
+            token = sharedmap.token(map)
+            _p = sharedmap.put(map, "in\0key", "in\0value")
+            script = "set v [aether_map_get [format in%ckey 0]]; aether_map_put got \"[string length $v]:[scan [string index $v 2] %c]\"; aether_map_put [format out%ckey 0] [format out%cvalue 0]; aether_map_put cut [aether_map_get in]"
+            spec.assert_eq(tcl.run_sandboxed_with_map(dummy, script, token), 0, "the script ran to its end")
+            spec.assert_str_eq(map_value(map, "got"), "8:0", "the host's key and value reached the script whole")
+            v, found = sharedmap.get(map, "out\0key")
+            spec.assert_eq(found, 1, "the script's key came back whole")
+            spec.assert_eq(string.length(v), 9, "and its value: ${string.length(v)} bytes")
+            spec.assert_str_eq(v, "out\0value", "byte for byte")
+            spec.assert_eq(sharedmap.has(map, "out"), 0, "nothing was stored under the key cut at its NUL")
+            spec.assert_str_eq(map_value(map, "cut"), "", "and the key cut at its NUL is not the host's")
+            spec.assert_eq(tcl.run("set s \"a\0b\"; if {[string length $s] != 3} { error cut }"), 0, "run: a raw NUL inside a quoted word is a character")
+            spec.assert_eq(tcl.run_sandboxed(dummy, "set s \"a\0b\"; if {[string length $s] != 3} { error cut }"), 0, "and in run_sandboxed")
+            spec.assert_not_eq(tcl.run("set a 1;\0set b 2"), 0, "outside a word it joins the next one into a command name that does not exist")
+            sharedmap.free(map)
         }
 
         spec.it_when(have_tcl, "persistent VM with host commands and typed values (#904)", reason) callback {

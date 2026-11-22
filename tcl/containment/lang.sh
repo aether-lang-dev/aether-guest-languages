@@ -18,7 +18,7 @@ LANG_CHECKS_ENV=TCL_CHECKS
 LANG_CHECKS_FILE=checks.tcl
 LANG_WORKER_ENV=TCL_WORKER
 # Tcl's own tests beside the stunt ones: the bare exec's temporary file.
-LANG_EXTRA_TESTS="$ROOT/tcl/containment/test_exec_tmpfile.sh $ROOT/tcl/containment/test_tcl_library.sh $ROOT/tcl/containment/test_library_first_use.sh $ROOT/tcl/containment/test_zipfs_mount.sh"
+LANG_EXTRA_TESTS="$ROOT/tcl/containment/test_exec_tmpfile.sh $ROOT/tcl/containment/test_tcl_library.sh $ROOT/tcl/containment/test_library_first_use.sh $ROOT/tcl/containment/test_zipfs_mount.sh $ROOT/tcl/containment/test_nul_frames.sh"
 
 # Rows Tcl cannot express, by name. Each prints LEFT OUT and why.
 left_out() {

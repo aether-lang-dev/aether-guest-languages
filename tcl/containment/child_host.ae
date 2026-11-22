@@ -18,6 +18,7 @@
 import policy
 import boundary
 import invoke
+import nulframes
 import std.guest
 import std.sandbox
 import std.os
@@ -184,6 +185,10 @@ fn run_child(spec: string, check: string, expect: string) {
     // The shared boundary tests (tests/boundary.sh): what crosses, found by running.
     if check == "boundary" {
         exit(boundary.run(&g, os.getenv("GHL_BOUNDARY_SCRIPT")))
+    }
+    // What the worker's frames carry when a string holds a NUL (test_nul_frames.sh).
+    if check == "nulframes" {
+        exit(nulframes.run(&g))
     }
     // The other direction, the host calling the guest's exports (tests/test_invoke.sh).
     if check == "invoke" {

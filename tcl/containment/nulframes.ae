@@ -1,0 +1,54 @@
+// nulframes: the host half of tcl/containment/test_nul_frames.sh. Runs one Tcl
+// script in tcl-worker, whose every string crossing holds a NUL, and prints
+// what the host received as decimal byte lists, one line each:
+//
+//   SAY <bytes>      a `puts` of a string with a NUL (a SAY frame)
+//   CALL <json>      the JSON arguments of a call of the mounted `echo`: a NUL
+//                    is written \u0000, so the frame holds no zero byte
+//   END <kind> <bytes>   how the script ended, and its error message's bytes
+//
+// The script's own checks print their numbers through `puts`: the answer to
+// `echo` (NUL and all, read back from JSON), a NUL written raw in the script's
+// text (the frame that carries the script holds it), and a caught error.
+
+exports(run)
+
+import std.guest
+import std.string
+
+fn bytes_of(s: string) -> string {
+    out = ""
+    n = string.length(s)
+    i = 0
+    while i < n {
+        if i > 0 { out = "${out} " }
+        out = "${out}${string.char_at(s, i)}"
+        i = i + 1
+    }
+    return out
+}
+
+run(g: *guest.Guest) -> int {
+    guest.mount(g, "echo", 1, 1)
+    g.deadline_ms = 5000
+    g.grace_ms = 1000
+    // The two raw NULs below are in the script text itself.
+    script = "puts [format a%cb 0]\nset r [echo [format x%cy 0]]\nputs \"r=[string length $r]\"\nputs \"raw=[string length \"p\0q\"]\"\ncatch {error [format e%cr 0]} m\nputs \"m=[string length $m]\"\nerror [format fin%cal 0]\n"
+    guest.start(g, script)
+    going = 1
+    while going == 1 {
+        e = guest.next(g)
+        if e.kind == "SAY" {
+            println("SAY ${bytes_of(e.text)}")
+        } else if e.kind == "CALL" {
+            println("CALL ${e.text}")
+            guest.answer(g, string.trim(string.substring(e.text, 1, string.length(e.text) - 1)))
+        } else if e.kind == "LOG" {
+        } else {
+            println("END ${e.kind} ${bytes_of(e.text)}")
+            going = 0
+        }
+    }
+    guest.close(g)
+    return 0
+}

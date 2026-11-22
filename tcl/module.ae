@@ -27,6 +27,16 @@
 //   res = tcl.vm_result_int(vm)
 //   tcl.vm_pop_result(vm)
 //   tcl.vm_free(vm)
+//
+// Strings. A Tcl string holds a NUL like any character, and so does every
+// string that crosses here, in both directions, by its length: arg_str,
+// push_str, vm_result_str (the readers return an Aether string made from the
+// bytes and the length), vm_set_global_str and _strlist, raise_error's message,
+// an error's message, script text (run, run_sandboxed, vm_eval: a NUL is a
+// character of a Tcl script), the name of a global or a registered command, and
+// the shared map's keys and values. Tcl keeps NUL as the two bytes C0 80, and
+// the bridge converts. Refused, with the reason and nothing changed: a lone
+// surrogate, and from the host the overlong C0 80 (tcl/README.md).
 @source("aether_host_tcl.c")
 
 import std.sandbox   // sandbox.Grants, the grant list the run_sandboxed calls take
@@ -61,11 +71,11 @@ const TCL_TOTHER = 6
 const TCL_TFLOAT = 7
 
 // --- Tier 1: fire-and-forget -----------------------------------------------
-extern tcl_run_sandboxed(perms: sandbox.Grants, code: string) -> int
+extern tcl_run_sandboxed(perms: sandbox.Grants, code: @aether string) -> int
 // The same with a shared map (std.sandbox's, by token): the script reads and
 // writes it with the commands aether_map_get key and aether_map_put key value.
-extern tcl_run_sandboxed_with_map(perms: sandbox.Grants, code: string, map_token: long) -> int
-extern tcl_run(code: string) -> int
+extern tcl_run_sandboxed_with_map(perms: sandbox.Grants, code: @aether string, map_token: long) -> int
+extern tcl_run(code: @aether string) -> int
 extern tcl_init() -> int
 extern tcl_finalize()
 
@@ -77,17 +87,17 @@ extern tcl_vm_free(vm: ptr)
 // Registers an Aether `@c_callback (vm: ptr) -> int` as the Tcl command
 // `name`, taken verbatim: "app.add" is called `app.add 2 3`, and
 // "app::add" lands in the namespace ::app.
-extern tcl_vm_register(vm: ptr, name: string, host_fn: ptr) -> int
-extern tcl_vm_set_global_str(vm: ptr, name: string, value: @aether string)
-extern tcl_vm_set_global_int(vm: ptr, name: string, value: long)
-extern tcl_vm_set_global_strlist(vm: ptr, name: string, items: ptr)
+extern tcl_vm_register(vm: ptr, name: @aether string, host_fn: ptr) -> int
+extern tcl_vm_set_global_str(vm: ptr, name: @aether string, value: @aether string)
+extern tcl_vm_set_global_int(vm: ptr, name: @aether string, value: long)
+extern tcl_vm_set_global_strlist(vm: ptr, name: @aether string, items: ptr)
 // Runs at global level; 0 on success, -1 on an error, which is then the
 // result (TCL_TERR, its message as the string).
 extern tcl_vm_eval(vm: ptr, code: @aether string) -> int
 extern tcl_vm_result_type(vm: ptr) -> int
 extern tcl_vm_result_int(vm: ptr) -> long
 extern tcl_vm_result_double(vm: ptr) -> float
-extern tcl_vm_result_str(vm: ptr) -> string
+extern tcl_vm_result_str(vm: ptr) -> string @heap
 extern tcl_vm_result_bool(vm: ptr) -> int
 extern tcl_vm_pop_result(vm: ptr)
 // Per outermost eval. The instruction limit counts Tcl commands, so a loop
@@ -100,7 +110,7 @@ extern tcl_vm_set_time_limit(vm: ptr, ms: long, every: int) -> string
 // push is the result; return 1 to return it, 0 to return nothing.
 extern tcl_arg_count(vm: ptr) -> int
 extern tcl_arg_type(vm: ptr, i: int) -> int
-extern tcl_arg_str(vm: ptr, i: int) -> string
+extern tcl_arg_str(vm: ptr, i: int) -> string @heap
 extern tcl_arg_int(vm: ptr, i: int) -> long
 extern tcl_arg_double(vm: ptr, i: int) -> float
 extern tcl_arg_bool(vm: ptr, i: int) -> int

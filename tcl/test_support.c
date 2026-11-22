@@ -9,10 +9,12 @@
 #include <unistd.h>
 #include "aether_host_tcl.h"
 
+extern const char* aether_string_data(const void*);
+
 static void* other_thread(void* vm) {
     int rc = tcl_vm_eval(vm, "set x 1");
     static char out[200];
-    snprintf(out, sizeof out, "%d|%d|%s", rc, tcl_vm_result_type(vm), tcl_vm_result_str(vm));
+    snprintf(out, sizeof out, "%d|%d|%s", rc, tcl_vm_result_type(vm), aether_string_data(tcl_vm_result_str(vm)));
     return out;
 }
 

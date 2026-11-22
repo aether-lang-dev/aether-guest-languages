@@ -247,7 +247,7 @@ The shared tests in `tests/boundary.py`, run in this language's worker (`tests/t
 | `str` | ok | ok |
 | `str-empty` | ok | ok |
 | `str-nonascii` | ok | ok |
-| `str-nul` | refused | refused |
+| `str-nul` | ok | ok |
 | `str-astral` | ok | ok |
 | `str-60k` | ok | ok |
 | `int` | ok | ok |
@@ -260,7 +260,7 @@ The shared tests in `tests/boundary.py`, run in this language's worker (`tests/t
 | `null` | n/a | differs: the host saw [""] |
 | `array` | n/a | differs: the host saw ["1 a 2.5"] |
 | `map` | n/a | differs: the host saw ["k v n 1"] |
-| `map-nul` | n/a | refused |
+| `map-nul` | n/a | differs: the host saw ["k\u0000ey v\u0000al"] |
 | `nested` | n/a | differs: the host saw ["a {1 {b x}} c {d 2.5}"] |
 | a call inside a call's argument (`nest`) | ok | |
 | an error answer (`FAIL`) to a call (`refuse`) | caught | |
@@ -280,7 +280,7 @@ The same cases (`tests/boundary.py run-inproc`) against this language's bridge i
 | `str` | ok | ok | same | same |
 | `str-empty` | differs: the host saw [null] | differs: the host saw [null] | same | same |
 | `str-nonascii` | ok | ok | same | same |
-| `str-nul` | refused | refused | same | same |
+| `str-nul` | ok | ok | same | same |
 | `str-astral` | ok | ok | same | same |
 | `str-60k` | ok | ok | same | same |
 | `int` | differs: the host saw ["42"] | ok | same | same |
@@ -352,7 +352,7 @@ The other direction (`tests/boundary.py run-invoke`, run by `tests/test_invoke.s
 | `str` | ok | ok |
 | `str-empty` | ok | ok |
 | `str-nonascii` | ok | ok |
-| `str-nul` | error: raised: make: the result: refused: it holds an embedded NUL; Tcl sto... | error: raised: the host's answer: refused: it holds an embedded NUL; Tcl st... |
+| `str-nul` | ok | ok |
 | `str-astral` | ok | ok |
 | `str-60k` | ok | ok |
 | `int` | ok | ok |
@@ -365,7 +365,7 @@ The other direction (`tests/boundary.py run-invoke`, run by `tests/test_invoke.s
 | `null` | n/a | differs: the host saw "" |
 | `array` | n/a | differs: the host saw "1 a 2.5" |
 | `map` | n/a | differs: the host saw "k v n 1" |
-| `map-nul` | n/a | error: raised: the host's answer: refused: it holds an embedded NUL; Tcl st... |
+| `map-nul` | n/a | differs: the host saw "k\u0000ey v\u0000al" |
 | `nested` | n/a | differs: the host saw "a {1 {b x}} c {d 2.5}" |
 | an export that calls a mounted host function (`relay`) | ok | |
 | state between invocations (a counter, three calls) (`state`) | state carries | |
@@ -401,30 +401,64 @@ claim with the spec that backs it.
 
 - **In-process transport.** a direct C call into the embedded Tcl (`dlopen`ed libtcl); no transport.
 - **Types.** everything is a string underneath. in: str, int, strlist as globals. out: str, int, double, bool (typed results). A callback reads str, int, double, bool and pushes int, str, bool, nil, double.
-- **Strings: NUL is refused, a character beyond the BMP is carried.** Tcl keeps
-  strings as "modified UTF-8": a NUL is the two bytes `C0 80`, and an 8.x built
-  with 16-bit characters (the default) keeps a character beyond the BMP as two
-  three-byte surrogate halves (CESU-8). Neither is UTF-8, and the bridge used
-  to hand those bytes to the host as if they were (the host saw `C0 80` for a
-  NUL, and six bytes for an emoji on Tcl 8.6; Tcl 9 stores four bytes and was
-  right). Every string that crosses, in either direction, is now converted at
-  the boundary (`tcl/aether_host_tcl.c`, "strings across the boundary"): an
-  emoji is joined or split into the form each side expects (Tcl 8.6 and 9.0
-  both checked, in-process and as a contained child), and **a string with an
-  embedded NUL is refused**, because carrying it would need a second
-  representation of NUL that no other language here shares, and silent
-  corruption is the worst outcome. A lone surrogate half is refused the same
-  way (UTF-8 cannot encode it). Refused means: the script gets a Tcl error it
-  can `catch`, whose message names the place and the reason (`echo: argument 1:
-  refused: it holds an embedded NUL; ...`); a callback with such an argument is
-  not called; the host gets an error result (a script result or error message
-  with a NUL is `-1` with the refusal as the message), never a truncated or
-  changed string; a host string with Tcl's `C0 80` spelling raises the same
-  error in the script, and a `set_global_str` of one makes the next `eval`
-  fail with the reason. The grid above reads `refused` for `str-nul`: a
-  deliberate, documented outcome, not a defect. Backed by
+- **Strings: an embedded NUL and a character beyond the BMP are carried; a lone
+  surrogate and the overlong `C0 80` are refused.** Tcl keeps strings as
+  "modified UTF-8": a NUL is the two bytes `C0 80`, and an 8.x built with 16-bit
+  characters (the default) keeps a character beyond the BMP as two three-byte
+  surrogate halves (CESU-8). Neither is UTF-8, and the bridge used to hand those
+  bytes to the host as if they were (the host saw `C0 80` for a NUL, and six
+  bytes for an emoji on Tcl 8.6; Tcl 9 stores four bytes and was right). From
+  2026-11-21 (c753e03) a NUL was refused rather than corrupted; since
+  2026-11-22 it is carried, as the other bridges carry it. Every string that
+  crosses, in either direction, is converted at the boundary by its length
+  (`tcl/aether_host_tcl.c`, "strings across the boundary"): `00` becomes `C0 80`
+  going in and back going out, and an emoji is joined or split into the form
+  each side expects (Tcl 8.6 and 9.0 both checked, in-process and as a
+  contained child). The conversion is the bridge's own, not Tcl's `utf-8`
+  encoding (`Tcl_ExternalToUtfDString`), because that encoding treats `C0 80`,
+  a lone surrogate and an astral character differently in 8.6 and in 9 (which
+  has strict, replace and tcl8 profiles), and 8.5 has none of that: the same
+  rules on every Tcl is worth more than a few lines. Tcl's own string form
+  has no zero byte before its end, so a string read out of Tcl is exact by
+  `strlen`, and is handed to the host as an Aether string with that length
+  (`arg_str`, `vm_result_str` return `string @heap` made from the bytes and the
+  length, as the Lua and QuickJS bridges do).
+
+  A NUL crosses in every place a string does: a callback's arguments and its
+  `push_str`, a script's result, an error message (a script's, or the host's
+  `raise_error`), the elements of a list or a dict's keys and values as the
+  string they are, `set_global_str` and `set_global_strlist`, the shared map's
+  keys and values (`aether_map_get` and `aether_map_put`, by length: Aether
+  0.935.0), the script text of `run`, `run_sandboxed`, `run_sandboxed_with_map`
+  and `vm_eval` (a NUL is a character of a Tcl script: inside a word it is part
+  of the word, and at the start of one it joins the word after it, so
+  `set a 1;<NUL>set b 2` runs the first command and then fails with `invalid
+  command name` naming the whole of the odd name), the names of a global and of a
+  registered command (Tcl takes a name in its own string form, so `ab<NUL>cd`
+  is one command and is called by that name, from a `[format ab%ccd 0]` or
+  from a raw NUL in the script), and, in the contained child, the worker's JSON
+  (a NUL is written `\u0000` and read back) and its `SAY` text. Nothing is
+  refused for holding a NUL. The two things that are refused are what UTF-8
+  cannot spell: a lone surrogate half (in a script's result or error
+  message, a callback argument or the shared map), and, from the host, the
+  overlong `C0 80` (a host string with those bytes would read back as a real
+  NUL, a different string). Refused means: the script gets a Tcl error it can
+  `catch`, whose message names the place and the reason (`echo: argument 1:
+  refused: it holds an unpaired surrogate, which UTF-8 cannot encode`); a
+  callback with such an argument is not called; the host gets an error result,
+  never a changed string; a host string with `C0 80` raises the same error in
+  the script, a `set_global_str` of one makes the next `eval` fail with the
+  reason, and a `register` of a command with it returns -1. (A script makes a
+  lone surrogate with `format %c 55296`.) The grid above reads `ok` for `str-nul`, as the other languages
+  do; `map-nul` reads like `map`, which is Tcl's dict written as a string
+  (`k v n 1`): the NUL is in it, and carried. Backed by
   `tcl/test_host_tcl_vm.ae` ("a character beyond the BMP crosses both ways, as
-  UTF-8", "an embedded NUL is refused, in every place a string crosses").
+  UTF-8", "a NUL crosses, both ways, at every string crossing", "an error
+  message keeps its NUL, in the script's error and the host's", "script text
+  and names carry a NUL too", "what UTF-8 cannot spell is refused, in every
+  place a string crosses"), `tcl/test_host_tcl.ae` ("the shared map carries a
+  NUL in a key and a value, both ways, and script text carries one") and the
+  shared boundary and invoke cases (`str-nul`, `map-nul`).
 - **The macOS column is Homebrew's Tcl 8.6 and 9.1 (CI).** The system's Tcl 8.5 (what
   `/usr/lib/libtcl.dylib` is) gives one different cell: a callback that returns
   nil reads back as the empty string, not as nil (`null`, host to guest), because

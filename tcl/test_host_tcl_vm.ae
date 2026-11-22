@@ -84,6 +84,40 @@ cb_raise_overlong(vm: ptr) -> int {
     return tcl.raise_error(vm, ghl_t_overlong_nul())
 }
 
+// The byte length of its string argument (a NUL counts).
+@c_callback
+cb_arg_len(vm: ptr) -> int {
+    tcl.push_int(vm, string.length(tcl.arg_str(vm, 1)))
+    return 1
+}
+
+// A string with a NUL in it, from the host.
+@c_callback
+cb_give_nul(vm: ptr) -> int {
+    tcl.push_str(vm, "a\0b")
+    return 1
+}
+
+// An error with a NUL in its message, raised by the host.
+@c_callback
+cb_raise_nul(vm: ptr) -> int {
+    return tcl.raise_error(vm, "bad\0msg")
+}
+
+// A string's bytes as decimal numbers, "97 0 98": what a comparison that stops
+// at a NUL cannot say.
+fn bytes_of(s: string) -> string {
+    out = ""
+    n = string.length(s)
+    i = 0
+    while i < n {
+        if i > 0 { out = "${out} " }
+        out = "${out}${string.char_at(s, i)}"
+        i = i + 1
+    }
+    return out
+}
+
 // Each argument's type tag, as a string of digits.
 @c_callback
 cb_types(vm: ptr) -> int {
@@ -192,6 +226,9 @@ main() {
         tcl.vm_register(vm, "host.flag", cb_flag)
         tcl.vm_register(vm, "host.overlong", cb_overlong)
         tcl.vm_register(vm, "host.raise_overlong", cb_raise_overlong)
+        tcl.vm_register(vm, "host.arg_len", cb_arg_len)
+        tcl.vm_register(vm, "host.give_nul", cb_give_nul)
+        tcl.vm_register(vm, "host.raise_nul", cb_raise_nul)
     }
 
     spec.describe(fw, "tcl vm (#904)") {
@@ -234,26 +271,104 @@ main() {
             tcl.vm_pop_result(vm)
         }
 
-        spec.it_when(have_tcl, "an embedded NUL is refused, in every place a string crosses", reason) callback {
+        // Tcl keeps NUL as the two bytes C0 80; the bridge converts by length, so
+        // a NUL is the byte 00 on the host's side and a character of the string
+        // on Tcl's, at every place a string crosses. (From 2026-11-21 until
+        // 2026-11-22 these were refused: c753e03.)
+        spec.it_when(have_tcl, "a NUL crosses, both ways, at every string crossing", reason) callback {
+            // guest to host: a result, a callback's argument, a list element
+            spec.assert_eq(ev(vm, "format a%cb 0"), 0, "a result with a NUL is a result")
+            spec.assert_eq(tcl.vm_result_type(vm), tcl.TCL_TSTR, "a string")
+            spec.assert_str_eq(bytes_of(tcl.vm_result_str(vm)), "97 0 98", "vm_result_str keeps the NUL and what follows it")
+            ev(vm, "host.arg_len [format a%cb%c 0 0]")
+            spec.assert_eq_long(tcl.vm_result_int(vm), 4, "arg_str is four bytes, not one")
+            ev(vm, "host.echo_str [format a%cb 0]")
+            spec.assert_str_eq(bytes_of(tcl.vm_result_str(vm)), "97 0 98", "arg_str into push_str and back")
+            ev(vm, "host.echo_str [list x [format a%cb 0]]")
+            spec.assert_str_eq(bytes_of(tcl.vm_result_str(vm)), "120 32 97 0 98", "a list with a NUL in an element")
+            // host to guest: push_str, a global, a list of strings
+            ev(vm, "set g [host.give_nul]; list [string length $g] [scan [string index $g 1] %c]")
+            spec.assert_str_eq(tcl.vm_result_str(vm), "3 0", "push_str keeps it")
+            tcl.vm_set_global_str(vm, "NULSTR", "a\0b\0")
+            ev(vm, "list [string length $NULSTR] [scan [string index $NULSTR 1] %c] [scan [string index $NULSTR 2] %c]")
+            spec.assert_str_eq(tcl.vm_result_str(vm), "4 0 98", "set_global_str: the script sees all of it, a trailing NUL included")
+            items = list.new()
+            list.add(items, "p\0q")
+            list.add(items, "plain")
+            list.add(items, "\0")
+            tcl.vm_set_global_strlist(vm, "NULLIST", items)
+            list.free(items)
+            ev(vm, "set r {}; foreach s $NULLIST { lappend r [string length $s] }; set r")
+            spec.assert_str_eq(tcl.vm_result_str(vm), "3 5 1", "set_global_strlist: each keeps its NUL")
+            // a NUL and a character beyond the BMP in one string
+            ev(vm, "host.echo_str \"x\0😀\0y\"")
+            spec.assert_str_eq(bytes_of(tcl.vm_result_str(vm)), "120 0 240 159 152 128 0 121", "both, as UTF-8")
+            tcl.vm_pop_result(vm)
+        }
+
+        spec.it_when(have_tcl, "an error message keeps its NUL, in the script's error and the host's", reason) callback {
+            spec.assert_eq(ev(vm, "error [format x%cy 0]"), -1, "a script error")
+            spec.assert_str_eq(bytes_of(tcl.vm_result_str(vm)), "120 0 121", "x NUL y, whole")
+            spec.assert_eq(tcl.vm_result_type(vm), tcl.TCL_TERR, "an error")
+            ev(vm, "catch {host.raise_nul} m; list [string length $m] [scan [string index $m 3] %c]")
+            spec.assert_str_eq(tcl.vm_result_str(vm), "7 0", "raise_error's message reaches the script, NUL and all")
+            spec.assert_eq(ev(vm, "host.raise_nul"), -1, "uncaught")
+            spec.assert_str_eq(bytes_of(tcl.vm_result_str(vm)), "98 97 100 0 109 115 103", "the host reads it whole")
+            spec.assert_eq(ev(vm, "expr 1 + 1"), 0, "and the VM runs on")
+            tcl.vm_pop_result(vm)
+        }
+
+        // A NUL is a character of Tcl script text, in a word or in a name, and the
+        // name of a global or a command is the whole of what the host gave.
+        spec.it_when(have_tcl, "script text and names carry a NUL too", reason) callback {
+            spec.assert_eq(ev(vm, "set NS \"p\0q\"; string length $NS"), 0, "a raw NUL inside a quoted word")
+            spec.assert_eq_long(tcl.vm_result_int(vm), 3, "is a character of the word")
+            spec.assert_eq(ev(vm, "set X1 1;\0set X2 2"), -1, "a raw NUL where a command starts joins the word after it")
+            spec.assert_str_eq(bytes_of(tcl.vm_result_str(vm)), "105 110 118 97 108 105 100 32 99 111 109 109 97 110 100 32 110 97 109 101 32 34 0 115 101 116 34", "an invalid command name, named whole")
+            ev(vm, "info exists X1")
+            spec.assert_eq_long(tcl.vm_result_int(vm), 1, "and what came before it ran")
+            ev(vm, "info exists X2")
+            spec.assert_eq_long(tcl.vm_result_int(vm), 0, "and what came after did not")
+            tcl.vm_set_global_str(vm, "AB\0CD", "v")
+            tcl.vm_set_global_int(vm, "AB\0CI", 7)
+            items = list.new()
+            list.add(items, "x")
+            tcl.vm_set_global_strlist(vm, "AB\0CL", items)
+            list.free(items)
+            ev(vm, "list [set [format AB%cCD 0]] [set [format AB%cCI 0]] [lindex [set [format AB%cCL 0]] 0] [info exists AB]")
+            spec.assert_str_eq(tcl.vm_result_str(vm), "v 7 x 0", "each under its whole name, none under the part before the NUL")
+            spec.assert_eq(tcl.vm_register(vm, "ab\0cd", cb_add), 0, "a command's name")
+            spec.assert_eq(tcl.vm_register(vm, "nq\0s::add", cb_add), 0, "a namespaced name with a NUL in a part")
+            ev(vm, "list [[format ab%ccd 0] 2 3] [[format nq%cs::add 0] 4 5] [info commands ab]")
+            spec.assert_str_eq(tcl.vm_result_str(vm), "5 9 {}", "both called under their whole names, neither under the part before the NUL")
+            spec.assert_eq(ev(vm, "ab\0cd 6 7"), 0, "and called by a raw NUL in the script text")
+            spec.assert_eq_long(tcl.vm_result_int(vm), 13, "the same command")
+            tcl.vm_pop_result(vm)
+        }
+
+        // What cannot cross is refused, with the reason, and nothing is changed
+        // on the way: a lone surrogate (UTF-8 has no spelling for one) and, from
+        // the host, the overlong NUL C0 80 (not UTF-8; it would read back as a
+        // NUL).
+        spec.it_when(have_tcl, "what UTF-8 cannot spell is refused, in every place a string crosses", reason) callback {
             tcl.vm_set_global_int(vm, "CALLED", 0)
-            // guest to host: the result
-            spec.assert_eq(ev(vm, "format a%cb 0"), -1, "a result with a NUL is an error result")
-            spec.assert_eq(tcl.vm_result_type(vm), tcl.TCL_TERR, "typed as an error")
-            spec.assert_true(string.contains(tcl.vm_result_str(vm), "the script's result: refused: it holds an embedded NUL") == 1, "that names the reason")
-            // the error message
-            spec.assert_eq(ev(vm, "error [format a%cb 0]"), -1, "an error message with a NUL")
-            spec.assert_true(string.contains(tcl.vm_result_str(vm), "the script's error message: refused") == 1, "is refused too")
-            // a callback's argument: the host function is not called, the script can catch it
-            spec.assert_eq(ev(vm, "host.flag [format a%cb 0]"), -1, "a callback argument with a NUL")
-            spec.assert_true(string.contains(tcl.vm_result_str(vm), "host.flag: argument 1: refused: it holds an embedded NUL") == 1, "names the command and the argument")
-            spec.assert_eq(ev(vm, "expr {[info exists CALLED] ? $CALLED : -1}"), 0, "ran")
-            spec.assert_eq_long(tcl.vm_result_int(vm), 0, "the host function was never called")
-            spec.assert_eq(ev(vm, "catch {host.echo_str [format a%cb 0]} m; string range $m 0 37"), 0, "the script can catch it")
-            spec.assert_str_eq(tcl.vm_result_str(vm), "host.echo_str: argument 1: refused: it", "and read it")
-            spec.assert_eq(ev(vm, "host.echo_str [list x [format a%cb 0]]"), -1, "a list with a NUL in an element")
-            // host to guest: the one NUL a C string can carry is Tcl's own spelling
+            // the script makes a lone surrogate (`format %c 55296`): Tcl 8 keeps it,
+            // and Tcl 9 may already have turned it into U+FFFD
+            rc = ev(vm, "format a%cb 55296")
+            if rc == -1 {
+                spec.assert_true(string.contains(tcl.vm_result_str(vm), "the script's result: refused: it holds an unpaired surrogate") == 1, "a result with a lone surrogate is refused, and says why")
+            } else {
+                spec.assert_str_eq(bytes_of(tcl.vm_result_str(vm)), "97 239 191 189 98", "this Tcl made it U+FFFD, which is UTF-8")
+            }
+            rc = ev(vm, "host.flag [format a%cb 55296]")
+            if rc == -1 {
+                spec.assert_true(string.contains(tcl.vm_result_str(vm), "host.flag: argument 1: refused: it holds an unpaired surrogate") == 1, "a callback argument with one: refused, naming the command")
+                ev(vm, "expr {[info exists CALLED] ? $CALLED : -1}")
+                spec.assert_eq_long(tcl.vm_result_int(vm), 0, "the host function was never called")
+            }
+            // host to guest: C0 80, the one spelling of NUL a string can hold that is not a NUL
             spec.assert_eq(ev(vm, "catch {host.overlong} m; set m"), 0, "a callback's string with C0 80")
-            spec.assert_true(string.contains(tcl.vm_result_str(vm), "the value the host returned: refused: it holds an embedded NUL") == 1, "is refused in the script")
+            spec.assert_true(string.contains(tcl.vm_result_str(vm), "the value the host returned: refused: it holds the overlong NUL C0 80") == 1, "is refused in the script")
             spec.assert_eq(ev(vm, "catch {host.raise_overlong} m; set m"), 0, "an error message with C0 80")
             spec.assert_true(string.contains(tcl.vm_result_str(vm), "the error message the host raised: refused") == 1, "is refused too")
             tcl.vm_set_global_str(vm, "BAD", ghl_t_overlong_nul())
@@ -261,17 +376,10 @@ main() {
             spec.assert_true(string.contains(tcl.vm_result_str(vm), "tcl_vm_set_global_str(BAD): the value: refused") == 1, "and names the global")
             spec.assert_eq(ev(vm, "info exists BAD"), 0, "the eval after that runs")
             spec.assert_eq_long(tcl.vm_result_int(vm), 0, "and the global was not set")
-            // a real NUL: an Aether string carries one, a C string would have been cut at it
-            tcl.vm_set_global_str(vm, "REAL", "a\0b")
-            spec.assert_eq(ev(vm, "expr 1"), -1, "a global set from a string with a real NUL: the next eval does not run")
-            spec.assert_true(string.contains(tcl.vm_result_str(vm), "tcl_vm_set_global_str(REAL): the value: refused") == 1, "and names the global")
-            spec.assert_eq(ev(vm, "info exists REAL"), 0, "the eval after that runs")
-            spec.assert_eq_long(tcl.vm_result_int(vm), 0, "and the global was not set (not set to a)")
-            spec.assert_eq(ev(vm, "a\0b"), -1, "a script with a real NUL in it")
-            spec.assert_true(string.contains(tcl.vm_result_str(vm), "the script: refused") == 1, "is refused, not run as the script a")
             spec.assert_eq(ev(vm, ghl_t_overlong_nul()), -1, "a script with C0 80 in it")
             spec.assert_true(string.contains(tcl.vm_result_str(vm), "the script: refused") == 1, "is refused")
-            // nothing was changed on the way: a string without one still works
+            spec.assert_eq(tcl.vm_register(vm, ghl_t_overlong_nul(), cb_add), -1, "a command named with C0 80")
+            // everything else still crosses
             spec.assert_eq(ev(vm, "host.echo_str ok"), 0, "afterwards")
             spec.assert_str_eq(tcl.vm_result_str(vm), "ok", "everything else crosses")
             tcl.vm_pop_result(vm)

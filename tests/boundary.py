@@ -137,7 +137,8 @@ def judge_value(r, want, direction):
     if k == "HUNG": return "hung", ""
     # A refusal the language documents: the script is stopped with an error that
     # says "refused: it holds <what>" and nothing reached the host. It is a
-    # deliberate outcome, not a defect (tcl/README.md says why Tcl refuses NUL).
+    # deliberate outcome, not a defect (tcl/README.md says what Tcl refuses: a
+    # lone surrogate and the overlong C0 80, never a NUL).
     if k == "ERROR" and "refused: it holds" in t: return "refused", short(t)
     if k == "ERROR": return "error", short(t)
     if k == "KILLED": return "killed", short(t)

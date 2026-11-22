@@ -112,14 +112,10 @@ w_args(vm: ptr) -> int {
 // before the script. Written for Tcl 8.5 and later.
 fn slave_prelude() -> string {
     return <<TCL
-# A string with an embedded NUL does not cross, either way: Tcl keeps NUL as
-# the two bytes C0 80, which are not UTF-8 and would reach the host as a corrupt
-# string. The script gets a Tcl error it can catch (the bridge refuses the same
-# string in its own C, tcl/aether_host_tcl.c).
-proc ::__refuse_nul {what} {
-    error "$what: refused: it holds an embedded NUL; Tcl stores NUL as the two bytes C0 80, which are not UTF-8, so this bridge refuses it rather than pass on bytes that are wrong"
-}
-
+# A string with an embedded NUL crosses whole, in both directions: the bridge
+# (tcl/aether_host_tcl.c) converts Tcl's spelling of NUL (C0 80) to the byte 00
+# and back by length, and this glue writes it in JSON as \u0000 and reads that
+# back, so a frame never holds a raw zero byte.
 namespace eval ::__json {
     variable s ""
     variable i 0
@@ -128,7 +124,7 @@ namespace eval ::__json {
 # A word as a JSON value: a number as itself, anything else a string.
 proc ::__json::enc {v} {
     if {[regexp {^-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][-+]?[0-9]+)?$} $v]} { return $v }
-    set v [string map [list \\ \\\\ \" \\\" \n \\n \r \\r \t \\t \b \\b \f \\f] $v]
+    set v [string map [list \\ \\\\ \" \\\" \n \\n \r \\r \t \\t \b \\b \f \\f [format %c 0] {\u0000}] $v]
     while {[regexp -indices {[\x01-\x1f]} $v m]} {
         set k [lindex $m 0]
         scan [string index $v $k] %c n
@@ -169,7 +165,6 @@ proc ::__json::str {} {
             t { append out \t; set i [expr {$j + 2}] }
             u {
                 set cp 0x[string range $s [expr {$j + 2}] [expr {$j + 5}]]
-                if {$cp == 0} { ::__refuse_nul "the host's answer" }
                 append out [format %c $cp]
                 set i [expr {$j + 6}]
             }
@@ -236,10 +231,7 @@ proc ::__json::dec {text} {
 # A call of a mounted command: CALL name [args as JSON], then the answer.
 proc ::__ae_invoke {name arglist} {
     set a {}
-    set n 0
     foreach x $arglist {
-        incr n
-        if {[string first [format %c 0] $x] >= 0} { ::__refuse_nul "$name: argument $n" }
         lappend a [::__json::enc $x]
     }
     set r [__call $name "\[[join $a ,]\]"]
@@ -287,10 +279,6 @@ proc ::__ae_serve {name} {
     if {$name ni $::__ae_exports::served} { return "RAISE\ninvalid command name \"$name\": not exported" }
     set words [::__json::dec [__args]]
     if {[catch {uplevel #0 [list $name {*}$words]} res]} { return "RAISE\n$res" }
-    if {[string first [format %c 0] $res] >= 0} {
-        catch {::__refuse_nul "$name: the result"} why
-        return "RAISE\n$why"
-    }
     return "RETURN\n[::__json::enc $res]"
 }
 rename puts ::__ae_puts
@@ -302,7 +290,6 @@ proc puts {args} {
     }
     if {$n == 1 || ($n == 2 && [lindex $args 0] in {stdout stderr})} {
         set text [lindex $args end]
-        if {[string first [format %c 0] $text] >= 0} { ::__refuse_nul "puts: the text" }
         __say $text
     } else {
         return [uplevel 1 [linsert $args 0 ::__ae_puts]]
