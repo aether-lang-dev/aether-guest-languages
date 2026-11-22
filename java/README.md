@@ -334,7 +334,7 @@ The top-level README's first table says it in a line; this is the detail, each
 claim with the spec that backs it.
 
 - **In-process transport.** there is no in-process way: the bridge starts a JVM as a child process (with the agent jar when sandboxed).
-- **Types.** out: the JVM's exit status; the shared map through `AETHER_MAP_SHM` (the agent's `AetherMap`).
+- **Types.** out: the JVM's exit status; the shared map through `AETHER_MAP_SHM` (the agent's `AetherMap`, which reads and writes Aether's layout 2 by length, so a NUL in a key or a value crosses, and refuses a block in any other shape whole).
 - **Duplex.** none: the host starts it and waits.
 - **Callbacks.** none in the bridge.
 - **Errors and state.** a class that is not there is the JVM's 1; a JVM that cannot start is -1.

@@ -49,7 +49,11 @@ plain exec-bin-sh succeed
 # a value holding a NUL each way): java.run_sandboxed_with_map with no grants,
 # so no preload, on every platform. AgentTest above holds the codec and the
 # malformed blocks.
-for row in map-get map-set; do
+# map-set writes outputs back, which on macOS a shared memory object cannot
+# grow to take (it is sized once, when the host makes it): Linux only.
+rows=map-get
+[ "$PLAT" = linux ] && rows="map-get map-set"
+for row in $rows; do
     (cd "$WORK" && env -u GHL_JAVA_UNCONTAINED GHL_JAVA_MAP_NO_WALL=1 "$HOST" inproc - "$row" succeed) > "$TMP/nowall.txt" 2>&1 ||
         die "the shared map, no wall: $row" "$TMP/nowall.txt"
     printf '  [PASS] the shared map, no wall: %s\n' "$(tail -1 "$TMP/nowall.txt")"

@@ -134,9 +134,13 @@ Pass what the child needs through the environment: the bridge gives it no
 arguments. `containment/host.ae` does it for the checks (`GHL_ROW`,
 `GHL_EXPECT`). For typed values both ways there is the shared map
 (`go.run_sandboxed_with_map(perms, binary, token)`): `AETHER_MAP_SHM` names a
-POSIX shared memory segment in the format `go/rows/cgo.go` reads and writes
-(frozen-count, then key/value pairs; the pairs after the frozen inputs are
-read back as outputs when the child exits). On macOS the child cannot write
+POSIX shared memory segment in Aether's layout 2, which `go/rows/cgo.go`
+reads and writes (the magic `AESM`, a zero word, version 2, frozen_count,
+entry_count, then each entry's key_len, value_len and bytes, little-endian
+u32s; the entries after the frozen inputs are read back as outputs when the
+child exits). Keys and values are bytes by their length, so a NUL in either
+crosses; a block in any other shape is refused whole, as Aether's own reader
+refuses one (`go/rows/shm_test.go`). On macOS the child cannot write
 outputs back: macOS gives a shared memory object one size, set when it is
 made, and the host sizes it for the inputs.
 

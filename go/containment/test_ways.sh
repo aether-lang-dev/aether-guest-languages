@@ -38,7 +38,11 @@ if [ "$GO_CGO" = 1 ]; then
     # it, writes its outputs back, and the host reads them (with a key and a
     # value holding a NUL each way): go.run_sandboxed_with_map with no grants,
     # so no preload, on every platform.
-    for row in map-get map-set; do
+    # map-set writes outputs back, which on macOS a shared memory object cannot
+# grow to take (it is sized once, when the host makes it): Linux only.
+rows=map-get
+[ "$PLAT" = linux ] && rows="map-get map-set"
+for row in $rows; do
         (cd "$WORK" && GHL_GO_MAP_NO_WALL=1 "$HOST" inproc - "$row" succeed) > "$TMP/nowall.txt" 2>&1 ||
             die "the shared map, no wall: $row" "$TMP/nowall.txt"
         printf '  [PASS] the shared map, no wall: %s\n' "$(tail -1 "$TMP/nowall.txt")"
