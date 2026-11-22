@@ -26,10 +26,6 @@ for a in "$@"; do
 done
 fails=0
 
-# Every worker is built on std.guest's host-calls-guest verb: an ae without it
-# is said once, plainly, instead of as a build error in every test.
-ROOT="$ROOT" sh "$SCRIPT_DIR/need_invoke.sh" || { echo "1 FAILED"; exit 1; }
-
 # Which host produced a column of the parity table.
 host_text() {
     case "$(uname -s)" in
