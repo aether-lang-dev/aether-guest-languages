@@ -73,7 +73,7 @@ fn run_row(g: sandbox.Grants, checks: string, uncontained: int) -> int {
     // No wall, but the shared map (GHL_GO_MAP_NO_WALL=1, go/containment/test_ways.sh):
     // the host writes the block, the child reads it and writes its outputs
     // back, on a platform or a runtime the preload would not let start.
-    if os.getenv("GHL_GO_MAP_NO_WALL") == "1" { return go.run_sandboxed_with_map(null, checks, ghl_map_new()) }
+    if os.getenv("GHL_GO_MAP_NO_WALL") == "1" { return go.run_sandboxed_with_map(null as sandbox.Grants, checks, ghl_map_new()) }
     return go.run_sandboxed_with_map(g, checks, ghl_map_new())
 }
 

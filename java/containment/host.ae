@@ -111,7 +111,7 @@ fn run_row(g: sandbox.Grants, classes: string, uncontained: int) -> int {
     // No wall, but the shared map (GHL_JAVA_MAP_NO_WALL=1, java/containment/test_ways.sh):
     // the host writes the block, the child reads it and writes its outputs
     // back, on a platform or a runtime the preload would not let start.
-    if os.getenv("GHL_JAVA_MAP_NO_WALL") == "1" { return java.run_sandboxed_with_map(null, classes, "ghl.containment.Checks", ghl_map_new()) }
+    if os.getenv("GHL_JAVA_MAP_NO_WALL") == "1" { return java.run_sandboxed_with_map(null as sandbox.Grants, classes, "ghl.containment.Checks", ghl_map_new()) }
     return java.run_sandboxed_with_map(g, classes, "ghl.containment.Checks", ghl_map_new())
 }
 
