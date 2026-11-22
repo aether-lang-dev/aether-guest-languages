@@ -194,7 +194,7 @@ main() {
         if rc == 0 {
             quickjs.vm_pop_result(vm)
             // The watcher stays on while the guest serves (serve_exports).
-            serve_exports(vm, w)
+            serve_guest(vm, w)
         } else if h.cancel != "" || quickjs.vm_result_str(vm) == "InternalError: interrupted: cancelled" {
             // The watcher saw the host speak; read what it said.
             ghl_watch_stop(w.watch)
@@ -215,17 +215,20 @@ main() {
     exit(0)
 }
 
-// After the script: DONE when it exported nothing; otherwise READY, and each
-// INVOKE runs __ae_serve in the same runtime, with the watcher on as it is for
-// the script, until END or a cancel. The one watcher started for the script
-// keeps running: from before READY or an answer goes out until serve has read
-// the host's next frame it is marked as in a call (ghl_watch_call), so an
-// INVOKE is not taken for a cancel; starting a
-// watcher per invocation cost a thread and a join each time. A cancel heard inside an invocation (the
-// watcher's cancel cell, or a call's reply) ends the worker: the function's
-// state is half done. (Not named serve: an unqualified call inside child.run's
-// callback block resolves to child's own serve.)
-fn serve_exports(vm: ptr, w: *Worker) {
+// After the script: DONE when it exported nothing; otherwise READY, and
+// std.guest.child's serve_exports runs, for each INVOKE, __ae_serve in the
+// same runtime, with the watcher on as it is for the script, until END or a
+// cancel. The one watcher started for the script keeps running: from before
+// READY or an answer goes out until serve has read the host's next frame it
+// is marked as in a call (ghl_watch_call), so an INVOKE is not taken for a
+// cancel; starting a watcher per invocation cost a thread and a join each
+// time. A cancel heard inside an invocation (the watcher's cancel cell, or a
+// call's reply) ends the worker: the function's state is half done.
+// std.guest.child's serve_exports sends the answer: a value too large for the
+// host's frame is raised and the worker serves on. (Named serve_guest: an
+// unqualified call inside child.run's callback block resolves to a
+// std.guest.child export of the same name, such as serve or serve_exports.)
+fn serve_guest(vm: ptr, w: *Worker) {
     h = w.h
     quickjs.vm_eval(vm, "__ae_ready()")
     names = quickjs.vm_result_str(vm)
@@ -238,33 +241,24 @@ fn serve_exports(vm: ptr, w: *Worker) {
     // the host's INVOKE may arrive at once, and is not unasked.
     ghl_watch_call(w.watch, 1)
     child.ready(h, names)
-    while true {
-        inv = child.serve(h)
+    child.serve_exports(h) callback | sh: *child.Host, inv: child.Invocation | {
         ghl_watch_call(w.watch, 0)
-        if inv.kind == "END" {
-            child.done(h, 0)
-            return
-        }
-        if inv.kind != "INVOKE" {
-            child.error(h, "cancelled by host: ${inv.args}")
-            return
-        }
         rc = quickjs.vm_eval(vm, "__ae_serve(${child.json_string(inv.name)})")
         out = quickjs.vm_result_str(vm)
         quickjs.vm_pop_result(vm)
-        if h.cancel != "" || out == "InternalError: interrupted: cancelled" {
-            why = h.cancel
-            if why == "" { why = child.poll(h) }
-            child.error(h, "cancelled by host: ${why}")
-            return
+        // Marked again before serve_exports answers: the next INVOKE may
+        // follow the answer at once.
+        ghl_watch_call(w.watch, 1)
+        if sh.cancel == "" && out == "InternalError: interrupted: cancelled" {
+            // The watcher saw the host speak; read what it said, which sets
+            // sh.cancel, and serve_exports ends the worker.
+            why = child.poll(sh)
+            if sh.cancel == "" { sh.cancel = if why == "" { "the host spoke unasked" } else { why } }
         }
-        if rc != 0 {
-            child.error(h, out)
-            return
-        }
+        if rc != 0 { return child.Reply { kind: "FAIL", text: out } }
         at = string.index_of(out, "\n")
         text = string.substring(out, at + 1, string.length(out))
-        ghl_watch_call(w.watch, 1)
-        if string.starts_with(out, "RETURN") == 1 { child.returned(h, text) } else { child.raised(h, text) }
+        if string.starts_with(out, "RETURN") == 1 { return child.Reply { kind: "VALUE", text: text } }
+        return child.Reply { kind: "FAIL", text: text }
     }
 }

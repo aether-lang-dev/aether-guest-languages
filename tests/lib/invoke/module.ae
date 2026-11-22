@@ -28,6 +28,9 @@
 //   E                     end the guest (END), then read until it has ended
 //   A<TAB>name<TAB>args   try to invoke after the guest has ended
 //
+// $GHL_INVOKE_MAXFRAME, when set, is the host's g.max_frame (std.guest then
+// tells the worker, MAXFRAME, before the script).
+//
 // Output lines are "TAG <n> <text>", length-prefixed so that nothing the guest
 // chose can forge or split another: READY, RETURN, RAISE, NOSEND, WIRE, SAY,
 // CALL (the name of every host call), and END for the event that ended the
@@ -135,6 +138,9 @@ run(g: *guest.Guest, script: string) -> int {
     }
     g.deadline_ms = 1500
     g.grace_ms = 1000
+    // A host that reads smaller frames says so before the script (MAXFRAME).
+    small, serr = string.to_int(os.getenv("GHL_INVOKE_MAXFRAME"))
+    if serr == "" && small > 0 { g.max_frame = small }
     txns = list.new()
     guest.start(g, script)
     e = until_settled(g, txns)

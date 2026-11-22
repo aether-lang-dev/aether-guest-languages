@@ -57,3 +57,17 @@ open question 7, released 0.934.0). Every worker's loop is named
 `Host.invoked` (the arguments, fetched from an engine callback rather than
 spliced into source) is what made a 60 KB argument cost a copy in every
 worker; `is_mounted` let each refuse a mount under its export name. Keep both.
+
+## RESOLVED on aether's `batch/guest-invoke` (9ab5efde9), 2026-11-22
+
+1. `child.returned` returns why it sent nothing for a value too large for
+   the host's frame; `child.serve_exports` raises it and the worker serves on
+   (each language's grid: `big`, now "refused (`RAISE`), the guest serves on").
+2. `guest.invoke` refuses an `INVOKE` frame over 64 KiB before sending, and
+   the guest serves on (`big-arg`). A host that lowers `max_frame` tells the
+   worker with `MAXFRAME` before the script (`maxframe`, a new case).
+3. `child.serve_exports(h) callback | sh, inv | { ... }` is the serving loop;
+   every worker here uses it, and each worker's own loop is gone. The
+   workers' helper that calls it is named `serve_guest`: the callback-block
+   name resolution (item 4, still open in the compiler) would have bound an
+   unqualified `serve_exports` to the new export.

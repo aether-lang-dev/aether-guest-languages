@@ -221,20 +221,22 @@ main() {
         if python.vm_eval(vm, h.source) != 0 {
             child.error(h, python.vm_result_str(vm))
         } else {
-            serve_exports(vm, h)
+            serve_guest(vm, h)
         }
     }
     exit(0)
 }
 
-// After the script: DONE when it exported nothing, as before exports
-// existed; otherwise READY, and every INVOKE runs __invoke in the same
-// interpreter until END, a CANCEL, or a cancel heard inside an invocation
-// (the trace hook, or a call's reply), which ends the worker: the function's
-// state is half done. (Named serve_exports, not serve: an unqualified call
-// inside child.run's callback block resolves to child's own export of the
-// same name.)
-fn serve_exports(vm: ptr, h: *child.Host) {
+// After the script: DONE when it exported nothing, as before exports existed;
+// otherwise READY, and every INVOKE runs __invoke in the same interpreter
+// until END, a CANCEL, or a cancel heard inside an invocation (the trace
+// hook, or a call's reply), which ends the worker: the function's state is
+// half done. std.guest.child's serve_exports sends the answer: a value too
+// large for the host's frame is raised and the worker serves on. (Named
+// serve_guest: an unqualified call inside child.run's callback block resolves
+// to a std.guest.child export of the same name, such as serve or
+// serve_exports.)
+fn serve_guest(vm: ptr, h: *child.Host) {
     python.vm_eval(vm, "__ready()")
     names = python.vm_result_str(vm)
     python.vm_pop_result(vm)
@@ -243,28 +245,15 @@ fn serve_exports(vm: ptr, h: *child.Host) {
         return
     }
     child.ready(h, names)
-    while true {
-        inv = child.serve(h)
-        if inv.kind == "END" {
-            child.done(h, 0)
-            return
-        }
-        if inv.kind != "INVOKE" {
-            child.error(h, "cancelled by host: ${inv.args}")
-            return
-        }
+    child.serve_exports(h) callback | sh: *child.Host, inv: child.Invocation | {
         if python.vm_eval(vm, "__invoke(${child.json_string(inv.name)})") != 0 {
-            child.error(h, python.vm_result_str(vm))
-            return
+            return child.Reply { kind: "FAIL", text: python.vm_result_str(vm) }
         }
         out = python.vm_result_str(vm)
         python.vm_pop_result(vm)
-        if h.cancel != "" {
-            child.error(h, "cancelled by host: ${h.cancel}")
-            return
-        }
         at = string.index_of(out, "\n")
         text = string.substring(out, at + 1, string.length(out))
-        if string.starts_with(out, "RETURN") == 1 { child.returned(h, text) } else { child.raised(h, text) }
+        if string.starts_with(out, "RETURN") == 1 { return child.Reply { kind: "VALUE", text: text } }
+        return child.Reply { kind: "FAIL", text: text }
     }
 }

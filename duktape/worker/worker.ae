@@ -189,7 +189,7 @@ main() {
     child.run(h) callback {
         if duktape.vm_eval(vm, h.source) == 0 {
             duktape.vm_pop_result(vm)
-            serve_exports(vm, h)
+            serve_guest(vm, h)
         } else {
             child.error(h, duktape.vm_result_str(vm))
         }
@@ -197,12 +197,15 @@ main() {
     exit(0)
 }
 
-// After the script: DONE when it exported nothing; otherwise READY, and each
-// INVOKE runs __ae_serve in the same heap until END or a cancel, which (heard
-// in a call's reply) ends the worker: the function's state is half done. (Not
-// named serve: an unqualified call inside child.run's callback block resolves
-// to child's own serve.)
-fn serve_exports(vm: ptr, h: *child.Host) {
+// After the script: DONE when it exported nothing; otherwise READY, and
+// std.guest.child's serve_exports runs, for each INVOKE, __ae_serve in the
+// same heap until END or a cancel, which (heard in a call's reply) ends the
+// worker: the function's state is half done. std.guest.child's serve_exports
+// sends the answer: a value too large for the host's frame is raised and the
+// worker serves on. (Named serve_guest: an unqualified call inside
+// child.run's callback block resolves to a std.guest.child export of the same
+// name, such as serve or serve_exports.)
+fn serve_guest(vm: ptr, h: *child.Host) {
     duktape.vm_eval(vm, "__ae_ready()")
     names = duktape.vm_result_str(vm)
     duktape.vm_pop_result(vm)
@@ -211,28 +214,15 @@ fn serve_exports(vm: ptr, h: *child.Host) {
         return
     }
     child.ready(h, names)
-    while true {
-        inv = child.serve(h)
-        if inv.kind == "END" {
-            child.done(h, 0)
-            return
-        }
-        if inv.kind != "INVOKE" {
-            child.error(h, "cancelled by host: ${inv.args}")
-            return
-        }
+    child.serve_exports(h) callback | sh: *child.Host, inv: child.Invocation | {
         if duktape.vm_eval(vm, "__ae_serve(${child.json_string(inv.name)})") != 0 {
-            child.error(h, duktape.vm_result_str(vm))
-            return
+            return child.Reply { kind: "FAIL", text: duktape.vm_result_str(vm) }
         }
         out = duktape.vm_result_str(vm)
         duktape.vm_pop_result(vm)
-        if h.cancel != "" {
-            child.error(h, "cancelled by host: ${h.cancel}")
-            return
-        }
         at = string.index_of(out, "\n")
         text = string.substring(out, at + 1, string.length(out))
-        if string.starts_with(out, "RETURN") == 1 { child.returned(h, text) } else { child.raised(h, text) }
+        if string.starts_with(out, "RETURN") == 1 { return child.Reply { kind: "VALUE", text: text } }
+        return child.Reply { kind: "FAIL", text: text }
     }
 }

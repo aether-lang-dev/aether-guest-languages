@@ -405,7 +405,7 @@ main() {
         tcl.vm_set_global_str(vm, "__ae_script", h.source)
         if tcl.vm_eval(vm, "__ae_run $::__ae_script") == 0 {
             tcl.vm_pop_result(vm)
-            serve_exports(vm, h)
+            serve_guest(vm, h)
         } else {
             child.error(h, tcl.vm_result_str(vm))
         }
@@ -413,13 +413,16 @@ main() {
     exit(0)
 }
 
-// After the script: DONE when it exported nothing; otherwise READY, and each
-// INVOKE runs __ae_serve in the script's interpreter, under the same time
-// limit (__ae_run), until END or a cancel. A cancel heard inside an invocation
-// (the limit's handler, or a call's reply) ends the worker: the command's state
-// is half done. (Not named serve: an unqualified call inside child.run's
-// callback block resolves to child's own serve.)
-fn serve_exports(vm: ptr, h: *child.Host) {
+// After the script: DONE when it exported nothing; otherwise READY, and
+// std.guest.child's serve_exports runs, for each INVOKE, __ae_serve in the
+// script's interpreter, under the same time limit (__ae_run), until END or a
+// cancel. A cancel heard inside an invocation (the limit's handler, or a
+// call's reply) ends the worker: the command's state is half done.
+// std.guest.child's serve_exports sends the answer: a value too large for the
+// host's frame is raised and the worker serves on. (Named serve_guest: an
+// unqualified call inside child.run's callback block resolves to a
+// std.guest.child export of the same name, such as serve or serve_exports.)
+fn serve_guest(vm: ptr, h: *child.Host) {
     tcl.vm_eval(vm, "interp eval ::__ae_slave ::__ae_ready")
     names = tcl.vm_result_str(vm)
     tcl.vm_pop_result(vm)
@@ -428,29 +431,16 @@ fn serve_exports(vm: ptr, h: *child.Host) {
         return
     }
     child.ready(h, names)
-    while true {
-        inv = child.serve(h)
-        if inv.kind == "END" {
-            child.done(h, 0)
-            return
-        }
-        if inv.kind != "INVOKE" {
-            child.error(h, "cancelled by host: ${inv.args}")
-            return
-        }
+    child.serve_exports(h) callback | sh: *child.Host, inv: child.Invocation | {
         tcl.vm_set_global_str(vm, "__ae_name", inv.name)
         if tcl.vm_eval(vm, "__ae_run [list ::__ae_serve $::__ae_name]") != 0 {
-            child.error(h, tcl.vm_result_str(vm))
-            return
+            return child.Reply { kind: "FAIL", text: tcl.vm_result_str(vm) }
         }
         out = tcl.vm_result_str(vm)
         tcl.vm_pop_result(vm)
-        if h.cancel != "" {
-            child.error(h, "cancelled by host: ${h.cancel}")
-            return
-        }
         at = string.index_of(out, "\n")
         text = string.substring(out, at + 1, string.length(out))
-        if string.starts_with(out, "RETURN") == 1 { child.returned(h, text) } else { child.raised(h, text) }
+        if string.starts_with(out, "RETURN") == 1 { return child.Reply { kind: "VALUE", text: text } }
+        return child.Reply { kind: "FAIL", text: text }
     }
 }

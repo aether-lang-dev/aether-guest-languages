@@ -388,9 +388,10 @@ The other direction (`tests/boundary.py run-invoke`, run by `tests/test_invoke.s
 | an export that raises, then another call (`raise`) | RAISE: Error: boom | |
 | a cancel inside an export's loop (`loop`) | heard in a loop | |
 | a cancel while an export waits on a host call (`wait`) | heard at the call | |
-| a 100,000-byte `RETURN` (`big`) | refused, worker killed | |
+| a 100,000-byte `RETURN` (`big`) | refused (`RAISE`), the guest serves on | |
 | three arguments of different types (`args`) | ok | |
-| a 100,000-byte `INVOKE` argument (`big-arg`) | refused: killed | |
+| a 100,000-byte `INVOKE` argument (`big-arg`) | refused by the host, nothing sent; the guest serves on | |
+| a host that reads frames of 4 KiB (`MAXFRAME`) (`maxframe`) | a value over it is refused (`RAISE`), one under it returns; the guest serves on | |
 | `INVOKE` of a name the guest did not export (`unexported`) | refused by the host, nothing sent; the guest serves on | |
 | `END` (`end`) | DONE 0 | |
 | a script that exports nothing (`none`) | DONE, as before exports | |

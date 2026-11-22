@@ -35,6 +35,7 @@ INVOKE_SPECIAL = [("relay", "an export that calls a mounted host function"), ("s
                   ("raise", "an export that raises, then another call"), ("loop", "a cancel inside an export's loop"),
                   ("wait", "a cancel while an export waits on a host call"), ("big", "a 100,000-byte `RETURN`"),
                   ("args", "three arguments of different types"), ("big-arg", "a 100,000-byte `INVOKE` argument"),
+                  ("maxframe", "a host that reads frames of 4 KiB (`MAXFRAME`)"),
                   ("unexported", "`INVOKE` of a name the guest did not export"), ("end", "`END`"),
                   ("none", "a script that exports nothing"),
                   ("txn", "notify, then fetch: two transactions, an unknown id")]

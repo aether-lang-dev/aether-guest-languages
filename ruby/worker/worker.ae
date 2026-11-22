@@ -243,7 +243,7 @@ main() {
     }
     child.run(h) callback {
         if ruby.eval(h.source) == 0 {
-            serve_exports(h)
+            serve_guest(h)
         } else {
             child.error(h, ruby.result_str())
         }
@@ -251,13 +251,16 @@ main() {
     exit(0)
 }
 
-// After the script: DONE when it exported nothing; otherwise READY, and each
-// INVOKE runs AetherGuest.serve in the same interpreter until END or a cancel.
-// A cancel heard inside an invocation (the TracePoint, or a call's reply)
-// ends the worker: the method's state is half done. (Not named serve: an
-// unqualified call inside child.run's callback block resolves to child's own
-// serve.)
-fn serve_exports(h: *child.Host) {
+// After the script: DONE when it exported nothing; otherwise READY, and
+// std.guest.child's serve_exports runs, for each INVOKE, AetherGuest.serve in
+// the same interpreter until END or a cancel. A cancel heard inside an
+// invocation (the TracePoint, or a call's reply) ends the worker: the
+// method's state is half done. std.guest.child's serve_exports sends the
+// answer: a value too large for the host's frame is raised and the worker
+// serves on. (Named serve_guest: an unqualified call inside child.run's
+// callback block resolves to a std.guest.child export of the same name, such
+// as serve or serve_exports.)
+fn serve_guest(h: *child.Host) {
     if ruby.eval("AetherGuest.ready") != 0 {
         child.error(h, ruby.result_str())
         return
@@ -268,27 +271,14 @@ fn serve_exports(h: *child.Host) {
         return
     }
     child.ready(h, names)
-    while true {
-        inv = child.serve(h)
-        if inv.kind == "END" {
-            child.done(h, 0)
-            return
-        }
-        if inv.kind != "INVOKE" {
-            child.error(h, "cancelled by host: ${inv.args}")
-            return
-        }
+    child.serve_exports(h) callback | sh: *child.Host, inv: child.Invocation | {
         if ruby.eval("AetherGuest.serve(${child.json_string(inv.name)})") != 0 {
-            child.error(h, ruby.result_str())
-            return
+            return child.Reply { kind: "FAIL", text: ruby.result_str() }
         }
         out = ruby.result_str()
-        if h.cancel != "" {
-            child.error(h, "cancelled by host: ${h.cancel}")
-            return
-        }
         at = string.index_of(out, "\n")
         text = string.substring(out, at + 1, string.length(out))
-        if string.starts_with(out, "RETURN") == 1 { child.returned(h, text) } else { child.raised(h, text) }
+        if string.starts_with(out, "RETURN") == 1 { return child.Reply { kind: "VALUE", text: text } }
+        return child.Reply { kind: "FAIL", text: text }
     }
 }

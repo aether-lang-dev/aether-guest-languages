@@ -236,8 +236,8 @@ INVOKE_ROWS = ["guest-export-called", "guest-export-slow", "guest-export-silent"
                "guest-export-raises", "guest-reenters-while-called", "guest-export-flood",
                "guest-export-malformed", "guest-after-end"]
 
-def run_plan(host, work, script, plan, give="null", upper=False, timeout=60):
-    env = dict(os.environ, GHL_BOUNDARY_SCRIPT=script, GHL_BOUNDARY_GIVE=give, GHL_BOUNDARY_UPPER="1" if upper else "0",
+def run_plan(host, work, script, plan, give="null", upper=False, timeout=60, maxframe=""):
+    env = dict(os.environ, GHL_INVOKE_MAXFRAME=maxframe, GHL_BOUNDARY_SCRIPT=script, GHL_BOUNDARY_GIVE=give, GHL_BOUNDARY_UPPER="1" if upper else "0",
                GHL_INVOKE_PLAN="\n".join(plan))
     try:
         p = subprocess.run([host, "-", "invoke", "x"], cwd=work, env=env, capture_output=True, timeout=timeout)
@@ -296,9 +296,9 @@ def main_invoke(lang, host, work, out):
     up = sn.get("names") == "upper"
     res = []
     def line(i, d, o, detail=""): res.append("%s\t%s\t%s\t%s" % (i, d, o, detail.replace("\t", " ").replace("\n", " ")))
-    def run(key, plan, give="null", v=None):
+    def run(key, plan, give="null", v=None, maxframe=""):
         script = sn[key] if v is None else sn[key].replace("@V@", v)
-        return run_plan(host, work, expand(script), plan, give, up)
+        return run_plan(host, work, expand(script), plan, give, up, maxframe=maxframe)
     def I(name, args): return "I\t%s\t%s" % (name, args)
     for cid, w in cases():
         v = sn.get("v:" + cid)
@@ -318,10 +318,10 @@ def main_invoke(lang, host, work, out):
             else: line(cid, "arg", "error", why_not(ev))
         else:
             line(cid, "arg", "n/a")
-    def special(key, snip, plan, judge, give="null"):
+    def special(key, snip, plan, judge, give="null", maxframe=""):
         if snip not in sn:
             line(key, "-", "n/a"); return None
-        ev = run(snip, plan, give)
+        ev = run(snip, plan, give, maxframe=maxframe)
         o, d = judge(ev); line(key, "-", o, d)
         return o
     ok = lambda o: o in ("ok",)
@@ -359,12 +359,13 @@ def main_invoke(lang, host, work, out):
         return "other", short(k + " " + t)
     special("wait", "x:wait", [I("wait", "[]")], j_wait)
     def j_big(ev):
+        o = outcomes(ev)
+        if len(o) == 2 and o[0][0] == "RAISE" and o[1][0] == "RAISE": return "refused (`RAISE`), the guest serves on", short(o[0][1])
         k, t = end_of(ev)
         if k == "KILLED" and "frame refused" in t: return "refused, worker killed", ""
-        o = outcomes(ev)
         if o and o[0][0] == "RETURN": return "crossed", ""
         return "other", why_not(ev)
-    special("big", "x:big", [I("big", "[]")], j_big)
+    special("big", "x:big", [I("big", "[]"), I("big", "[]")], j_big)
     # A direct call carries its whole input: several arguments, and one past
     # the frame limit (the host's to refuse or the worker's to fail on).
     def j_pick(ev):
@@ -374,11 +375,20 @@ def main_invoke(lang, host, work, out):
     special("args", "x:pick", [I("pick", '[1,"two",3.5]')], j_pick)
     def j_bigarg(ev):
         o = outcomes(ev)
+        if len(o) == 2 and o[0][0] == "NOSEND" and o[1] == ("RETURN", "1"): return "refused by the host, nothing sent; the guest serves on", short(o[0][1])
         if o and o[0][0] == "NOSEND": return "refused by the host, nothing sent", short(o[0][1])
         if o and o[0][0] == "RETURN": return "crossed", ""
         k, t = end_of(ev)
         return "refused: " + k.lower(), short(t)
-    special("big-arg", "x:back", [I("back", json.dumps(["x" * 100000]))], j_bigarg)
+    # A host that reads frames of at most 4 KiB (MAXFRAME): a 5,000-byte value
+    # handed back is too large for it, and a 2,000-byte one fits.
+    def j_maxframe(ev):
+        o = outcomes(ev)
+        if len(o) == 2 and o[0][0] == "RAISE" and o[1][0] == "RETURN" and len(o[1][1]) == 2002:
+            return "a value over it is refused (`RAISE`), one under it returns; the guest serves on", short(o[0][1])
+        return "differs", " ".join("%s %s" % (t, short(b, 40)) for t, b in o) + " " + " ".join(end_of(ev))
+    special("maxframe", "x:back", [I("back", json.dumps(["x" * 5000])), I("back", json.dumps(["y" * 2000]))], j_maxframe, maxframe="4096")
+    special("big-arg", "x:back", [I("back", json.dumps(["x" * 100000])), I("back", "[1]")], j_bigarg)
     def j_unexported(ev):
         o = outcomes(ev)
         if o and o[0][0] == "NOSEND" and "does not export" in o[0][1] and len(o) > 1 and o[1][0] == "RETURN":
@@ -435,6 +445,8 @@ def main_invoke(lang, host, work, out):
         line("guest-export-silent", "-", "left out", sn.get("why:silent", "the language cannot ignore a cancel"))
     def r_oversize(ev):
         k, t = end_of(ev)
+        o = outcomes(ev)
+        if o and o[0][0] == "RAISE" and "frame limit" in o[0][1]: return "held", ""
         return held_if(k == "KILLED" and "frame refused" in t, ev)
     special("guest-export-oversize", "x:big", [I("big", "[]")], r_oversize)
     def r_raises(ev):
