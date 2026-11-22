@@ -614,7 +614,10 @@ static int tcl_aether_map_get(ClientData cd, Tcl_Interp* interp,
     const char* key = tcl_obj_string(objv[1]);
     int st = ae_tcl_to_utf8(key, &kc);
     if (st != AE_STR_OK) return ae_tcl_map_refuse(interp, "aether_map_get: the key", st);
-    const char* val = aether_shared_map_get_by_token(current_map_token, kc ? kc : key);
+    // Tcl's own refusal of a NUL (ae_tcl_to_utf8) stands: what reaches here
+    // is NUL-free, so its C length is its length.
+    const char* k = kc ? kc : key;
+    const char* val = aether_shared_map_get_by_token(current_map_token, k, strlen(k), NULL);
     free(kc);
     if (val) {
         Tcl_Obj* o = ae_tcl_new_str(val, &st);
@@ -641,7 +644,9 @@ static int tcl_aether_map_put(ClientData cd, Tcl_Interp* interp,
     if (st != AE_STR_OK) return ae_tcl_map_refuse(interp, "aether_map_put: the key", st);
     st = ae_tcl_to_utf8(val, &vc);
     if (st != AE_STR_OK) { free(kc); return ae_tcl_map_refuse(interp, "aether_map_put: the value", st); }
-    aether_shared_map_put_by_token(current_map_token, kc ? kc : key, vc ? vc : val);
+    const char* k = kc ? kc : key;
+    const char* v = vc ? vc : val;
+    aether_shared_map_put_by_token(current_map_token, k, strlen(k), v, strlen(v));
     free(kc);
     free(vc);
     return TCL_OK;
@@ -660,7 +665,6 @@ int tcl_run_sandboxed_with_map(void* perms, const char* code, uint64_t map_token
     if (aether_sandbox_depth() >= AETHER_SANDBOX_MAX_LEVELS) return -1;
     register_map_bindings(T);
 
-    extern void aether_shared_map_freeze_inputs_by_token(uint64_t);
     aether_shared_map_freeze_inputs_by_token(map_token);
 
     current_map_token = map_token;

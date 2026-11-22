@@ -173,7 +173,6 @@ static int spawn_java_sandboxed(void* perms,
     // Shared map → shm.
     char* map_shm = NULL;
     if (map_token != 0) {
-        extern void aether_shared_map_freeze_inputs_by_token(uint64_t);
         aether_shared_map_freeze_inputs_by_token(map_token);
         map_shm = aether_shared_map_to_shm_by_token(map_token);
         if (!map_shm) {

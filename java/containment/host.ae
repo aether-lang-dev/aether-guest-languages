@@ -52,8 +52,8 @@ extern exit(code: int)
 extern setenv(name: string, value: string, overwrite: int) -> int
 extern aether_sandbox_depth() -> int
 extern ghl_map_new() -> long
-extern ghl_map_put(key: string, value: string)
-extern ghl_map_get(key: string) -> string
+extern ghl_map_put(key: @aether string, value: @aether string)
+extern ghl_map_get(key: @aether string) -> string @heap
 
 // Everything that reads the environment or the file system, before any
 // enforce block: inside one, getenv and exists answer for the grants.
@@ -74,6 +74,9 @@ fn prepare(check: string, expect: string) -> string {
     if fs.exists("/bin/sh") == 1 { setenv("GHL_SH", "1", 1) } else { setenv("GHL_SH", "0", 1) }
     ghl_map_new()
     ghl_map_put("input", "stunt-in")
+    // A key and a value with a NUL: the shared memory block (layout 2) carries
+    // them whole, and the map-get row checks they arrive so.
+    ghl_map_put("nul\0key", "nul\0value")
     return checks
 }
 
@@ -105,12 +108,34 @@ fn add_jvm(g: sandbox.Grants, classes: string) {
 
 fn run_row(g: sandbox.Grants, classes: string, uncontained: int) -> int {
     if uncontained == 1 { return java.run(classes, "ghl.containment.Checks") }
+    // No wall, but the shared map (GHL_JAVA_MAP_NO_WALL=1, java/containment/test_ways.sh):
+    // the host writes the block, the child reads it and writes its outputs
+    // back, on a platform or a runtime the preload would not let start.
+    if os.getenv("GHL_JAVA_MAP_NO_WALL") == "1" { return java.run_sandboxed_with_map(null, classes, "ghl.containment.Checks", ghl_map_new()) }
     return java.run_sandboxed_with_map(g, classes, "ghl.containment.Checks", ghl_map_new())
 }
+
+// 1 when a and b are the same bytes (a NUL in either compared too).
+fn same_bytes(a: string, b: string) -> int {
+    n = string.length(a)
+    if n != string.length(b) { return 0 }
+    i = 0
+    while i < n {
+        if string.char_at(a, i) != string.char_at(b, i) { return 0 }
+        i = i + 1
+    }
+    return 1
+}
+
+// 1 when the child's key and value with a NUL reached this host's map whole.
+fn ghl_map_has_nul_output() -> int { return same_bytes(ghl_map_get("out\0key"), "out\0value") }
 
 // What the child wrote to the map, as this host sees it: the bridge reads
 // the child's outputs back when it exits, and the host's inputs stay frozen.
 fn verify_map(check: string) -> string {
+    if check == "map-set" && ghl_map_has_nul_output() == 0 {
+        return "${check}: the host's map has out\\0key = \"${ghl_map_get("out\0key")}\", not \"out\\0value\" - host map: FAIL"
+    }
     if check == "map-set" && ghl_map_get("output") != "from-java" {
         return "${check}: the host's map has output = \"${ghl_map_get("output")}\", not \"from-java\" - host map: FAIL"
     }

@@ -324,10 +324,13 @@ int lua_run_sandboxed(void* perms, const char* code) {
 static uint64_t current_map_token = 0;
 
 static int lua_aether_map_get(lua_State* state) {
-    const char* key = lh_checkstring(state, 1);
-    const char* val = aether_shared_map_get_by_token(current_map_token, key);
+    // Keys and values by their length: a NUL in either crosses.
+    size_t kn = 0, vn = 0;
+    lh_checkstring(state, 1);
+    const char* key = g_lua.lua_tolstring(state, 1, &kn);
+    const char* val = aether_shared_map_get_by_token(current_map_token, key, kn, &vn);
     if (val) {
-        g_lua.lua_pushstring(state, val);
+        g_lua.lua_pushlstring(state, val, vn);
     } else {
         g_lua.lua_pushnil(state);
     }
@@ -335,9 +338,12 @@ static int lua_aether_map_get(lua_State* state) {
 }
 
 static int lua_aether_map_put(lua_State* state) {
-    const char* key = lh_checkstring(state, 1);
-    const char* val = lh_checkstring(state, 2);
-    aether_shared_map_put_by_token(current_map_token, key, val);
+    size_t kn = 0, vn = 0;
+    lh_checkstring(state, 1);
+    lh_checkstring(state, 2);
+    const char* key = g_lua.lua_tolstring(state, 1, &kn);
+    const char* val = g_lua.lua_tolstring(state, 2, &vn);
+    aether_shared_map_put_by_token(current_map_token, key, kn, val, vn);
     return 0;
 }
 
@@ -353,7 +359,6 @@ int lua_run_sandboxed_with_map(void* perms, const char* code, uint64_t map_token
     if (lua_init() != 0) return -1;
     register_map_bindings(L);
 
-    extern void aether_shared_map_freeze_inputs_by_token(uint64_t);
     aether_shared_map_freeze_inputs_by_token(map_token);
 
     current_map_token = map_token;

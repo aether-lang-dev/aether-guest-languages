@@ -18,8 +18,8 @@ import std.sandbox
 import std.string
 
 extern ghl_t_map_new() -> long
-extern ghl_t_map_put(token: long, key: string, value: string)
-extern ghl_t_map_get(token: long, key: string) -> string
+extern ghl_t_map_put(token: long, key: @aether string, value: @aether string)
+extern ghl_t_map_get(token: long, key: @aether string) -> string @heap
 extern ghl_t_map_free(token: long)
 extern ghl_t_two_threads() -> int
 

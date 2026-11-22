@@ -42,8 +42,12 @@ const TIME_LIMIT_MS = 5000
 // Instructions per step: how often a run looks at the clock.
 const BUDGET = 10000
 
-extern aether_shared_map_get_by_token(token: long, key: string) -> ptr
-extern aether_shared_map_put_by_token(token: long, key: string, value: string) -> int
+// The shared map takes keys and values by their length (Aether 0.935.0). The
+// key and value come from RexxAE's argument text, a C string, so a NUL ends
+// them before they get here: RexxAE's host-request API is where Rexx's map
+// stops carrying one, not the map.
+extern aether_shared_map_get_by_token(token: long, key: string, key_len: long, value_len: ptr) -> ptr
+extern aether_shared_map_put_by_token(token: long, key: string, key_len: long, value: string, value_len: long) -> int
 extern aether_shared_map_freeze_inputs_by_token(token: long)
 
 // A JSON string for s (the encoding std.guest's json_string uses).
@@ -86,7 +90,8 @@ fn arg(ctx: ptr, i: int) -> string {
 fn answer_map(ctx: ptr, token: long) {
     name = string.from_cstr(rexxae.rexxae_function(ctx))
     if name == "AETHER_MAP_GET" {
-        v = aether_shared_map_get_by_token(token, arg(ctx, 0))
+        key = arg(ctx, 0)
+        v = aether_shared_map_get_by_token(token, key, string.length(key), null)
         if v == null {
             rexxae.rexxae_reply_value(ctx, "null", "")
         } else {
@@ -96,7 +101,9 @@ fn answer_map(ctx: ptr, token: long) {
     }
     if name == "AETHER_MAP_PUT" {
         // 1 when written, 0 when the key is one of the host's frozen inputs.
-        ok = aether_shared_map_put_by_token(token, arg(ctx, 0), arg(ctx, 1))
+        key = arg(ctx, 0)
+        value = arg(ctx, 1)
+        ok = aether_shared_map_put_by_token(token, key, string.length(key), value, string.length(value))
         if ok == 0 { rexxae.rexxae_reply_value(ctx, "true", "") } else { rexxae.rexxae_reply_value(ctx, "false", "") }
         return
     }

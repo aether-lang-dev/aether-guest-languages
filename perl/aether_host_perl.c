@@ -318,12 +318,14 @@ static int call_get(PerlInterpreter* p, SV* sv, MAGIC* mg) {
     char* a2 = n > 2 ? dup_item(it[2], ln[2]) : NULL;
     switch (op) {
     case 'G': {   // map get: key
-        const char* v = (a1 && g_map_token) ? aether_shared_map_get_by_token(g_map_token, a1) : NULL;
-        if (v) set_answer(p, sv, 'O', v, strlen(v)); else set_answer(p, sv, 'N', "", 0);
+        // Keys and values by their length (the items carry it): a NUL crosses.
+        size_t vn = 0;
+        const char* v = (a1 && g_map_token) ? aether_shared_map_get_by_token(g_map_token, a1, ln[1], &vn) : NULL;
+        if (v) set_answer(p, sv, 'O', v, vn); else set_answer(p, sv, 'N', "", 0);
         break;
     }
     case 'P': {   // map put: key value; answers 1 written, 0 refused
-        int ok = (a1 && a2 && g_map_token) ? aether_shared_map_put_by_token(g_map_token, a1, a2) == 0 : 0;
+        int ok = (a1 && a2 && g_map_token) ? aether_shared_map_put_by_token(g_map_token, a1, ln[1], a2, ln[2]) == 0 : 0;
         set_answer(p, sv, 'O', ok ? "1" : "0", 1);
         break;
     }
@@ -333,8 +335,9 @@ static int call_get(PerlInterpreter* p, SV* sv, MAGIC* mg) {
         size_t* kl = calloc((size_t)cnt + 1, sizeof(size_t));
         int m = 0;
         for (int i = 0; i < cnt; i++) {
-            const char* k = aether_shared_map_key_at_by_token(g_map_token, i);
-            if (k) { ks[m] = (char*)k; kl[m] = strlen(k); m++; }
+            size_t len = 0;
+            const char* k = aether_shared_map_key_at_by_token(g_map_token, i, &len);
+            if (k) { ks[m] = (char*)k; kl[m] = len; m++; }
         }
         size_t ol = 0;
         char* o = pack_item_list(ks, kl, m, &ol);
@@ -538,7 +541,6 @@ int aether_perl_run_sandboxed_with_map(void* perms, const char* code, uint64_t m
     if (!code) return -1;
     if (aether_perl_init() != 0) return -1;
 
-    extern void aether_shared_map_freeze_inputs_by_token(uint64_t);
     aether_shared_map_freeze_inputs_by_token(map_token);
 
     enter();

@@ -413,6 +413,13 @@ public final class Rows {
             String v = mapGetValue(e, "input");
             if (v == null) return failed("input is not in the map");
             if (!v.equals("stunt-in")) return failed("input = " + quote(v));
+            // Through the shared memory block (layout 2) the host also put a
+            // key and a value with a NUL in them: both arrive whole.
+            if (e.call() == null) {
+                String nv = mapGetValue(e, "nul\u0000key");
+                if (!"nul\u0000value".equals(nv)) return failed("the input with a NUL in its key and value read back as " + (nv == null ? "nothing" : quote(nv)));
+                return succeeded("input = \"stunt-in\", and \"nul\\0key\" = \"nul\\0value\" whole");
+            }
             return succeeded("input = \"stunt-in\"");
         } catch (RuntimeException x) {
             return failed("input: " + x.getMessage());
@@ -422,6 +429,9 @@ public final class Rows {
     private static Result mapSet(Env e) {
         try {
             mapPutValue(e, "output", "from-java");
+            // Through the block, a key and a value with a NUL too (the host
+            // checks them in its own map: java/containment/host.ae).
+            if (e.call() == null) mapPutValue(e, "out\u0000key", "out\u0000value");
             String v = mapGetValue(e, "output");
             if (!"from-java".equals(v)) return failed("output read back as " + (v == null ? "nothing" : quote(v)));
             return succeeded("output = \"from-java\"");

@@ -213,13 +213,15 @@ static uint64_t g_current_map_token = 0;
 // c-string return boundary, so the borrow only needs to outlive that copy.
 static const char* host_factor_map_get(const char* key) {
     if (!g_current_map_token || !key) return NULL;
-    return aether_shared_map_get_by_token(g_current_map_token, key);
+    // Factor's FFI hands these C strings (c-string): a key or a value ends at
+    // its NUL on Factor's side of the call, not the map's.
+    return aether_shared_map_get_by_token(g_current_map_token, key, strlen(key), NULL);
 }
 
 // Called FROM Factor to write a shared-map key (output area).
 static void host_factor_map_put(const char* key, const char* value) {
     if (!g_current_map_token || !key || !value) return;
-    aether_shared_map_put_by_token(g_current_map_token, key, value);
+    aether_shared_map_put_by_token(g_current_map_token, key, strlen(key), value, strlen(value));
 }
 
 // FFI prelude prepended to user code: declares the two host entry points as
@@ -247,7 +249,6 @@ int factor_run_sandboxed_with_map(void* perms, const char* code,
     }
 
     // Inputs become read-only to the guest after this (matches lua/etc.).
-    extern void aether_shared_map_freeze_inputs_by_token(uint64_t);
     aether_shared_map_freeze_inputs_by_token(map_token);
 
     g_factor.factor_embed_map_set_hooks(host_factor_map_get,

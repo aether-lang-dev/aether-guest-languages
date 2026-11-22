@@ -516,17 +516,22 @@ static int map_functions_defined = 0;
 
 static VALUE rb_aether_map_get(VALUE self, VALUE key) {
     (void)self;
-    const char* val = aether_shared_map_get_by_token(rb_current_map_token, string_ptr(key));
-    return val ? g_rb.rb_utf8_str_new(val, (long)strlen(val)) : bridge_qnil;
+    // Keys and values by their length: a NUL in either crosses.
+    size_t kn = string_len(key), vn = 0;
+    const char* val = aether_shared_map_get_by_token(rb_current_map_token, string_ptr(key), kn, &vn);
+    return val ? g_rb.rb_utf8_str_new(val, (long)vn) : bridge_qnil;
 }
 
 static VALUE rb_aether_map_put(VALUE self, VALUE key, VALUE value) {
     (void)self;
     // string_ptr's results are only valid while their VALUEs are, so copy
     // the key before converting the value.
-    char* k = strdup(string_ptr(key));
+    size_t kn = string_len(key);
+    char* k = (char*)malloc(kn + 1);
     if (!k) return bridge_qnil;
-    aether_shared_map_put_by_token(rb_current_map_token, k, string_ptr(value));
+    memcpy(k, string_ptr(key), kn);
+    k[kn] = '\0';
+    aether_shared_map_put_by_token(rb_current_map_token, k, kn, string_ptr(value), string_len(value));
     free(k);
     return bridge_qnil;
 }
@@ -544,7 +549,6 @@ int ruby_run_sandboxed_with_map(void* perms, const char* code, uint64_t map_toke
     if (aether_sandbox_depth() >= AETHER_SANDBOX_MAX_LEVELS) return -1;
 
     define_map_functions();
-    extern void aether_shared_map_freeze_inputs_by_token(uint64_t);
     aether_shared_map_freeze_inputs_by_token(map_token);
     uint64_t previous_map_token = rb_current_map_token;
     rb_current_map_token = map_token;

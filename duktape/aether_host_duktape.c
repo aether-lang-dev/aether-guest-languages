@@ -463,16 +463,20 @@ int duktape_run_sandboxed(void* perms, const char* code) {
 static uint64_t duktape_current_map_token = 0;
 
 static duk_ret_t duktape_aether_map_get(duk_context* c) {
-    const char* key = g_duk.duk_require_string(c, 0);
-    const char* val = aether_shared_map_get_by_token(duktape_current_map_token, key);
-    if (val) { g_duk.duk_push_string(c, val); } else { g_duk.duk_push_undefined(c); }
+    // Keys and values by their length: a NUL in either crosses.
+    duk_size_t kn = 0;
+    const char* key = g_duk.duk_require_lstring(c, 0, &kn);
+    size_t vn = 0;
+    const char* val = aether_shared_map_get_by_token(duktape_current_map_token, key, (size_t)kn, &vn);
+    if (val) { g_duk.duk_push_lstring(c, val, (duk_size_t)vn); } else { g_duk.duk_push_undefined(c); }
     return 1;
 }
 
 static duk_ret_t duktape_aether_map_put(duk_context* c) {
-    const char* key = g_duk.duk_require_string(c, 0);
-    const char* val = g_duk.duk_require_string(c, 1);
-    aether_shared_map_put_by_token(duktape_current_map_token, key, val);
+    duk_size_t kn = 0, vn = 0;
+    const char* key = g_duk.duk_require_lstring(c, 0, &kn);
+    const char* val = g_duk.duk_require_lstring(c, 1, &vn);
+    aether_shared_map_put_by_token(duktape_current_map_token, key, (size_t)kn, val, (size_t)vn);
     return 0;
 }
 
@@ -488,7 +492,6 @@ int duktape_run_sandboxed_with_map(void* perms, const char* code, uint64_t map_t
     if (duktape_init() != 0) return -1;
     register_map_bindings(ctx);
 
-    extern void aether_shared_map_freeze_inputs_by_token(uint64_t);
     aether_shared_map_freeze_inputs_by_token(map_token);
     duktape_current_map_token = map_token;
 

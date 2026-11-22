@@ -414,10 +414,15 @@ static uint64_t py_current_map_token = 0;
 // Python callable: aether_map_get(key) → str or None
 static PyObject* py_aether_map_get(PyObject* self, PyObject* args) {
     (void)self;
-    const char* key;
-    if (!g_py.PyArg_ParseTuple(args, "s", &key)) return NULL;
-    const char* val = aether_shared_map_get_by_token(py_current_map_token, key);
-    if (val) return g_py.PyUnicode_FromString(val);
+    // Keys and values by their length: a NUL in either crosses.
+    PyObject* ko;
+    if (!g_py.PyArg_ParseTuple(args, "U", &ko)) return NULL;
+    Py_ssize_t kn = 0;
+    const char* key = g_py.PyUnicode_AsUTF8AndSize(ko, &kn);
+    if (!key) return NULL;
+    size_t vn = 0;
+    const char* val = aether_shared_map_get_by_token(py_current_map_token, key, (size_t)kn, &vn);
+    if (val) return g_py.PyUnicode_FromStringAndSize(val, (Py_ssize_t)vn);
     // Py_RETURN_NONE equivalent: incref None and return it.
     g_py.Py_IncRef(g_py.py_none);
     return g_py.py_none;
@@ -426,10 +431,14 @@ static PyObject* py_aether_map_get(PyObject* self, PyObject* args) {
 // Python callable: aether_map_put(key, value)
 static PyObject* py_aether_map_put(PyObject* self, PyObject* args) {
     (void)self;
-    const char* key;
-    const char* value;
-    if (!g_py.PyArg_ParseTuple(args, "ss", &key, &value)) return NULL;
-    aether_shared_map_put_by_token(py_current_map_token, key, value);
+    PyObject *ko, *vo;
+    if (!g_py.PyArg_ParseTuple(args, "UU", &ko, &vo)) return NULL;
+    Py_ssize_t kn = 0, vn = 0;
+    const char* key = g_py.PyUnicode_AsUTF8AndSize(ko, &kn);
+    if (!key) return NULL;
+    const char* value = g_py.PyUnicode_AsUTF8AndSize(vo, &vn);
+    if (!value) return NULL;
+    aether_shared_map_put_by_token(py_current_map_token, key, (size_t)kn, value, (size_t)vn);
     g_py.Py_IncRef(g_py.py_none);
     return g_py.py_none;
 }
@@ -482,7 +491,6 @@ int python_run_sandboxed_with_map(void* perms, const char* code, uint64_t map_to
     }
 
     // Freeze inputs and set active token
-    extern void aether_shared_map_freeze_inputs_by_token(uint64_t);
     aether_shared_map_freeze_inputs_by_token(map_token);
     uint64_t previous_map_token = py_current_map_token;
     py_current_map_token = map_token;

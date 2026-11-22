@@ -20,7 +20,7 @@ import os, re, sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TYPE_ROWS = ["str", "str-empty", "str-nonascii", "str-nul", "str-astral", "str-60k", "int", "int-neg", "int-max", "int-min",
-             "float", "bool-true", "bool-false", "null", "array", "map", "nested"]
+             "float", "bool-true", "bool-false", "null", "array", "map", "map-nul", "nested"]
 SPECIAL = [("nest", "a call inside a call's argument"), ("refuse", "an error answer (`FAIL`) to a call"),
            ("wait", "a cancel while a call waits"), ("loop", "a cancel inside a guest loop"),
            ("big-up", "a 100,000-byte argument"), ("big-down", "a 100,000-byte answer")]

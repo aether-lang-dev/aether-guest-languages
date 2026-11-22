@@ -579,11 +579,13 @@ static int g_map_procs = 0;
 
 static const char* host_map_get(const char* key) {
     if (!g_map_token || !key) return NULL;
-    return aether_shared_map_get_by_token(g_map_token, key);
+    // Racket's FFI hands these C strings (_string): a key or a value ends at
+    // its NUL on Racket's side of the call, not the map's.
+    return aether_shared_map_get_by_token(g_map_token, key, strlen(key), NULL);
 }
 static void host_map_put(const char* key, const char* value) {
     if (!g_map_token || !key || !value) return;
-    aether_shared_map_put_by_token(g_map_token, key, value);
+    aether_shared_map_put_by_token(g_map_token, key, strlen(key), value, strlen(value));
 }
 
 // (define NAME (cast (cast ADDR _intptr _pointer) _fpointer (_fun ... )))
@@ -611,7 +613,6 @@ static int install_map_procs(void) {
 static int run_with_map_lang(int lang, void* perms, const char* code, uint64_t map_token) {
     if (!code) return -1;
     if (racket_init() != 0) return -1;
-    extern void aether_shared_map_freeze_inputs_by_token(uint64_t);
     aether_shared_map_freeze_inputs_by_token(map_token);
     if (install_map_procs() != 0) return -1;
     g_map_token = map_token;

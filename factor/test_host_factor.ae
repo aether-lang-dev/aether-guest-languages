@@ -26,8 +26,8 @@ import std.spec
 import std.string
 
 extern ghl_t_map_new() -> long
-extern ghl_t_map_put(key: string, value: string)
-extern ghl_t_map_get(key: string) -> string
+extern ghl_t_map_put(key: @aether string, value: @aether string)
+extern ghl_t_map_get(key: @aether string) -> string @heap
 
 main() {
     fw = spec.init()

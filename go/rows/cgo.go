@@ -125,10 +125,22 @@ func libcSyscall4(nr, a, b, c, d uintptr) (int64, syscall.Errno) {
 
 // ---- the shared map, as the bridge hands it to a child -----------------
 //
-// AETHER_MAP_SHM names a POSIX shared memory object: frozen_count (4 bytes,
-// little endian), then key\0value\0 pairs and a final \0. The first
-// frozen_count pairs are the host's inputs; the rest are outputs the host
-// reads back when the child exits.
+// AETHER_MAP_SHM names a POSIX shared memory object in Aether's layout 2
+// (runtime/aether_shared_map.h, Aether 0.935.0), every integer a
+// little-endian uint32: the magic "AESM", a word that is always 0, the
+// version 2, frozen_count, entry_count, then per entry key_len, value_len,
+// the key's bytes and the value's. The first frozen_count entries are the
+// host's inputs; the rest are outputs the host reads back when the child
+// exits. Keys and values are bytes by their length: a NUL in either is
+// carried. A block in any other shape is refused whole, as Aether's reader
+// refuses one: nothing of it is read.
+
+const (
+	shmMagic      = "AESM"
+	shmVersion    = 2
+	shmHeader     = 20
+	shmMaxEntries = 256
+)
 
 type shmMap struct {
 	frozen  int
@@ -153,6 +165,69 @@ func shmOpen(rw bool) (int, error) {
 	return int(fd), nil
 }
 
+func le32(b []byte) uint32 {
+	return uint32(b[0]) | uint32(b[1])<<8 | uint32(b[2])<<16 | uint32(b[3])<<24
+}
+
+func put32(b []byte, v uint32) []byte {
+	return append(b, byte(v), byte(v>>8), byte(v>>16), byte(v>>24))
+}
+
+// shmDecode reads a layout-2 block, or refuses it (an error, nothing read):
+// a short block, no magic, a nonzero second word, another version, more
+// than 256 entries, an entry running past the end, or a nonzero byte after
+// the last entry (zero bytes there are allowed: macOS rounds a shm object up
+// to a page).
+func shmDecode(data []byte) (*shmMap, error) {
+	n := len(data)
+	if n < shmHeader || string(data[0:4]) != shmMagic || le32(data[4:]) != 0 || le32(data[8:]) != shmVersion {
+		return nil, errString("the shared map block is not layout 2 (no AESM magic, zero word and version 2): refused")
+	}
+	frozen := le32(data[12:])
+	count := le32(data[16:])
+	if count > shmMaxEntries || frozen > count {
+		return nil, errString("the shared map block counts more entries than it may: refused")
+	}
+	m := &shmMap{frozen: int(frozen)}
+	pos := shmHeader
+	for i := uint32(0); i < count; i++ {
+		if n-pos < 8 {
+			return nil, errString("the shared map block ends inside an entry: refused")
+		}
+		kl, vl := int(le32(data[pos:])), int(le32(data[pos+4:]))
+		pos += 8
+		if kl > n-pos || vl > n-pos-kl {
+			return nil, errString("an entry of the shared map block runs past its end: refused")
+		}
+		k := string(data[pos : pos+kl])
+		v := string(data[pos+kl : pos+kl+vl])
+		pos += kl + vl
+		m.entries = append(m.entries, [2]string{k, v})
+	}
+	for _, c := range data[pos:] {
+		if c != 0 {
+			return nil, errString("the shared map block has bytes after its last entry: refused")
+		}
+	}
+	return m, nil
+}
+
+// encode is the block for m, in layout 2.
+func (m *shmMap) encode() []byte {
+	buf := []byte(shmMagic)
+	buf = put32(buf, 0)
+	buf = put32(buf, shmVersion)
+	buf = put32(buf, uint32(m.frozen))
+	buf = put32(buf, uint32(len(m.entries)))
+	for _, e := range m.entries {
+		buf = put32(buf, uint32(len(e[0])))
+		buf = put32(buf, uint32(len(e[1])))
+		buf = append(buf, e[0]...)
+		buf = append(buf, e[1]...)
+	}
+	return buf
+}
+
 func shmLoad() (*shmMap, error) {
 	fd, err := shmOpen(false)
 	if err != nil {
@@ -163,31 +238,16 @@ func shmLoad() (*shmMap, error) {
 	if err := syscall.Fstat(fd, &st); err != nil {
 		return nil, err
 	}
-	if st.Size < 5 {
-		return &shmMap{}, nil
+	if st.Size < shmHeader {
+		return nil, errString("the shared map block is shorter than its header: refused")
 	}
 	data, err := syscall.Mmap(fd, 0, int(st.Size), syscall.PROT_READ, syscall.MAP_SHARED)
 	if err != nil {
 		return nil, err
 	}
 	defer syscall.Munmap(data)
-	m := &shmMap{frozen: int(data[0]) | int(data[1])<<8 | int(data[2])<<16 | int(data[3])<<24}
-	pos := 4
-	next := func() string {
-		end := pos
-		for end < len(data) && data[end] != 0 {
-			end++
-		}
-		s := string(data[pos:end])
-		pos = end + 1
-		return s
-	}
-	for pos < len(data)-1 && data[pos] != 0 {
-		k := next()
-		v := next()
-		m.entries = append(m.entries, [2]string{k, v})
-	}
-	return m, nil
+	// The host can still write to the block: decode a copy.
+	return shmDecode(append([]byte(nil), data...))
 }
 
 func (m *shmMap) get(key string) (string, bool) {
@@ -216,14 +276,10 @@ func (m *shmMap) put(key, value string) (bool, error) {
 }
 
 func (m *shmMap) store() error {
-	buf := []byte{byte(m.frozen), byte(m.frozen >> 8), byte(m.frozen >> 16), byte(m.frozen >> 24)}
-	for _, e := range m.entries {
-		buf = append(buf, e[0]...)
-		buf = append(buf, 0)
-		buf = append(buf, e[1]...)
-		buf = append(buf, 0)
+	if len(m.entries) > shmMaxEntries {
+		return errString("the shared map holds at most 256 keys")
 	}
-	buf = append(buf, 0)
+	buf := m.encode()
 	fd, err := shmOpen(true)
 	if err != nil {
 		return err
@@ -304,12 +360,28 @@ func mapGet(e Env) result {
 	if v != "stunt-in" {
 		return failed("input = " + quote(v))
 	}
+	// Through the shared memory block (layout 2) the host also put a key and
+	// a value with a NUL in them: both arrive whole.
+	if e.Call == nil {
+		nv, ok, err := mapGetValue(e, "nul\x00key")
+		if err != nil || !ok || nv != "nul\x00value" {
+			return failed("the input with a NUL in its key and value read back as " + quote(nv))
+		}
+		return succeeded(`input = "stunt-in", and "nul\0key" = "nul\0value" whole`)
+	}
 	return succeeded(`input = "stunt-in"`)
 }
 
 func mapSet(e Env) result {
 	if err := mapPutValue(e, "output", "from-go"); err != nil {
 		return failed("put output: " + err.Error())
+	}
+	// Through the block, a key and a value with a NUL too (the host checks
+	// them in its own map: go/containment/host.ae).
+	if e.Call == nil {
+		if err := mapPutValue(e, "out\x00key", "out\x00value"); err != nil {
+			return failed("put out\\0key: " + err.Error())
+		}
 	}
 	v, ok, err := mapGetValue(e, "output")
 	if err != nil {

@@ -45,16 +45,32 @@ int64_t ghl_t_map_new(void) {
     return 0;
 }
 
-void ghl_t_map_put(int64_t token, const char* key, const char* value) {
+// Keys and values arrive as Aether strings (the externs' @aether string) and
+// cross by their length: a NUL in either is stored and read back whole.
+extern const char* aether_string_data(const void* s);
+extern size_t aether_string_length(const void* s);
+extern void* string_new_with_length(const char* data, size_t length);
+static const char* ghl_t_bytes(const void* s, size_t* n) {
+    const char* d = s ? aether_string_data(s) : NULL;
+    *n = d ? aether_string_length(s) : 0;
+    return d ? d : "";
+}
+
+void ghl_t_map_put(int64_t token, const void* key, const void* value) {
     AetherSharedMap* m = by_token(token);
-    if (m) aether_shared_map_put(m, key, value);
+    size_t kn, vn;
+    const char* k = ghl_t_bytes(key, &kn);
+    const char* v = ghl_t_bytes(value, &vn);
+    if (m) aether_shared_map_put(m, k, kn, v, vn);
 }
 
 // The value under `key`, or "" when there is none.
-const char* ghl_t_map_get(int64_t token, const char* key) {
+void* ghl_t_map_get(int64_t token, const void* key) {
     AetherSharedMap* m = by_token(token);
-    const char* v = m ? aether_shared_map_get(m, key) : NULL;
-    return v ? v : "";
+    size_t kn, vn = 0;
+    const char* k = ghl_t_bytes(key, &kn);
+    const char* v = m ? aether_shared_map_get(m, k, kn, &vn) : NULL;
+    return string_new_with_length(v ? v : "", v ? vn : 0);
 }
 
 void ghl_t_map_free(int64_t token) {

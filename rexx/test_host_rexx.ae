@@ -4,6 +4,7 @@
 import rexx
 import rexxae
 import std.spec
+import std.sharedmap
 import std.sandbox
 import std.audit
 import std.string
@@ -58,20 +59,17 @@ main() {
         spec.it("run_sandboxed_with_map round-trips values and keeps the inputs frozen") callback {
             dummy = sandbox.new("dummy") {}
             defer sandbox.free(dummy)
-            token_buf = c_malloc(8)
-            map = aether_shared_map_new(token_buf)
-            token = mem.get_long(token_buf, 0)
-            c_free(token_buf)
-            aether_shared_map_put(map, "user", "Alice")
-            aether_shared_map_put(map, "count", "5")
+            map = sharedmap.new()
+            token = sharedmap.token(map)
+            _p = sharedmap.put(map, "user", "Alice")
+            _p = sharedmap.put(map, "count", "5")
 
             script = "LET u = AETHER_MAP_GET('user')\nLET c = AETHER_MAP_GET('count')\nLET ok = AETHER_MAP_PUT('reply', 'hello ' || u)\nLET ok = AETHER_MAP_PUT('doubled', c * 2)\nLET frozen = AETHER_MAP_PUT('user', 'Mallory')\nIF frozen THEN EXIT 5"
             spec.assert_eq(rexx.run_sandboxed_with_map(dummy, script, token), 0, "the run returns 0 (an input write answers 0)")
-            spec.assert_str_eq(aether_shared_map_get(map, "reply"), "hello Alice", "reply")
-            spec.assert_str_eq(aether_shared_map_get(map, "doubled"), "10", "doubled")
-            spec.assert_str_eq(aether_shared_map_get(map, "user"), "Alice", "user is still the host's")
-            aether_shared_map_revoke_token(token)
-            aether_shared_map_free(map)
+            spec.assert_str_eq(map_value(map, "reply"), "hello Alice", "reply")
+            spec.assert_str_eq(map_value(map, "doubled"), "10", "doubled")
+            spec.assert_str_eq(map_value(map, "user"), "Alice", "user is still the host's")
+            sharedmap.free(map)
         }
 
         spec.it("run_sandboxed and run_sandboxed_with_map leave the grant stack as they found it") callback {
@@ -82,14 +80,11 @@ main() {
             spec.assert_eq(aether_sandbox_depth(), before, "depth restored after success")
             spec.assert_eq(rexx.run_sandboxed(g, "LET x = NOPE()"), -1, "a failing script fails")
             spec.assert_eq(aether_sandbox_depth(), before, "depth restored after an error")
-            token_buf = c_malloc(8)
-            map = aether_shared_map_new(token_buf)
-            token = mem.get_long(token_buf, 0)
-            c_free(token_buf)
+            map = sharedmap.new()
+            token = sharedmap.token(map)
             spec.assert_eq(rexx.run_sandboxed_with_map(g, "LET x = NOPE()", token), -1, "a failing map script fails")
             spec.assert_eq(aether_sandbox_depth(), before, "depth restored after a map script error")
-            aether_shared_map_revoke_token(token)
-            aether_shared_map_free(map)
+            sharedmap.free(map)
         }
 
         // What a host function does is the host's, held to the grants in
@@ -202,8 +197,9 @@ fn ask_home() -> string {
     return said
 }
 
-extern aether_shared_map_new(out_token: ptr) -> ptr
-extern aether_shared_map_put(map: ptr, key: string, val: string)
-extern aether_shared_map_get(map: ptr, key: string) -> string
-extern aether_shared_map_revoke_token(token: long)
-extern aether_shared_map_free(map: ptr)
+// The value under key, or "" when there is none (std.sharedmap's get, its
+// found flag dropped).
+fn map_value(m: ptr, key: string) -> string {
+    v, _found = sharedmap.get(m, key)
+    return v
+}

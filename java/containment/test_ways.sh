@@ -43,6 +43,21 @@ plain getenv-home succeed
 plain open-etc-passwd succeed
 plain exec-bin-sh succeed
 
+# ---- the shared map's block, layout 2 --------------------------------------
+# The host writes the block (aether_shared_map_to_shm), the JVM reads it with
+# AetherMap, writes its outputs back, and the host reads them (with a key and
+# a value holding a NUL each way): java.run_sandboxed_with_map with no grants,
+# so no preload, on every platform. AgentTest above holds the codec and the
+# malformed blocks.
+for row in map-get map-set; do
+    (cd "$WORK" && env -u GHL_JAVA_UNCONTAINED GHL_JAVA_MAP_NO_WALL=1 "$HOST" inproc - "$row" succeed) > "$TMP/nowall.txt" 2>&1 ||
+        die "the shared map, no wall: $row" "$TMP/nowall.txt"
+    printf '  [PASS] the shared map, no wall: %s\n' "$(tail -1 "$TMP/nowall.txt")"
+done
+(cd "$WORK" && env -u GHL_JAVA_UNCONTAINED GHL_JAVA_MAP_NO_WALL=1 "$HOST" inproc - map-overwrite-input refused) > "$TMP/nowall.txt" 2>&1 ||
+    die "the shared map, no wall: map-overwrite-input" "$TMP/nowall.txt"
+printf '  [PASS] the shared map, no wall: %s\n' "$(tail -1 "$TMP/nowall.txt")"
+
 # ---- way 2: macOS starts nothing --------------------------------------------
 if [ "$PLAT" = macos ]; then
     (cd "$WORK" && env -u GHL_JAVA_UNCONTAINED "$HOST" inproc - open-etc-passwd refused) > "$TMP/refuse.txt" 2>&1

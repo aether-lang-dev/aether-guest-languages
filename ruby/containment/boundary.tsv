@@ -22,6 +22,7 @@ v:bool-false	false
 v:null	nil
 v:array	[1, "a", 2.5]
 v:map	{"k" => "v", "n" => 1}
+v:map-nul	{"k\0ey" => "v\0al"}
 v:nested	{"a" => [1, {"b" => "x"}], "c" => {"d" => 2.5}}
 # The other direction (tests/boundary.py run-invoke): scripts that export methods for the host to call. x:make returns @V@; x:back hands its argument back.
 x:make	export def make = @V@

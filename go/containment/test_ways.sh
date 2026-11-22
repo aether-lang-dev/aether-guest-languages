@@ -28,6 +28,26 @@ else
     GHL_GO_UNCONTAINED=1 run_one PASS inproc succeed open-etc-passwd
 fi
 
+# ---- the shared map's block, layout 2 --------------------------------------
+# go/rows/shm_test.go: the block's codec, a NUL in a key and a value, and every
+# malformed block refused whole, as Aether's reader refuses one (cgo builds).
+if [ "$GO_CGO" = 1 ]; then
+    (cd "$ROOT/go" && "$GO" test ./rows) > "$TMP/gotest.txt" 2>&1 || die "go test ./rows" "$TMP/gotest.txt"
+    echo "  [PASS] go test ./rows: the layout-2 codec, NUL carried, malformed blocks refused"
+    # The host writes the block (aether_shared_map_to_shm), the Go child reads
+    # it, writes its outputs back, and the host reads them (with a key and a
+    # value holding a NUL each way): go.run_sandboxed_with_map with no grants,
+    # so no preload, on every platform.
+    for row in map-get map-set; do
+        (cd "$WORK" && GHL_GO_MAP_NO_WALL=1 "$HOST" inproc - "$row" succeed) > "$TMP/nowall.txt" 2>&1 ||
+            die "the shared map, no wall: $row" "$TMP/nowall.txt"
+        printf '  [PASS] the shared map, no wall: %s\n' "$(tail -1 "$TMP/nowall.txt")"
+    done
+    (cd "$WORK" && GHL_GO_MAP_NO_WALL=1 "$HOST" inproc - map-overwrite-input refused) > "$TMP/nowall.txt" 2>&1 ||
+        die "the shared map, no wall: map-overwrite-input" "$TMP/nowall.txt"
+    printf '  [PASS] the shared map, no wall: %s\n' "$(tail -1 "$TMP/nowall.txt")"
+fi
+
 # ---- way 2: macOS starts nothing --------------------------------------------
 if [ "$PLAT" = macos ]; then
     unset GHL_GO_UNCONTAINED

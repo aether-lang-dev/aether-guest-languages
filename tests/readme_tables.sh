@@ -94,7 +94,7 @@ import boundary_table as bt
 GROUPS = [("str", ["str", "str-empty", "str-nonascii", "str-nul", "str-astral", "str-60k"], {"str-empty": "empty", "str-nonascii": "non-ASCII", "str-nul": "NUL", "str-astral": "beyond the BMP", "str-60k": "60 KB"}),
           ("int", ["int", "int-neg"], {"int-neg": "negative"}), ("int64", ["int-max", "int-min"], {}),
           ("float", ["float"], {}), ("bool", ["bool-true", "bool-false"], {}), ("null", ["null"], {}),
-          ("array", ["array"], {}), ("map", ["map"], {}), ("nested", ["nested"], {})]
+          ("array", ["array"], {}), ("map", ["map", "map-nul"], {"map-nul": "NUL"}), ("nested", ["nested"], {})]
 
 def types_dir(res, d):
     ok, partial, no = [], [], []

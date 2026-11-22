@@ -14,4 +14,5 @@ bool-false	false
 null	null
 array	[1,"a",2.5]
 map	{"k":"v","n":1}
+map-nul	{"k\u0000ey":"v\u0000al"}
 nested	{"a":[1,{"b":"x"}],"c":{"d":2.5}}
