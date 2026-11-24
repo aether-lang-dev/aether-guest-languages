@@ -1,6 +1,6 @@
 # A Factor in-process row hangs when the preload refuses a directory listing (0.927.0 on)
 
-**Resolved here, 2026-11-21, in the fork:** the hang is the embedded VM's vocabulary monitor, whose error path writes through an invalid buffer when a watched directory cannot be opened (it reproduces with `chmod 000` and no sandbox). The fork's `embed_vm_init` now passes `-no-monitors` (branch `embed-no-monitors`, 6b88e3b758) and this repository no longer grants the read of Factor's tree. Nothing is asked of Aether. What follows is the original write-up.
+**Resolved here, 2026-11-21, in the fork:** the hang is the embedded VM's vocabulary monitor, whose error path writes through an invalid buffer when a watched directory cannot be opened (it reproduces with `chmod 000` and no sandbox). The fork's `embed_vm_init` now passes `-no-monitors` (branch `embed-no-monitors`, 6b88e3b758) and this repository no longer grants the read of Factor's tree. Nothing is asked of Aether. Rechecked 2026-11-24 on cachyos with the fork built at 6b88e3b758 and private installs of ae 0.939.0 and 0.941.0 (`GUEST_LANG=factor GHL_REQUIRE_CHILD=1 FACTOR_HOME=<fork build> sh tests/run.sh`): both pass, 59 rows, 0 failures, 2m08s and 2m30s, no row near its timeout. A Factor tree without the fork's `-no-monitors` commit still hangs. What follows is the original write-up.
 
 Found 2026-11-21 while getting this repository's CI green. The row is made to
 pass here by a grant (below), so this is not blocking; it is written down because
