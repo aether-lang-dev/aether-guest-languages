@@ -224,8 +224,8 @@ else the rows that did not and how.
 | `test_stunt_write_granted` | `fs_write=$WORK/*` | differs: open-granted-file not held | matches | differs: write-granted-file stricter |
 
 - Column 2: macOS 27.3 arm64, ae 0.936.0, Tcl 8.5.9
-- Column 3: CachyOS, kernel 7.3.5 x86_64, ae 0.936.0, Tcl 8.6.16
-- Column 4: CachyOS, kernel 7.3.5 x86_64, ae 0.936.0, Tcl 8.6.16
+- Column 3: CachyOS, kernel 7.3.5 x86_64, ae 0.939.0, Tcl 8.6.16
+- Column 4: CachyOS, kernel 7.3.5 x86_64, ae 0.939.0, Tcl 8.6.16
 <!-- stunt-parity:end -->
 
 The test names are stunt's, aether's `tests/integration/contrib_host_stunt`

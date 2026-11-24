@@ -242,9 +242,9 @@ the rows that did not and how.
 | `test_stunt_no_grants` | `-` | differs: open-etc-passwd left out, open-granted-file left out, write-granted-file left out, getenv-home left out, env-cached left out, connect-192.0.2.1 left out, connect-ipv4-mapped left out, exec-bin-sh left out, dlopen-libm left out | differs: open-etc-passwd left out, open-granted-file left out, write-granted-file left out, getenv-home left out, env-cached left out, connect-192.0.2.1 left out, connect-ipv4-mapped left out, exec-bin-sh left out, dlopen-libm left out | differs: open-etc-passwd left out, open-granted-file left out, write-granted-file left out, getenv-home left out, env-cached left out, connect-192.0.2.1 left out, connect-ipv4-mapped left out, exec-bin-sh left out, fork left out, dlopen-libc-by-name left out, dlopen-libc-by-path left out, dlopen-libm left out, syscall-fn-openat left out, syscall-openat left out, syscall-socket left out |
 | `test_stunt_write_granted` | `fs_write=$WORK/*` | differs: write-granted-file left out, open-granted-file left out | differs: write-granted-file left out, open-granted-file left out | differs: write-granted-file left out, open-granted-file left out |
 
-- Column 2: macOS 27.3 arm64, ae 0.936.0, QuickJS quickjs-ng 0.18.0
-- Column 3: CachyOS, kernel 7.3.5 x86_64, ae 0.936.0, QuickJS quickjs-ng 0.18.0
-- Column 4: CachyOS, kernel 7.3.5 x86_64, ae 0.936.0, QuickJS quickjs-ng 0.18.0
+- Column 2: macOS 27.3 arm64, ae 0.939.0, QuickJS quickjs-ng 0.18.0
+- Column 3: CachyOS, kernel 7.3.5 x86_64, ae 0.939.0, QuickJS quickjs-ng 0.18.0
+- Column 4: CachyOS, kernel 7.3.5 x86_64, ae 0.939.0, QuickJS quickjs-ng 0.18.0
 <!-- stunt-parity:end -->
 
 The test names are stunt's, aether's `tests/integration/contrib_host_stunt` at
